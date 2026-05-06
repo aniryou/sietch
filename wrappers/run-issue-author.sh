@@ -5,8 +5,8 @@
 # and show you draft issue bodies before creating them.
 #
 # Usage:
-#   sietch issue                # opens an interactive session
-#   sietch issue "your request" # starts with this as the first message
+#   st issue                # opens an interactive session
+#   st issue "your request" # starts with this as the first message
 
 set -u
 set -o pipefail
@@ -19,7 +19,7 @@ REPO="$REPO_ROOT"
 cd "$REPO"
 
 INITIAL_MSG="${1:-}"
-PROMPT="$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/formulas/issue-author.md")"
+PROMPT="$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/templates/issue-author.md")"
 
 if [ -n "$INITIAL_MSG" ]; then
   PAGER=cat GIT_PAGER=cat \

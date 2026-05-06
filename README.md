@@ -21,19 +21,19 @@ headless Claude Code agents in coordinated loops:
 - **Dispatchers** — watch for new reviewer feedback and merge conflicts,
   re-invoke the developer agent in follow-up or conflict-resolution mode.
 
-A single `sietch loop start` brings them all up in tmux panes.
+A single `st loop start` brings them all up in tmux panes.
 
 ## Architecture
 
 ```
 ~/code/sietch/                  ← framework (this repo)
 ├── bin/sietch                  ← global CLI dispatcher
-├── formulas/                   ← parameterized prompt templates
+├── templates/                   ← parameterized prompt templates
 │   ├── developer.md
 │   ├── reviewer.md
 │   ├── reviewer-orchestrator.md
 │   ├── issue-author.md
-│   └── rig.config.example      ← template for `sietch init`
+│   └── rig.config.example      ← template for `st init`
 ├── lib/render-prompt.sh        ← envsubst-based template renderer
 ├── wrappers/                   ← headless agent wrappers (run-*.sh)
 └── install.sh                  ← symlinks CLI into ~/.local/bin
@@ -43,7 +43,7 @@ A single `sietch loop start` brings them all up in tmux panes.
 ```
 
 The framework lives once. Every consumer repo carries a single config
-file. Edit a prompt in `formulas/` and every rig picks it up immediately.
+file. Edit a prompt in `templates/` and every rig picks it up immediately.
 
 ## Install
 
@@ -58,7 +58,7 @@ Make sure `~/.local/bin` is on your `$PATH`.
 
 ```bash
 cd path/to/your-repo
-sietch init                      # creates .sietch/rig.config + README
+st init                      # creates .sietch/rig.config + README
 $EDITOR .sietch/rig.config       # set REPO_OWNER, REPO_NAME, branch prefix, etc.
 git add .sietch && git commit -m "sietch: onboard this repo"
 ```
@@ -66,12 +66,12 @@ git add .sietch && git commit -m "sietch: onboard this repo"
 ## Daily use
 
 ```bash
-sietch issue "tests should cover negative inputs"   # draft → confirm → file
-sietch dev                                          # claim & ship one issue
-sietch review                                       # review one dev-agent PR
-sietch loop start                                   # all of the above in tmux
-sietch loop status                                  # check what's running
-sietch loop stop                                    # tear it down
+st issue "tests should cover negative inputs"   # draft → confirm → file
+st dev                                          # claim & ship one issue
+st review                                       # review one dev-agent PR
+st loop start                                   # all of the above in tmux
+st loop status                                  # check what's running
+st loop stop                                    # tear it down
 ```
 
 ## Dependencies

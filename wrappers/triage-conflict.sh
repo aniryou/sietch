@@ -13,7 +13,7 @@
 # The rebase is probed in a temporary worktree at /tmp/dev-agent/triage-pr<PR>;
 # the main repo and the PR's remote branch are NOT modified.
 #
-# Usage: sietch triage <PR#>
+# Usage: st triage <PR#>
 # Exit:  0 = tractable, 1 = untractable, 2 = misuse / setup error.
 
 set -u

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# sietch — global CLI for the agent-dev-loop framework.
+# st — global CLI for sietch (a multi-agent dev loop framework).
 #
-# Sietch is a multi-agent dev loop modeled on Steve Yegge's GasTown,
-# named after the Fremen community concept from Dune. Each consumer repo
-# carries a single .sietch/rig.config; the framework code lives here in
-# $SIETCH_HOME and is shared across every rig you onboard.
+# Sietch is modeled on Steve Yegge's GasTown, named after the Fremen
+# community concept from Dune. Each consumer repo carries a single
+# .sietch/rig.config; the framework code lives here in $SIETCH_HOME
+# and is shared across every rig you onboard.
 #
 # Invoke from anywhere inside a repo that has .sietch/rig.config:
-#   sietch dev                        # scan issues, claim one, drive a PR
-#   sietch dev follow-up <PR>         # address reviewer-agent feedback
-#   sietch dev resolve <PR>           # auto-resolve merge conflicts (triage-gated)
-#   sietch review                     # dispatch a per-PR reviewer sub-agent
-#   sietch issue [message]            # interactive issue author
-#   sietch loop [start|stop|...]      # tmux multi-pane orchestrator
-#   sietch triage <PR>                # decide whether a conflict is auto-resolvable
-#   sietch init                       # bootstrap .sietch/rig.config in $PWD
-#   sietch version                    # short SHA of the framework
-#   sietch help                       # this message
+#   st dev                        # scan issues, claim one, drive a PR
+#   st dev follow-up <PR>         # address reviewer-agent feedback
+#   st dev resolve <PR>           # auto-resolve merge conflicts (triage-gated)
+#   st review                     # dispatch a per-PR reviewer sub-agent
+#   st issue [message]            # interactive issue author
+#   st loop [start|stop|...]      # tmux multi-pane orchestrator
+#   st triage <PR>                # decide whether a conflict is auto-resolvable
+#   st init                       # bootstrap .sietch/rig.config in $PWD
+#   st version                    # short SHA of the framework
+#   st help                       # this message
 
 set -u
 
@@ -24,7 +24,7 @@ SIETCH_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export SIETCH_HOME
 
 usage() {
-  sed -n '/^# sietch — /,/^# *sietch help/p' "$0" | sed -E 's/^# ?//'
+  sed -n '/^# st — /,/^# *st help/p' "$0" | sed -E 's/^# ?//'
 }
 
 # Walk up from $PWD until we find a .sietch/rig.config. Echoes the dir,
@@ -43,8 +43,8 @@ find_repo_root() {
 
 require_repo_root() {
   REPO_ROOT="$(find_repo_root)" || {
-    echo "[sietch] no .sietch/rig.config found in $PWD or any parent." >&2
-    echo "Run 'sietch init' from your repo root to bootstrap one." >&2
+    echo "[st] no .sietch/rig.config found in $PWD or any parent." >&2
+    echo "Run 'st init' from your repo root to bootstrap one." >&2
     exit 1
   }
   export REPO_ROOT
@@ -54,11 +54,11 @@ cmd_init() {
   local dest="$PWD/.sietch"
   local config="$dest/rig.config"
   if [ -f "$config" ]; then
-    echo "[sietch init] $config already exists. Edit it directly." >&2
+    echo "[st init] $config already exists. Edit it directly." >&2
     return 1
   fi
   mkdir -p "$dest"
-  cp "$SIETCH_HOME/formulas/rig.config.example" "$config"
+  cp "$SIETCH_HOME/templates/rig.config.example" "$config"
   cat > "$dest/README.md" <<EOF
 # Sietch — agent-dev-loop config for this rig
 
@@ -76,13 +76,13 @@ project-specific overrides. Defaults are documented inline.
 
 From anywhere inside this repo:
 
-    sietch dev          # scan issues, claim one, drive a PR
-    sietch review       # review an open dev-agent PR
-    sietch loop start   # run the full multi-agent fleet in tmux
-    sietch help         # full command list
+    st dev          # scan issues, claim one, drive a PR
+    st review       # review an open dev-agent PR
+    st loop start   # run the full multi-agent fleet in tmux
+    st help         # full command list
 EOF
-  echo "[sietch init] created $config"
-  echo "[sietch init] edit it to set REPO_OWNER, REPO_NAME, etc."
+  echo "[st init] created $config"
+  echo "[st init] edit it to set REPO_OWNER, REPO_NAME, etc."
 }
 
 cmd_version() {
@@ -108,8 +108,8 @@ case "$CMD" in
   loop)            require_repo_root; exec "$SIETCH_HOME/wrappers/run-loop.sh" "$@" ;;
   triage)          require_repo_root; exec "$SIETCH_HOME/wrappers/triage-conflict.sh" "$@" ;;
   *)
-    echo "[sietch] unknown command: $CMD" >&2
-    echo "Run 'sietch help' for the command list." >&2
+    echo "[st] unknown command: $CMD" >&2
+    echo "Run 'st help' for the command list." >&2
     exit 2
     ;;
 esac

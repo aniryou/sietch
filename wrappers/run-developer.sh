@@ -3,10 +3,10 @@
 # Guarantees worktree cleanup on success, and (optionally) on any exit when KEEP_ON_FAIL=0.
 #
 # Usage:
-#   sietch dev                       # Mode 1: scan issues, claim one, code+PR+CI
-#   sietch dev follow-up <PR#>       # Mode 2: address reviewer feedback on a specific PR
-#   sietch dev resolve <PR#>         # Mode 3: resolve merge conflicts (triage-gated)
-#   KEEP_ON_FAIL=0 sietch dev ...    # cleanup on every exit, even failures
+#   st dev                       # Mode 1: scan issues, claim one, code+PR+CI
+#   st dev follow-up <PR#>       # Mode 2: address reviewer feedback on a specific PR
+#   st dev resolve <PR#>         # Mode 3: resolve merge conflicts (triage-gated)
+#   KEEP_ON_FAIL=0 st dev ...    # cleanup on every exit, even failures
 #
 # Exit code is the agent's exit code.
 
@@ -16,9 +16,9 @@ set -o pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  sietch dev                            # Mode 1: scan issues, claim one
-  sietch dev follow-up <PR#>            # Mode 2: address review on a PR
-  sietch dev resolve <PR#>              # Mode 3: resolve merge conflicts (triage-gated)
+  st dev                            # Mode 1: scan issues, claim one
+  st dev follow-up <PR#>            # Mode 2: address review on a PR
+  st dev resolve <PR#>              # Mode 3: resolve merge conflicts (triage-gated)
 EOF
 }
 
@@ -98,7 +98,7 @@ if [ "$MODE" = "resolve-conflicts" ]; then
 
 The triage rules deemed these merge conflicts not safe for autonomous resolution. Please resolve manually.
 
-For the rules: \`sietch triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
+For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
 EOF
 )" >/dev/null 2>&1 || true
     PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
@@ -206,7 +206,7 @@ echo
 
 PAGER=cat GIT_PAGER=cat \
 claude -p "$KICKOFF" \
-  --append-system-prompt "$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/formulas/developer.md")" \
+  --append-system-prompt "$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/templates/developer.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$DEV_MAX_TURNS" \
   --verbose \

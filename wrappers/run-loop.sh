@@ -10,18 +10,18 @@
 #   └────────────┴──────────┴─────────────────────────────────┘
 #
 # Issue-author is NOT in the loop — it's interactive. Run it manually in a
-# separate terminal: sietch issue
+# separate terminal: st issue
 #
 # Usage:
-#   sietch loop                              # equivalent to 'start' with defaults
-#   sietch loop start                        # create the tmux session and attach
-#   sietch loop start --detach               # create but don't attach
-#   sietch loop start --dev-instances=2      # 2 dev workers instead of 3
-#   sietch loop start --poll-interval=120    # slower polling
-#   sietch loop start --max-runtime=900      # auto-stop after 15 min
-#   sietch loop stop                         # kill the tmux session
-#   sietch loop attach                       # re-attach to running session
-#   sietch loop status                       # is it running?
+#   st loop                              # equivalent to 'start' with defaults
+#   st loop start                        # create the tmux session and attach
+#   st loop start --detach               # create but don't attach
+#   st loop start --dev-instances=2      # 2 dev workers instead of 3
+#   st loop start --poll-interval=120    # slower polling
+#   st loop start --max-runtime=900      # auto-stop after 15 min
+#   st loop stop                         # kill the tmux session
+#   st loop attach                       # re-attach to running session
+#   st loop status                       # is it running?
 #
 # Press Ctrl+B D inside tmux to detach (loops keep running).
 # Use 'stop' from any terminal to terminate cleanly.
@@ -223,7 +223,7 @@ Inside tmux:
   Ctrl+B arrow   navigate panes
   Ctrl+B z       toggle full-screen for current pane
 
-Issue-author is interactive — run sietch issue in a separate terminal.
+Issue-author is interactive — run st issue in a separate terminal.
 EOF
 }
 
@@ -337,7 +337,7 @@ start_session() {
   if [ "$MAX_RUNTIME" -gt 0 ]; then
     echo "  Auto-stop scheduled in: ${MAX_RUNTIME}s"
   fi
-  echo "  File a new issue:  sietch issue   (separate terminal — interactive)"
+  echo "  File a new issue:  st issue   (separate terminal — interactive)"
 
   if [ "$DETACH" -eq 0 ]; then
     echo "  Attaching now (Ctrl+B D to detach, Ctrl+B z to zoom a pane)..."

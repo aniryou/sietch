@@ -3,7 +3,7 @@
 # Streams readable output to a log while keeping raw stream-json for debugging.
 #
 # Usage:
-#   sietch review
+#   st review
 #
 # Exit code is the agent's exit code.
 
@@ -65,7 +65,7 @@ echo
 
 PAGER=cat GIT_PAGER=cat \
 claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
-  --append-system-prompt "$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/formulas/reviewer-orchestrator.md")" \
+  --append-system-prompt "$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/templates/reviewer-orchestrator.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$REVIEWER_MAX_TURNS" \
   --verbose \

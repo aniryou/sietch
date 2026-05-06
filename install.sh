@@ -9,8 +9,8 @@ SIETCH_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${SIETCH_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$TARGET_DIR"
 
-LINK="$TARGET_DIR/sietch"
-SOURCE="$SIETCH_HOME/bin/sietch"
+LINK="$TARGET_DIR/st"
+SOURCE="$SIETCH_HOME/bin/st"
 
 if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$SOURCE" ]; then
   echo "[install] $LINK already linked; nothing to do."
@@ -19,7 +19,7 @@ else
   echo "[install] linked $LINK → $SOURCE"
 fi
 
-chmod +x "$SIETCH_HOME/bin/sietch" \
+chmod +x "$SIETCH_HOME/bin/st" \
          "$SIETCH_HOME/wrappers"/*.sh \
          "$SIETCH_HOME/lib"/*.sh
 
@@ -28,4 +28,4 @@ case ":$PATH:" in
   *) echo "[install] WARN: $TARGET_DIR is not on \$PATH. Add it to your shell rc." ;;
 esac
 
-echo "[install] done. Run 'sietch help' to verify."
+echo "[install] done. Run 'st help' to verify."
