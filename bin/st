@@ -20,8 +20,17 @@
 
 set -u
 
-SIETCH_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks so SIETCH_HOME points at the real ~/code/sietch/, not
+# wherever ~/.local/bin/st happens to live.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+SIETCH_HOME="$(cd -P "$(dirname "$src")/.." && pwd)"
 export SIETCH_HOME
+unset src dir
 
 usage() {
   sed -n '/^# st — /,/^# *st help/p' "$0" | sed -E 's/^# ?//'
