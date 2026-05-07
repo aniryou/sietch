@@ -1,0 +1,8 @@
+[
+  {"number": 11, "headRefName": "dev-agent/gh-11-foo", "isDraft": false, "mergeable": "MERGEABLE"},
+  {"number": 12, "headRefName": "dev-agent/gh-12-draft", "isDraft": true, "mergeable": "MERGEABLE"},
+  {"number": 13, "headRefName": "dev-agent/gh-13-conflict", "isDraft": false, "mergeable": "CONFLICTING"},
+  {"number": 14, "headRefName": "dev-agent/gh-14-draft-conflict", "isDraft": true, "mergeable": "CONFLICTING"},
+  {"number": 15, "headRefName": "feature/unrelated", "isDraft": false, "mergeable": "MERGEABLE"},
+  {"number": 16, "headRefName": "feature/conflicty", "isDraft": false, "mergeable": "CONFLICTING"}
+]
