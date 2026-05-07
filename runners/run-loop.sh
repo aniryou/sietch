@@ -36,6 +36,8 @@ REPO="$REPO_ROOT"
 . "$REPO/.loop/loop.config"
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/dispatcher.sh"
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/jitter.sh"
 
 SESSION=agent-loop
 
@@ -92,7 +94,13 @@ empty_cycle_sleep() {
 
 loop_dev_mode1() {
   local id="$1"
-  local empty_streak=0 ec sleep_for
+  local empty_streak=0 ec sleep_for jitter
+  # De-converge parallel workers that all wake from `tmux send-keys` at the
+  # same instant — without this, the first cycle has N-1 wasted scans as
+  # everyone races for the same lock. See loop-k8u / GH#9.
+  jitter=$(dev_startup_jitter "$POLL_INTERVAL")
+  echo "[$(ts)] [dev-${id}] startup jitter: sleeping ${jitter}s before first cycle"
+  sleep "$jitter"
   while true; do
     echo "[$(ts)] [dev-${id}] starting Mode 1 cycle"
     ec=0
