@@ -67,7 +67,10 @@ cleanup_stale_dispatch_locks() {
 # don't inflate the count. Independent budget from DEV_INSTANCES (which
 # governs foreground tmux-pane workers); this caps background dispatches.
 count_active_dispatch_locks() {
-  [ -d "$DISPATCH_LOCK_DIR" ] || { echo 0; return 0; }
+  [ -d "$DISPATCH_LOCK_DIR" ] || {
+    echo 0
+    return 0
+  }
   local count=0 lock
   for lock in "$DISPATCH_LOCK_DIR"/*.lock; do
     [ -d "$lock" ] && count=$((count + 1))
@@ -106,16 +109,22 @@ loop_dev_mode1() {
     ec=0
     "$LOOP_HOME/runners/run-developer.sh" || ec=$?
     case "$ec" in
-      0)  echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
-          empty_streak=0
-          sleep_for="$POLL_INTERVAL" ;;
-      2)  empty_streak=$((empty_streak + 1))
-          sleep_for=$(empty_cycle_sleep "$empty_streak")
-          echo "[$(ts)] [dev-${id}] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)" ;;
-      *)  echo "[$(ts)] [dev-${id}] cycle done (exit ${ec})"
-          # Don't backoff on agent failures — keep base interval so we retry promptly
-          empty_streak=0
-          sleep_for="$POLL_INTERVAL" ;;
+      0)
+        echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
+        empty_streak=0
+        sleep_for="$POLL_INTERVAL"
+        ;;
+      2)
+        empty_streak=$((empty_streak + 1))
+        sleep_for=$(empty_cycle_sleep "$empty_streak")
+        echo "[$(ts)] [dev-${id}] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)"
+        ;;
+      *)
+        echo "[$(ts)] [dev-${id}] cycle done (exit ${ec})"
+        # Don't backoff on agent failures — keep base interval so we retry promptly
+        empty_streak=0
+        sleep_for="$POLL_INTERVAL"
+        ;;
     esac
     echo "[$(ts)] [dev-${id}] sleeping ${sleep_for}s..."
     sleep "$sleep_for"
@@ -129,15 +138,21 @@ loop_reviewer() {
     ec=0
     "$LOOP_HOME/runners/run-reviewer.sh" || ec=$?
     case "$ec" in
-      0)  echo "[$(ts)] [reviewer] cycle done (exit 0)"
-          empty_streak=0
-          sleep_for="$POLL_INTERVAL" ;;
-      2)  empty_streak=$((empty_streak + 1))
-          sleep_for=$(empty_cycle_sleep "$empty_streak")
-          echo "[$(ts)] [reviewer] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)" ;;
-      *)  echo "[$(ts)] [reviewer] cycle done (exit ${ec})"
-          empty_streak=0
-          sleep_for="$POLL_INTERVAL" ;;
+      0)
+        echo "[$(ts)] [reviewer] cycle done (exit 0)"
+        empty_streak=0
+        sleep_for="$POLL_INTERVAL"
+        ;;
+      2)
+        empty_streak=$((empty_streak + 1))
+        sleep_for=$(empty_cycle_sleep "$empty_streak")
+        echo "[$(ts)] [reviewer] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)"
+        ;;
+      *)
+        echo "[$(ts)] [reviewer] cycle done (exit ${ec})"
+        empty_streak=0
+        sleep_for="$POLL_INTERVAL"
+        ;;
     esac
     echo "[$(ts)] [reviewer] sleeping ${sleep_for}s..."
     sleep "$sleep_for"
@@ -187,11 +202,11 @@ loop_dispatcher_followup() {
 
       if [ "$latest_devcomment" = "none" ] || [[ "$latest_review" > "$latest_devcomment" ]]; then
         if mkdir "$lock" 2>/dev/null; then
-          echo "$$" > "$lock/pid"
+          echo "$$" >"$lock/pid"
           echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (review=${latest_review} dev=${latest_devcomment})"
-          ( "$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" > /dev/null 2>&1 ) &
+          ("$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
           local child=$!
-          echo "$child" > "$lock/pid"
+          echo "$child" >"$lock/pid"
         fi
       fi
     done < <(
@@ -232,11 +247,11 @@ loop_dispatcher_conflicts() {
       fi
 
       if mkdir "$lock" 2>/dev/null; then
-        echo "$$" > "$lock/pid"
+        echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:conflicts] dispatching resolve-conflicts for PR #${pr}"
-        ( "$LOOP_HOME/runners/run-developer.sh" resolve-conflicts "$pr" > /dev/null 2>&1 ) &
+        ("$LOOP_HOME/runners/run-developer.sh" resolve-conflicts "$pr" >/dev/null 2>&1) &
         local child=$!
-        echo "$child" > "$lock/pid"
+        echo "$child" >"$lock/pid"
         dispatched=$((dispatched + 1))
       fi
     done < <(
@@ -273,13 +288,16 @@ if [[ "${1:-}" == --internal-role=* ]]; then
     esac
     shift
   done
-  cd "$REPO"
+  cd "$REPO" || exit 1
   case "$ROLE" in
-    dev-[1-9])           loop_dev_mode1 "${ROLE#dev-}" ;;
-    reviewer)            loop_reviewer ;;
-    dispatch-followup)   loop_dispatcher_followup ;;
-    dispatch-conflicts)  loop_dispatcher_conflicts ;;
-    *) echo "Unknown internal role: $ROLE" >&2; exit 2 ;;
+    dev-[1-9]) loop_dev_mode1 "${ROLE#dev-}" ;;
+    reviewer) loop_reviewer ;;
+    dispatch-followup) loop_dispatcher_followup ;;
+    dispatch-conflicts) loop_dispatcher_conflicts ;;
+    *)
+      echo "Unknown internal role: $ROLE" >&2
+      exit 2
+      ;;
   esac
   exit
 fi
@@ -319,28 +337,68 @@ EOF
 ACTION=start
 if [ $# -gt 0 ]; then
   case "$1" in
-    start|stop|attach|status) ACTION=$1; shift ;;
-    --help|-h) usage; exit 0 ;;
-    --*) ;;  # flag without subcommand — default ACTION=start
-    *) echo "Unknown command: $1" >&2; usage; exit 2 ;;
+    start | stop | attach | status)
+      ACTION=$1
+      shift
+      ;;
+    --help | -h)
+      usage
+      exit 0
+      ;;
+    --*) ;; # flag without subcommand — default ACTION=start
+    *)
+      echo "Unknown command: $1" >&2
+      usage
+      exit 2
+      ;;
   esac
 fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dev-instances=*) DEV_INSTANCES="${1#*=}"; shift ;;
-    --poll-interval=*) POLL_INTERVAL="${1#*=}"; shift ;;
-    --max-runtime=*)   MAX_RUNTIME="${1#*=}"; shift ;;
-    --detach)          DETACH=1; shift ;;
-    --help|-h)         usage; exit 0 ;;
-    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+    --dev-instances=*)
+      DEV_INSTANCES="${1#*=}"
+      shift
+      ;;
+    --poll-interval=*)
+      POLL_INTERVAL="${1#*=}"
+      shift
+      ;;
+    --max-runtime=*)
+      MAX_RUNTIME="${1#*=}"
+      shift
+      ;;
+    --detach)
+      DETACH=1
+      shift
+      ;;
+    --help | -h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      exit 2
+      ;;
   esac
 done
 
-[[ "$DEV_INSTANCES" =~ ^[1-9]$ ]] || { echo "--dev-instances must be 1-9" >&2; exit 2; }
-[[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || { echo "--poll-interval must be numeric" >&2; exit 2; }
-[ "$POLL_INTERVAL" -ge 10 ] || { echo "--poll-interval must be >= 10 (gh rate limits)" >&2; exit 2; }
-[[ "$MAX_RUNTIME" =~ ^[0-9]+$ ]] || { echo "--max-runtime must be numeric" >&2; exit 2; }
+[[ "$DEV_INSTANCES" =~ ^[1-9]$ ]] || {
+  echo "--dev-instances must be 1-9" >&2
+  exit 2
+}
+[[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || {
+  echo "--poll-interval must be numeric" >&2
+  exit 2
+}
+[ "$POLL_INTERVAL" -ge 10 ] || {
+  echo "--poll-interval must be >= 10 (gh rate limits)" >&2
+  exit 2
+}
+[[ "$MAX_RUNTIME" =~ ^[0-9]+$ ]] || {
+  echo "--max-runtime must be numeric" >&2
+  exit 2
+}
 
 SCRIPT="$LOOP_HOME/runners/run-loop.sh"
 
@@ -360,7 +418,7 @@ start_session() {
     exit 1
   fi
 
-  cd "$REPO"
+  cd "$REPO" || exit 1
   mkdir -p "$DISPATCH_LOCK_DIR"
 
   COMMON_ARGS="--poll-interval=$POLL_INTERVAL"
@@ -386,7 +444,7 @@ start_session() {
   # split_pct[i] = 100 * (N - i + 1) / (N - i + 2)  for i in 2..N.
   DEV_PANES=("$BOT1")
   prev="$BOT1"
-  for ((i=2; i<=DEV_INSTANCES; i++)); do
+  for ((i = 2; i <= DEV_INSTANCES; i++)); do
     pct=$((100 * (DEV_INSTANCES - i + 1) / (DEV_INSTANCES - i + 2)))
     new=$(tmux split-window -P -F '#{pane_id}' -t "$prev" -h -p "$pct")
     DEV_PANES+=("$new")
@@ -397,8 +455,8 @@ start_session() {
   tmux select-pane -t "$TOP1" -T "reviewer"
   tmux select-pane -t "$TOP2" -T "dispatch:followup"
   tmux select-pane -t "$TOP3" -T "dispatch:conflicts"
-  for ((i=1; i<=DEV_INSTANCES; i++)); do
-    tmux select-pane -t "${DEV_PANES[$((i-1))]}" -T "dev-$i"
+  for ((i = 1; i <= DEV_INSTANCES; i++)); do
+    tmux select-pane -t "${DEV_PANES[$((i - 1))]}" -T "dev-$i"
   done
 
   # Send the loop command to each pane. Don't `exec` — keeps the shell
@@ -406,8 +464,8 @@ start_session() {
   tmux send-keys -t "$TOP1" "cd '$REPO' && '$SCRIPT' --internal-role=reviewer $COMMON_ARGS" Enter
   tmux send-keys -t "$TOP2" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-followup $COMMON_ARGS" Enter
   tmux send-keys -t "$TOP3" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-conflicts $COMMON_ARGS" Enter
-  for ((i=1; i<=DEV_INSTANCES; i++)); do
-    tmux send-keys -t "${DEV_PANES[$((i-1))]}" "cd '$REPO' && '$SCRIPT' --internal-role=dev-$i $COMMON_ARGS" Enter
+  for ((i = 1; i <= DEV_INSTANCES; i++)); do
+    tmux send-keys -t "${DEV_PANES[$((i - 1))]}" "cd '$REPO' && '$SCRIPT' --internal-role=dev-$i $COMMON_ARGS" Enter
   done
 
   # Focus the first dev pane (most likely place for action).
@@ -416,7 +474,7 @@ start_session() {
   # Schedule auto-stop if requested. Detached so it survives even if the
   # user never attaches or detaches early.
   if [ "$MAX_RUNTIME" -gt 0 ]; then
-    nohup bash -c "sleep $MAX_RUNTIME && '$SCRIPT' stop" > /dev/null 2>&1 < /dev/null &
+    nohup bash -c "sleep $MAX_RUNTIME && '$SCRIPT' stop" >/dev/null 2>&1 </dev/null &
     disown 2>/dev/null || true
   fi
 
@@ -430,7 +488,7 @@ start_session() {
 
   if [ "$DETACH" -eq 0 ]; then
     echo "  Attaching now (Ctrl+B D to detach, Ctrl+B z to zoom a pane)..."
-    sleep 1   # let panes settle and start their loops
+    sleep 1 # let panes settle and start their loops
     tmux attach -t "$SESSION"
   fi
 }
@@ -469,8 +527,8 @@ show_status() {
 }
 
 case "$ACTION" in
-  start)  start_session ;;
-  stop)   stop_session ;;
+  start) start_session ;;
+  stop) stop_session ;;
   attach) attach_session ;;
   status) show_status ;;
 esac

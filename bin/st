@@ -68,7 +68,7 @@ cmd_init() {
   fi
   mkdir -p "$dest"
   cp "$LOOP_HOME/templates/loop.config.example" "$config"
-  cat > "$dest/README.md" <<EOF
+  cat >"$dest/README.md" <<EOF
 # Loop — multi-agent dev-loop config for this repo
 
 This directory carries the per-repo configuration for the [Loop](https://github.com/aniryou/loop)
@@ -108,15 +108,33 @@ CMD="${1:-help}"
 shift || true
 
 case "$CMD" in
-  help|-h|--help)  usage ;;
-  version)         cmd_version ;;
-  init)            cmd_init "$@" ;;
-  dev|developer)   require_repo_root; exec "$LOOP_HOME/runners/run-developer.sh" "$@" ;;
-  review|reviewer) require_repo_root; exec "$LOOP_HOME/runners/run-reviewer.sh" "$@" ;;
-  issue|issues)    require_repo_root; exec "$LOOP_HOME/runners/run-issue-author.sh" "$@" ;;
-  loop)            require_repo_root; exec "$LOOP_HOME/runners/run-loop.sh" "$@" ;;
-  triage)          require_repo_root; exec "$LOOP_HOME/runners/run-conflict-triage.sh" "$@" ;;
-  onboard)         require_repo_root; exec bash "$LOOP_HOME/runners/lib/onboard.sh" "${@:-run}" ;;
+  help | -h | --help) usage ;;
+  version) cmd_version ;;
+  init) cmd_init "$@" ;;
+  dev | developer)
+    require_repo_root
+    exec "$LOOP_HOME/runners/run-developer.sh" "$@"
+    ;;
+  review | reviewer)
+    require_repo_root
+    exec "$LOOP_HOME/runners/run-reviewer.sh" "$@"
+    ;;
+  issue | issues)
+    require_repo_root
+    exec "$LOOP_HOME/runners/run-issue-author.sh" "$@"
+    ;;
+  loop)
+    require_repo_root
+    exec "$LOOP_HOME/runners/run-loop.sh" "$@"
+    ;;
+  triage)
+    require_repo_root
+    exec "$LOOP_HOME/runners/run-conflict-triage.sh" "$@"
+    ;;
+  onboard)
+    require_repo_root
+    exec bash "$LOOP_HOME/runners/lib/onboard.sh" "${@:-run}"
+    ;;
   *)
     echo "[st] unknown command: $CMD" >&2
     echo "Run 'st help' for the command list." >&2

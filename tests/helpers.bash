@@ -2,7 +2,7 @@
 # Shared bats helpers. Sourced by every *.bats file via load 'helpers'.
 
 # Absolute path to the repo root (one level up from tests/).
-LOOP_ROOT="$( cd "$BATS_TEST_DIRNAME/.." && pwd )"
+LOOP_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 export LOOP_ROOT
 
 # Make a throwaway consumer-repo dir under $BATS_TEST_TMPDIR and echo its path.
@@ -15,6 +15,6 @@ make_repo() {
     /^REPO_OWNER=/   { print "REPO_OWNER=\"test-owner\""; next }
     /^REPO_NAME=/    { print "REPO_NAME=\"test-repo\""; next }
     { print }
-  ' "$LOOP_ROOT/templates/loop.config.example" > "$repo/.loop/loop.config"
+  ' "$LOOP_ROOT/templates/loop.config.example" >"$repo/.loop/loop.config"
   echo "$repo"
 }

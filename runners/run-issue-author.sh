@@ -17,15 +17,15 @@ set -o pipefail
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
-cd "$REPO"
+cd "$REPO" || exit 1
 
 INITIAL_MSG="${1:-}"
 PROMPT="$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/issue-author.md")"
 
 if [ -n "$INITIAL_MSG" ]; then
   PAGER=cat GIT_PAGER=cat \
-  claude --append-system-prompt "$PROMPT" "$INITIAL_MSG"
+    claude --append-system-prompt "$PROMPT" "$INITIAL_MSG"
 else
   PAGER=cat GIT_PAGER=cat \
-  claude --append-system-prompt "$PROMPT"
+    claude --append-system-prompt "$PROMPT"
 fi

@@ -131,9 +131,15 @@ eligibility_review_pending() {
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
-    dev)        eligibility_dev_count; exit $? ;;
-    review)     eligibility_review_pending; exit $? ;;
-    -h|--help|help|"")
+    dev)
+      eligibility_dev_count
+      exit $?
+      ;;
+    review)
+      eligibility_review_pending
+      exit $?
+      ;;
+    -h | --help | help | "")
       cat <<'EOF'
 Usage: eligibility.sh <mode>
 
@@ -147,7 +153,11 @@ Exit:   0 = work to do, 1 = nothing eligible, 2 = predicate failed.
 Required env:
   REPO_ROOT, LOOP_HOME (set automatically when invoked via the loop CLI).
 EOF
-      exit 0 ;;
-    *) echo "[eligibility] unknown mode: $1" >&2; exit 2 ;;
+      exit 0
+      ;;
+    *)
+      echo "[eligibility] unknown mode: $1" >&2
+      exit 2
+      ;;
   esac
 fi

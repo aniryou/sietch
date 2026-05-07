@@ -34,7 +34,8 @@ else
 fi
 
 # shellcheck disable=SC2034   # consumed by sourcing wrapper
-JQ_FILTER="$(cat <<JQEOF
+JQ_FILTER="$(
+  cat <<JQEOF
   if .type == "system" and .subtype == "init" then
     "${_C_INIT}[init] model=\(.model) tools=\(.tools | length) cwd=\(.cwd)${_C_RST}"
   elif .type == "assistant" then

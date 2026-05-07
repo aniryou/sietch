@@ -24,9 +24,11 @@ EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" review)
 EL_RC=$?
 case "$EL_RC" in
   0) echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding" ;;
-  1) echo "[wrapper] eligibility: no PRs need review; skipping LLM invocation"
-     echo "[wrapper] result=no-work"
-     exit 2 ;;
+  1)
+    echo "[wrapper] eligibility: no PRs need review; skipping LLM invocation"
+    echo "[wrapper] result=no-work"
+    exit 2
+    ;;
   *) echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); proceeding to be safe" >&2 ;;
 esac
 unset EL_COUNT EL_RC
@@ -37,9 +39,9 @@ RAW="/tmp/reviewer-agent-${TS}.jsonl"
 
 cleanup() {
   local exit_code=$?
-  echo "[wrapper] reviewer exited with code $exit_code"  >&2
-  echo "[wrapper] live log: $LOG"                         >&2
-  echo "[wrapper] raw json: $RAW"                         >&2
+  echo "[wrapper] reviewer exited with code $exit_code" >&2
+  echo "[wrapper] live log: $LOG" >&2
+  echo "[wrapper] raw json: $RAW" >&2
   exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
@@ -50,7 +52,7 @@ trap cleanup EXIT INT TERM
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
 
-cd "$REPO"
+cd "$REPO" || exit 1
 
 echo "[wrapper] live log: $LOG"
 echo "[wrapper] raw json: $RAW"
@@ -58,7 +60,7 @@ echo "[wrapper] tail with: tail -f $LOG"
 echo
 
 PAGER=cat GIT_PAGER=cat \
-claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
+  claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
   --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$REVIEWER_MAX_TURNS" \

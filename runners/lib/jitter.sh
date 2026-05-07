@@ -30,7 +30,7 @@ dev_startup_jitter() {
     echo "[jitter] poll_interval must be a positive integer (got: '${1:-}')" >&2
     return 2
   fi
-  echo $(( (RANDOM % poll) + 1 ))
+  echo $(((RANDOM % poll) + 1))
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -44,7 +44,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     echo "[jitter] count must be a positive integer (got: '$count')" >&2
     exit 2
   fi
-  for ((__i=0; __i<count; __i++)); do
+  for ((__i = 0; __i < count; __i++)); do
     dev_startup_jitter "$poll" || exit $?
   done
 fi

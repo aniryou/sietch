@@ -30,13 +30,17 @@ TESTS_REGEX="$TRIAGE_TESTS_REGEX"
 CI_SECRETS_REGEX="$TRIAGE_CI_SECRETS_REGEX"
 LINE_LIMIT="$TRIAGE_LINE_LIMIT"
 
-usage() { echo "Usage: $0 <PR#>" >&2; exit 2; }
+usage() {
+  echo "Usage: $0 <PR#>" >&2
+  exit 2
+}
 
 PR="${1:-}"
 [[ "$PR" =~ ^[0-9]+$ ]] || usage
 
 TMP="${WORKTREE_BASE}/triage-pr${PR}"
 
+# shellcheck disable=SC2329 # invoked via trap
 cleanup() {
   cd "$REPO" 2>/dev/null || cd /
   git -C "$REPO" worktree remove --force "$TMP" 2>/dev/null || true
@@ -46,14 +50,17 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 emit() {
-  local result="$1"; shift
-  local reason="$1"; shift
+  local result="$1"
+  shift
+  local reason="$1"
+  shift
   echo "[triage] result=${result} reason=${reason} issue=#${ISSUE_NUM:-unknown} conflict_files=${CONFLICT_FILES_CSV:-} conflict_lines=${CONFLICT_LINES:-0}"
 }
 
 # Step 1: read PR metadata
 PR_JSON=$(gh pr view "$PR" --repo "$REPO_SLUG" --json headRefName,body,baseRefName 2>/dev/null) || {
-  echo "[triage] error: cannot read PR #${PR}" >&2; exit 2;
+  echo "[triage] error: cannot read PR #${PR}" >&2
+  exit 2
 }
 HEAD_REF=$(echo "$PR_JSON" | jq -r .headRefName)
 BASE_REF=$(echo "$PR_JSON" | jq -r .baseRefName)
@@ -61,10 +68,14 @@ PR_BODY=$(echo "$PR_JSON" | jq -r .body)
 ISSUE_NUM=$(echo "$PR_BODY" | grep -oE 'Closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || echo unknown)
 
 # Step 2: fetch and prepare temp worktree
-git -C "$REPO" fetch origin --quiet || { echo "[triage] error: git fetch failed" >&2; exit 2; }
+git -C "$REPO" fetch origin --quiet || {
+  echo "[triage] error: git fetch failed" >&2
+  exit 2
+}
 mkdir -p "$WORKTREE_BASE"
 git -C "$REPO" worktree add --detach "$TMP" "origin/${HEAD_REF}" >/dev/null 2>&1 || {
-  echo "[triage] error: cannot create worktree at ${TMP}" >&2; exit 2;
+  echo "[triage] error: cannot create worktree at ${TMP}" >&2
+  exit 2
 }
 
 # Step 3: probe rebase
@@ -90,7 +101,10 @@ if [ ${#CONFLICT_FILES[@]} -eq 0 ]; then
   exit 1
 fi
 
-CONFLICT_FILES_CSV=$(IFS=,; echo "${CONFLICT_FILES[*]}")
+CONFLICT_FILES_CSV=$(
+  IFS=,
+  echo "${CONFLICT_FILES[*]}"
+)
 
 # Rule 1: test files — never
 for f in "${CONFLICT_FILES[@]}"; do
@@ -128,14 +142,14 @@ for f in "${CONFLICT_FILES[@]}"; do
     case "$line" in
       "<<<<<<< "*) in_conflict=1 ;;
       ">>>>>>> "*) in_conflict=0 ;;
-      "=======")   ;; # separator — don't count, don't toggle (intentional)
+      "=======") ;; # separator — don't count, don't toggle (intentional)
       *)
         if [ "$in_conflict" = "1" ]; then
           CONFLICT_LINES=$((CONFLICT_LINES + 1))
         fi
         ;;
     esac
-  done < "${TMP}/${f}"
+  done <"${TMP}/${f}"
 done
 
 if [ "$CONFLICT_LINES" -gt "$LINE_LIMIT" ]; then

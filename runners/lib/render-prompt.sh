@@ -20,15 +20,18 @@ set -o pipefail
 : "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
 
 CONFIG="$REPO_ROOT/.loop/loop.config"
-[ -f "$CONFIG" ] || { echo "[render-prompt] missing config: $CONFIG" >&2; exit 1; }
+[ -f "$CONFIG" ] || {
+  echo "[render-prompt] missing config: $CONFIG" >&2
+  exit 1
+}
 # shellcheck disable=SC1090
 . "$CONFIG"
 
 TEMPLATE="${1:-}"
-[ -n "$TEMPLATE" ] && [ -f "$TEMPLATE" ] || {
+if [ -z "$TEMPLATE" ] || [ ! -f "$TEMPLATE" ]; then
   echo "[render-prompt] template not found: ${TEMPLATE:-<missing>}" >&2
   exit 2
-}
+fi
 
 command -v envsubst >/dev/null 2>&1 || {
   echo "[render-prompt] envsubst (gettext) is required but not on PATH." >&2
@@ -55,5 +58,6 @@ REPO_KEYS=(
 )
 
 export "${REPO_KEYS[@]}"
+# shellcheck disable=SC2016 # ${%s} is a printf format spec, not a shell expansion
 printf -v ALLOWLIST ' ${%s}' "${REPO_KEYS[@]}"
-envsubst "$ALLOWLIST" < "$TEMPLATE"
+envsubst "$ALLOWLIST" <"$TEMPLATE"
