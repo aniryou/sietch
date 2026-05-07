@@ -42,6 +42,39 @@ load 'helpers'
 }
 
 # ---------------------------------------------------------------------------
+# eligibility_dev_count: REST-list path replaces --search (loop-d8j)
+# Two `gh issue list --label X` calls (one per severity) are unioned with
+# `sort -u`. Assigned issues are dropped via `select(.assignees == [])`.
+# These tests exercise the same jq + sort -u pipeline against fixture JSON.
+# ---------------------------------------------------------------------------
+
+@test "dev-count assignee filter drops issues with assignees" {
+  local nums
+  nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+           < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
+  # Fixture: 101, 102 unassigned; 105 has an assignee. Expect 101, 102.
+  [ "$(printf '%s' "$nums" | sort -u | tr '\n' ' ')" = "101 102 " ]
+}
+
+@test "dev-count union of high+medium with overlap collapses via sort -u" {
+  local high_nums med_nums all
+  high_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+                < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
+  med_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+               < "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | sort -u | grep . || true)
+  # high unassigned: 101, 102. medium unassigned: 102, 103. Union: 101,102,103.
+  [ "$(printf '%s' "$all" | tr '\n' ' ')" = "101 102 103" ]
+}
+
+@test "dev-count empty fixtures yield zero candidates" {
+  local nums all
+  nums=$(jq -r '.[] | select(.assignees == []) | .number' <<<'[]')
+  all=$(printf '%s\n%s\n' "$nums" "$nums" | sort -u | grep . || true)
+  [ -z "$all" ]
+}
+
+# ---------------------------------------------------------------------------
 # eligibility_review_pending: jq filter for "no agent review at headRefOid"
 # ---------------------------------------------------------------------------
 REVIEW_FILTER='[.[]

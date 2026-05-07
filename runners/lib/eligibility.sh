@@ -45,17 +45,27 @@ set -o pipefail
 # cycle, but the next cycle picks them up once the lock is released.
 # ---------------------------------------------------------------------------
 eligibility_dev_count() {
-  local nums n filtered
-  if ! nums=$(
-    PAGER=cat GIT_PAGER=cat gh issue list \
-      --repo "$REPO_SLUG" --state open \
-      --search "label:${SEVERITY_LABEL_HIGH},${SEVERITY_LABEL_MEDIUM} no:assignee" \
-      --json number \
-      --limit 50 2>/dev/null | jq -r '.[].number' 2>/dev/null
-  ); then
-    echo "?"
-    return 2
-  fi
+  # Use the REST list endpoint (--label) instead of --search: the search index
+  # silently drops freshly-created issues (minutes of lag) and issues hidden by
+  # GitHub's automated content filter (e.g. duplicate titles, code-dense bodies
+  # on new repos). REST list reflects current state immediately.
+  local label raw nums_all nums n filtered
+  nums_all=""
+  for label in "$SEVERITY_LABEL_HIGH" "$SEVERITY_LABEL_MEDIUM"; do
+    if ! raw=$(
+      PAGER=cat GIT_PAGER=cat gh issue list \
+        --repo "$REPO_SLUG" --state open \
+        --label "$label" \
+        --json number,assignees \
+        --limit 50 2>/dev/null \
+        | jq -r '.[] | select(.assignees == []) | .number' 2>/dev/null
+    ); then
+      echo "?"
+      return 2
+    fi
+    nums_all+="${raw}"$'\n'
+  done
+  nums=$(printf '%s' "$nums_all" | sort -u | grep . || true)
   filtered=0
   for n in $nums; do
     [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue

@@ -1,0 +1,5 @@
+[
+  {"number":101,"assignees":[]},
+  {"number":102,"assignees":[]},
+  {"number":105,"assignees":[{"login":"someone"}]}
+]
