@@ -72,59 +72,6 @@ differently (see `runners/run-developer.sh`):
 | **Mode 2 — follow-up** | `dispatch:followup` pane | On a PR with new reviewer-agent feedback, addresses every P0/P1 finding (fix or explicit decline), pushes a follow-up commit. Caps at 3 cycles. |
 | **Mode 3 — resolve-conflicts** | `dispatch:conflicts` pane | On a PR flagged by the conflict-triage gate as tractable, rebases onto `main`, resolves mechanical conflicts, force-pushes with a lease. Auto-reverts the remote on test or CI failure. |
 
-### Coordination & isolation
-
-Multiple `dev-N` workers and the dispatchers run as the same `gh`
-identity, so concurrency control is filesystem-based, not GitHub-based.
-
-- **Claim locks** (`$LOCK_DIR`, default `$WORKTREE_BASE/locks`) — one
-  dir per claimed issue, e.g. `gh-42.lock/`. The wrapper `mkdir`s it
-  atomically before spawning the LLM (`runners/run-developer.sh`),
-  closing the TOCTOU window where two agents would both spawn `claude`
-  on the same issue and one would burn ~$0.20-$0.50 losing the race.
-- **Dispatch locks** (`$DISPATCH_LOCK_DIR`, default
-  `$WORKTREE_BASE/dispatched`) — one dir per `(PR, mode)` pair, e.g.
-  `pr-42-followup.lock/`. The dispatchers in `runners/run-loop.sh`
-  acquire these so a follow-up or conflict resolution for a given PR
-  can't fan out twice. A shared `DISPATCH_MAX_CONCURRENT` cap bounds
-  total in-flight dispatched work.
-- **Eligibility preflight** — every wrapper sources
-  `runners/lib/eligibility.sh` and runs a shell-only predicate before
-  invoking `claude`. Empty cycles exit `2`, which `run-loop.sh`
-  translates into exponential backoff with jitter — this is the
-  load-bearing token-cost decision that keeps an idle fleet
-  effectively free. The agents call the same predicate on entry so the
-  wrapper preflight and the in-prompt re-check stay in sync.
-- **Worktrees** (`$WORKTREE_BASE`, default `/tmp/dev-agent/`) — every
-  dev cycle works in `$WORKTREE_BASE/gh-<num>/` on a deterministic
-  branch, never inside the user's primary working tree. The wrapper
-  cleans up successful runs (`KEEP_ON_FAIL=0` to clean up failures
-  too); deterministic paths mean retries reuse the same branch so the
-  existing PR picks up new commits automatically.
-
-Stale claim locks (older than `STALE_LOCK_HOURS`, default 6h) are
-reaped on the next eligibility scan — only `SIGKILL` of a wrapper can
-leave a lock behind, since the trap on `EXIT/INT/TERM` releases the
-locks tagged with this run's `DEV_AGENT_RUN_ID`.
-
-### Conflict triage gate
-
-Before `dispatch:conflicts` fans out a Mode 3 dev-agent on a
-conflicting PR, it runs `runners/run-conflict-triage.sh` in a
-throwaway worktree. Triage probes the rebase against `main` and
-returns **tractable** (exit 0) or **untractable** (exit 1). A conflict
-is untractable — and the PR sits waiting for a human — if **any** of:
-
-- the conflict touches a test file (`tests/`, `test_*.py`, `*_test.py`),
-- it touches CI / secrets / `.github/` / `.env`,
-- it touches one of the core code files (`eval.py`, `Dockerfile`,
-  `.pre-commit-config.yaml`),
-- combined `ours + theirs` conflict-line count exceeds
-  `TRIAGE_LINE_LIMIT` (default 10).
-
-This gate is what stops Mode 3 from "winning" a merge by silently
-combining changes whose intent it can't reason about.
-
 ## Install
 
 ```bash
