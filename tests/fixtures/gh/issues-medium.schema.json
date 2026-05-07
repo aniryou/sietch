@@ -1,0 +1,11 @@
+{
+  ".": "array",
+  ".[]": "object",
+  ".[].assignees": "array",
+  ".[].assignees[]": "object",
+  ".[].assignees[].databaseId": "number",
+  ".[].assignees[].id": "string",
+  ".[].assignees[].login": "string",
+  ".[].assignees[].name": "string",
+  ".[].number": "number"
+}
