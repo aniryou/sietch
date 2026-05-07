@@ -1,17 +1,17 @@
 [
   {
     "number": 200,
-    "headRefOid": "deadbeef",
-    "reviews": [{"body": "[reviewer-agent: clean] LGTM.", "commit_id": "deadbeef"}]
+    "commits": [{"committedDate": "2026-05-07T10:00:00Z"}],
+    "reviews": [{"body": "[reviewer-agent: clean] LGTM.", "submittedAt": "2026-05-07T11:00:00Z"}]
   },
   {
     "number": 201,
-    "headRefOid": "newcommit",
-    "reviews": [{"body": "[reviewer-agent: changes] please fix.", "commit_id": "oldcommit"}]
+    "commits": [{"committedDate": "2026-05-07T12:00:00Z"}],
+    "reviews": [{"body": "[reviewer-agent: changes] please fix.", "submittedAt": "2026-05-07T10:00:00Z"}]
   },
   {
     "number": 202,
-    "headRefOid": "abcd1234",
+    "commits": [{"committedDate": "2026-05-07T09:00:00Z"}],
     "reviews": []
   }
 ]

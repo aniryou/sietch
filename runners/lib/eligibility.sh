@@ -76,20 +76,27 @@ eligibility_dev_count() {
 }
 
 # ---------------------------------------------------------------------------
-# Reviewer orchestrator: open ${BRANCH_PREFIX}/* PRs whose current headRefOid
-# does not yet have a [reviewer-agent: ...] review attached.
+# Reviewer orchestrator: open ${BRANCH_PREFIX}/* PRs whose head commit is not
+# yet covered by a [reviewer-agent: ...] review.
 #
-# Mirrors the orchestrator's own filter (no agent review at current head),
-# so false-positive rate is minimal. The orchestrator still re-checks before
-# dispatching its sub-agent.
+# A review is considered to "cover" the head when its `submittedAt` is later
+# than the head commit's `committedDate`. (We can't use `review.commit_id` —
+# `gh pr list --json reviews` populates it as null in current gh versions.)
+#
+# Mirrors the orchestrator's own filter, so false-positive rate is minimal.
+# The orchestrator still re-checks before dispatching its sub-agent.
 # ---------------------------------------------------------------------------
 eligibility_review_pending() {
+  # `gh pr list --json reviews` populates each review's `commit_id` as null,
+  # so the previous `index($pr.headRefOid)` lookup never matched and every
+  # PR was wrongly counted as needing review. Use review.submittedAt vs the
+  # head commit's committedDate — both are non-null in real gh output.
   local data count
   if ! data=$(
     PAGER=cat GIT_PAGER=cat gh pr list \
       --repo "$REPO_SLUG" --state open \
       --search "head:${BRANCH_PREFIX}/ -is:draft" \
-      --json number,headRefOid,reviews \
+      --json number,commits,reviews \
       --limit 100 2>/dev/null
   ); then
     echo "?"
@@ -99,9 +106,12 @@ eligibility_review_pending() {
     echo "$data" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" '
       [.[]
        | . as $pr
-       | select(($pr.reviews // [])
-                | map(select(.body | test($re)) | .commit_id)
-                | index($pr.headRefOid) | not)
+       | ((($pr.commits // [])[-1] | .committedDate) // null) as $head_date
+       | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+       | select(
+           $head_date == null
+           or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
+         )
       ] | length
     ' 2>/dev/null
   ); then

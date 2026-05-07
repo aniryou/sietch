@@ -75,13 +75,17 @@ load 'helpers'
 }
 
 # ---------------------------------------------------------------------------
-# eligibility_review_pending: jq filter for "no agent review at headRefOid"
+# eligibility_review_pending: jq filter for "no agent review covers head"
+# Compares review.submittedAt against the PR head commit's committedDate.
 # ---------------------------------------------------------------------------
 REVIEW_FILTER='[.[]
   | . as $pr
-  | select(($pr.reviews // [])
-           | map(select(.body | test($re)) | .commit_id)
-           | index($pr.headRefOid) | not)
+  | ((($pr.commits // [])[-1] | .committedDate) // null) as $head_date
+  | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+  | select(
+      $head_date == null
+      or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
+    )
 ] | length'
 
 @test "review filter: PR with review at current head is filtered OUT" {
