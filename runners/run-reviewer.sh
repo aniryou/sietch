@@ -29,7 +29,17 @@ case "$EL_RC" in
     echo "[wrapper] result=no-work"
     exit 2
     ;;
-  *) echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); proceeding to be safe" >&2 ;;
+  *)
+    # GH#27: any non-{0,1} rc means the predicate itself failed (gh outage,
+    # jq error, GraphQL node-limit, ...). The previous "proceed to be safe"
+    # policy turned every persistent failure into a per-cycle token leak —
+    # the LLM was spawned each poll while doing nothing useful. Skip + exit 2
+    # so run-loop.sh applies the same exponential backoff it uses for rc=1.
+    # Operators see the failure on stderr and can intervene.
+    echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM invocation and backing off" >&2
+    echo "[wrapper] result=no-work reason=predicate-failed"
+    exit 2
+    ;;
 esac
 unset EL_COUNT EL_RC
 

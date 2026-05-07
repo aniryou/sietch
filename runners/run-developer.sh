@@ -61,6 +61,35 @@ REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
 
+# Mode 1 only — preflight: skip the LLM if there are no eligible issues.
+# Modes 2/3 already arrive with a specific PR number and don't scan.
+# Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
+# so run-loop.sh can apply exponential backoff to consecutive empty cycles.
+if [ "$MODE" = "default" ]; then
+  EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" dev)
+  EL_RC=$?
+  case "$EL_RC" in
+    0) echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding" ;;
+    1)
+      echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
+      echo "[wrapper] result=no-work mode=$MODE"
+      exit 2
+      ;;
+    *)
+      # GH#27: any non-{0,1} rc means the predicate itself failed (gh outage,
+      # jq error, GraphQL schema drift, ...). The previous "proceed to be safe"
+      # policy turned every persistent failure into a per-cycle token leak —
+      # the LLM was spawned each poll while doing nothing useful. Skip + exit 2
+      # so run-loop.sh applies the same exponential backoff it uses for rc=1.
+      # Operators see the failure on stderr and can intervene.
+      echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM invocation and backing off" >&2
+      echo "[wrapper] result=no-work mode=$MODE reason=predicate-failed"
+      exit 2
+      ;;
+  esac
+  unset EL_COUNT EL_RC
+fi
+
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
 # $$ suffix keeps log paths unique when two wrappers start in the same second.
 TS="$(date +%Y%m%d-%H%M%S)-$$"
