@@ -1,0 +1,37 @@
+[
+  {
+    "name": "severity:high",
+    "color": "d73a4a",
+    "description": "Silent correctness bug, security issue, or blocker"
+  },
+  {
+    "name": "severity:medium",
+    "color": "fbca04",
+    "description": "Noticeable defect or missing feature with clear current use case"
+  },
+  {
+    "name": "severity:low",
+    "color": "0e8a16",
+    "description": "Nice-to-have, polish, or unlikely edge case"
+  },
+  {
+    "name": "bug",
+    "color": "d73a4a",
+    "description": "Something isn't working"
+  },
+  {
+    "name": "enhancement",
+    "color": "a2eeef",
+    "description": "New feature or request"
+  },
+  {
+    "name": "testing",
+    "color": "c2e0c6",
+    "description": "Tests, fixtures, and CI checks"
+  },
+  {
+    "name": "documentation",
+    "color": "0075ca",
+    "description": "Improvements or additions to documentation"
+  }
+]

@@ -12,6 +12,7 @@
 #   st issue [message]            # interactive issue author
 #   st loop [start|stop|...]      # tmux multi-pane orchestrator
 #   st triage <PR>                # decide whether a conflict is auto-resolvable
+#   st onboard [-v]               # audit this repo for loop's prerequisites
 #   st init                       # bootstrap .loop/loop.config in $PWD
 #   st version                    # short SHA of the framework
 #   st help                       # this message
@@ -115,6 +116,7 @@ case "$CMD" in
   issue|issues)    require_repo_root; exec "$LOOP_HOME/runners/run-issue-author.sh" "$@" ;;
   loop)            require_repo_root; exec "$LOOP_HOME/runners/run-loop.sh" "$@" ;;
   triage)          require_repo_root; exec "$LOOP_HOME/runners/run-conflict-triage.sh" "$@" ;;
+  onboard)         require_repo_root; exec bash "$LOOP_HOME/runners/lib/onboard.sh" "${@:-run}" ;;
   *)
     echo "[st] unknown command: $CMD" >&2
     echo "Run 'st help' for the command list." >&2
