@@ -29,50 +29,30 @@ TEMPLATE="${1:-}"
   exit 2
 }
 
-# Export every rig.config variable that templates may reference. Anything
-# outside this list passes through literally, which is essential for
-# $REPO_ROOT — the agent expands it via bash at runtime, not at render time.
-export REPO_OWNER REPO_NAME REPO_SLUG DEFAULT_BRANCH \
-       BRANCH_PREFIX WORKTREE_BASE LOCK_DIR \
-       SEVERITY_LABEL_HIGH SEVERITY_LABEL_MEDIUM SEVERITY_LABEL_LOW TYPE_LABELS \
-       TRIAGE_CORE_FILES_REGEX TRIAGE_LINE_LIMIT \
-       DEV_CI_RETRY_ATTEMPTS DEV_FOLLOWUP_CYCLE_LIMIT REVIEWER_BASH_CALL_BUDGET \
-       STALE_LOCK_HOURS TEST_CMD \
-       DEV_AGENT_COMMENT_PREFIX DEV_AGENT_PR_BODY_TAG REVIEWER_AGENT_COMMENT_PREFIX
+command -v envsubst >/dev/null 2>&1 || {
+  echo "[render-prompt] envsubst (gettext) is required but not on PATH." >&2
+  echo "  macOS:  brew install gettext && brew link --force gettext" >&2
+  echo "  Debian: sudo apt-get install -y gettext-base" >&2
+  exit 1
+}
 
-ALLOWLIST='${REPO_OWNER} ${REPO_NAME} ${REPO_SLUG} ${DEFAULT_BRANCH} \
-${BRANCH_PREFIX} ${WORKTREE_BASE} ${LOCK_DIR} \
-${SEVERITY_LABEL_HIGH} ${SEVERITY_LABEL_MEDIUM} ${SEVERITY_LABEL_LOW} ${TYPE_LABELS} \
-${TRIAGE_CORE_FILES_REGEX} ${TRIAGE_LINE_LIMIT} \
-${DEV_CI_RETRY_ATTEMPTS} ${DEV_FOLLOWUP_CYCLE_LIMIT} ${REVIEWER_BASH_CALL_BUDGET} \
-${STALE_LOCK_HOURS} ${TEST_CMD} \
-${DEV_AGENT_COMMENT_PREFIX} ${DEV_AGENT_PR_BODY_TAG} ${REVIEWER_AGENT_COMMENT_PREFIX}'
+# Single source of truth for keys substituted into prompt templates.
+# Add new rig.config keys that templates may reference here.
+# Anything outside this list passes through literally — essential for
+# $REPO_ROOT, which the agent expands via bash at runtime, not here.
+RIG_KEYS=(
+  REPO_OWNER REPO_NAME REPO_SLUG DEFAULT_BRANCH
+  BRANCH_PREFIX WORKTREE_BASE LOCK_DIR DISPATCH_LOCK_DIR
+  SEVERITY_LABEL_HIGH SEVERITY_LABEL_MEDIUM SEVERITY_LABEL_LOW TYPE_LABELS
+  TRIAGE_CORE_FILES_REGEX TRIAGE_TESTS_REGEX TRIAGE_CI_SECRETS_REGEX TRIAGE_LINE_LIMIT
+  DEV_INSTANCES_DEFAULT POLL_INTERVAL_DEFAULT EMPTY_CYCLE_BACKOFF_CAP_SECONDS
+  DEV_MAX_TURNS REVIEWER_MAX_TURNS
+  DEV_CI_RETRY_ATTEMPTS DEV_FOLLOWUP_CYCLE_LIMIT REVIEWER_BASH_CALL_BUDGET
+  STALE_LOCK_HOURS TEST_CMD
+  DEV_AGENT_COMMENT_PREFIX DEV_AGENT_PR_BODY_TAG
+  REVIEWER_AGENT_COMMENT_PREFIX REVIEWER_AGENT_VERDICT_REGEX
+)
 
-if command -v envsubst >/dev/null 2>&1; then
-  envsubst "$ALLOWLIST" < "$TEMPLATE"
-else
-  # Sed fallback for systems without gettext. Keep in sync with rig.config keys.
-  sed \
-    -e "s|\${REPO_OWNER}|${REPO_OWNER}|g" \
-    -e "s|\${REPO_NAME}|${REPO_NAME}|g" \
-    -e "s|\${REPO_SLUG}|${REPO_SLUG}|g" \
-    -e "s|\${DEFAULT_BRANCH}|${DEFAULT_BRANCH}|g" \
-    -e "s|\${BRANCH_PREFIX}|${BRANCH_PREFIX}|g" \
-    -e "s|\${WORKTREE_BASE}|${WORKTREE_BASE}|g" \
-    -e "s|\${LOCK_DIR}|${LOCK_DIR}|g" \
-    -e "s|\${SEVERITY_LABEL_HIGH}|${SEVERITY_LABEL_HIGH}|g" \
-    -e "s|\${SEVERITY_LABEL_MEDIUM}|${SEVERITY_LABEL_MEDIUM}|g" \
-    -e "s|\${SEVERITY_LABEL_LOW}|${SEVERITY_LABEL_LOW}|g" \
-    -e "s|\${TYPE_LABELS}|${TYPE_LABELS}|g" \
-    -e "s|\${TRIAGE_CORE_FILES_REGEX}|${TRIAGE_CORE_FILES_REGEX}|g" \
-    -e "s|\${TRIAGE_LINE_LIMIT}|${TRIAGE_LINE_LIMIT}|g" \
-    -e "s|\${DEV_CI_RETRY_ATTEMPTS}|${DEV_CI_RETRY_ATTEMPTS}|g" \
-    -e "s|\${DEV_FOLLOWUP_CYCLE_LIMIT}|${DEV_FOLLOWUP_CYCLE_LIMIT}|g" \
-    -e "s|\${REVIEWER_BASH_CALL_BUDGET}|${REVIEWER_BASH_CALL_BUDGET}|g" \
-    -e "s|\${STALE_LOCK_HOURS}|${STALE_LOCK_HOURS}|g" \
-    -e "s|\${TEST_CMD}|${TEST_CMD}|g" \
-    -e "s|\${DEV_AGENT_COMMENT_PREFIX}|${DEV_AGENT_COMMENT_PREFIX}|g" \
-    -e "s|\${DEV_AGENT_PR_BODY_TAG}|${DEV_AGENT_PR_BODY_TAG}|g" \
-    -e "s|\${REVIEWER_AGENT_COMMENT_PREFIX}|${REVIEWER_AGENT_COMMENT_PREFIX}|g" \
-    "$TEMPLATE"
-fi
+export "${RIG_KEYS[@]}"
+printf -v ALLOWLIST ' ${%s}' "${RIG_KEYS[@]}"
+envsubst "$ALLOWLIST" < "$TEMPLATE"

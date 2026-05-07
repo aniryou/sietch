@@ -81,7 +81,8 @@ st loop stop                                    # tear it down
 - `bd` (beads) for task tracking inside agents
 - `jq`, `tmux`, `git` ≥ 2.30 (worktree support), `bash` ≥ 4 (or 3.2 — wrappers
   are macOS-compatible)
-- Optional: `envsubst` (gettext) — render-prompt.sh has a sed fallback
+- `envsubst` (gettext) — required for prompt rendering. macOS: `brew install
+  gettext && brew link --force gettext`. Debian: `apt-get install gettext-base`.
 
 ## Status
 
