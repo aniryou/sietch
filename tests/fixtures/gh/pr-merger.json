@@ -1,0 +1,40 @@
+{
+  "headRefOid": "abc1230000000000000000000000000000000000",
+  "isDraft": false,
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "CLEAN",
+  "commits": [
+    {
+      "oid": "abc1230000000000000000000000000000000000",
+      "committedDate": "2026-05-07T10:00:00Z"
+    }
+  ],
+  "reviews": [
+    {
+      "author": {"login": "claude"},
+      "authorAssociation": "OWNER",
+      "body": "🤖 Reviewer agent — automated review\n\n[reviewer-agent: clean]\n\nNo concerns.",
+      "commit": {"oid": "abc1230000000000000000000000000000000000"},
+      "id": "RV_kwDOABCD0000000001",
+      "includesCreatedEdit": false,
+      "reactionGroups": [],
+      "state": "COMMENTED",
+      "submittedAt": "2026-05-07T11:00:00Z"
+    }
+  ],
+  "comments": [
+    {
+      "author": {"login": "claude"},
+      "authorAssociation": "OWNER",
+      "body": "🤖 Developer agent — initial PR opened.",
+      "createdAt": "2026-05-07T10:30:00Z",
+      "id": "IC_kwDOABCD0000000001",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/test-owner/test-repo/pull/1#issuecomment-1",
+      "viewerDidAuthor": true
+    }
+  ]
+}

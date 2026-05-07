@@ -69,6 +69,35 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# merger dispatcher: dev-agent/* PRs that are not draft (verdict + CI gating
+# happens later, in eligibility_merge_pr — this filter is just the candidate
+# scan, mirroring _dispatch_followup_jq).
+# ---------------------------------------------------------------------------
+
+@test "merge filter: keeps non-draft dev-agent PRs, drops drafts and non-dev-agent" {
+  local filter nums
+  filter=$(_dispatch_merge_jq "dev-agent")
+  nums=$(jq -r "$filter" < "$LOOP_ROOT/tests/fixtures/gh/prs-dispatch.json" | tr '\n' ' ')
+  # Same set as the followup filter — verdict / CI / staleness gating is the
+  # job of eligibility_merge_pr, not this candidate scan.
+  [ "$nums" = "11 13 " ]
+}
+
+@test "merge filter: empty input emits nothing" {
+  local filter nums
+  filter=$(_dispatch_merge_jq "dev-agent")
+  nums=$(jq -r "$filter" <<<'[]')
+  [ -z "$nums" ]
+}
+
+@test "merge filter: respects custom branch prefix" {
+  local filter nums
+  filter=$(_dispatch_merge_jq "feature")
+  nums=$(jq -r "$filter" < "$LOOP_ROOT/tests/fixtures/gh/prs-dispatch.json" | tr '\n' ' ')
+  [ "$nums" = "15 16 " ]
+}
+
+# ---------------------------------------------------------------------------
 # Source-of-truth check: run-loop.sh must consume the helpers, not the
 # malformed `gh --jq --arg` form that silently dropped every PR.
 # ---------------------------------------------------------------------------
@@ -80,4 +109,5 @@ setup() {
 @test "run-loop.sh: dispatcher gh-pr-list calls invoke the lib helpers" {
   grep -qF '_dispatch_followup_jq'  "$LOOP_ROOT/runners/run-loop.sh"
   grep -qF '_dispatch_conflicts_jq' "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qF '_dispatch_merge_jq'     "$LOOP_ROOT/runners/run-loop.sh"
 }

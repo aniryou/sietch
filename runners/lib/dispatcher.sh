@@ -28,3 +28,11 @@ _dispatch_followup_jq() {
 _dispatch_conflicts_jq() {
   printf '.[] | select(.headRefName | startswith("%s/")) | select(.mergeable == "CONFLICTING") | select(.isDraft == false) | .number' "$1"
 }
+
+# jq filter: emit .number for each open, non-draft dev-agent PR.
+# Same candidate scan as the follow-up filter — verdict / staleness / CI /
+# human-veto gating happens later in eligibility_merge_pr, not here.
+# Argument: branch prefix (without trailing slash).
+_dispatch_merge_jq() {
+  printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | .number' "$1"
+}
