@@ -31,15 +31,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck and shfmt
+      - name: Install shellcheck and shfmt (pinned)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends shellcheck
-          # shfmt is not packaged in apt; pull a pinned release binary.
+          # Pin both tools so CI and local agree on findings.
+          # apt-shipped shellcheck on the runner is older and surfaces false-positive
+          # SC2317 in trap handlers; pin to the same version a contributor would brew-install.
+          SHELLCHECK_VERSION=v0.11.0
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | sudo tar -xJ --strip-components=1 -C /usr/local/bin "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+
           SHFMT_VERSION=v3.13.1
           sudo curl -fsSL -o /usr/local/bin/shfmt \
             "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_linux_amd64"
           sudo chmod +x /usr/local/bin/shfmt
+
           shellcheck --version | head -3
           shfmt --version
 

@@ -28,10 +28,10 @@ CONFIG="$REPO_ROOT/.loop/loop.config"
 . "$CONFIG"
 
 TEMPLATE="${1:-}"
-[ -n "$TEMPLATE" ] && [ -f "$TEMPLATE" ] || {
+if [ -z "$TEMPLATE" ] || [ ! -f "$TEMPLATE" ]; then
   echo "[render-prompt] template not found: ${TEMPLATE:-<missing>}" >&2
   exit 2
-}
+fi
 
 command -v envsubst >/dev/null 2>&1 || {
   echo "[render-prompt] envsubst (gettext) is required but not on PATH." >&2
