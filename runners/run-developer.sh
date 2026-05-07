@@ -70,9 +70,11 @@ if [ "$MODE" = "default" ]; then
   EL_RC=$?
   case "$EL_RC" in
     0) echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding" ;;
-    1) echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
-       echo "[wrapper] result=no-work mode=$MODE"
-       exit 2 ;;
+    1)
+      echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
+      echo "[wrapper] result=no-work mode=$MODE"
+      exit 2
+      ;;
     *) echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); proceeding to be safe" >&2 ;;
   esac
   unset EL_COUNT EL_RC
@@ -83,7 +85,9 @@ TS="$(date +%Y%m%d-%H%M%S)"
 
 # Unique ID per wrapper invocation so the trap can release exactly the locks
 # this run owns when multiple wrappers are running in parallel.
-export DEV_AGENT_RUN_ID="$$-$(date +%s%N 2>/dev/null || date +%s)"
+_run_ts=$(date +%s%N 2>/dev/null || date +%s)
+export DEV_AGENT_RUN_ID="$$-$_run_ts"
+unset _run_ts
 if [ "$MODE" = "follow-up" ]; then
   LOG="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.log"
   RAW="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.jsonl"
@@ -93,8 +97,8 @@ elif [ "$MODE" = "resolve-conflicts" ]; then
   RAW="/tmp/dev-agent-conflicts-pr${TARGET_PR}-${TS}.jsonl"
   KICKOFF="Run the developer agent in MODE 3 (resolve merge conflicts) on PR #${TARGET_PR}. Triage already validated this conflict as tractable — proceed directly to the Mode 3 workflow defined in your system prompt now."
 else
-  LOG="/tmp/dev-agent-${TS}.log"          # human-readable live log (this is what you tail)
-  RAW="/tmp/dev-agent-${TS}.jsonl"        # raw stream-json (full fidelity, for debugging)
+  LOG="/tmp/dev-agent-${TS}.log"   # human-readable live log (this is what you tail)
+  RAW="/tmp/dev-agent-${TS}.jsonl" # raw stream-json (full fidelity, for debugging)
   KICKOFF="Run the developer agent workflow defined in your system prompt. Begin the single-pass scan now."
 fi
 
@@ -109,7 +113,8 @@ if [ "$MODE" = "resolve-conflicts" ]; then
     echo "$TRIAGE_OUTPUT" >&2
     REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
     echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
-    PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(cat <<EOF
+    PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
+      cat <<EOF
 🤖 Conflict triage — auto-resolution declined.
 
 **Reason:** \`${REASON}\`
@@ -118,7 +123,7 @@ The triage rules deemed these merge conflicts not safe for autonomous resolution
 
 For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
 EOF
-)" >/dev/null 2>&1 || true
+    )" >/dev/null 2>&1 || true
     PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
     echo "[wrapper] result=triage-untractable pr=#${TARGET_PR} reason=${REASON}"
     exit 1
@@ -126,6 +131,7 @@ EOF
 fi
 
 # Snapshot worktrees BEFORE the run so we can detect what the agent created.
+# shellcheck disable=SC2034 # reserved for diff-against-post snapshot in cleanup; not yet wired
 PRE_WORKTREES=$(git -C "$REPO" worktree list --porcelain | awk '/^worktree/ {print $2}' | grep "^${WORKTREE_BASE}/" || true)
 
 cleanup() {
@@ -180,7 +186,7 @@ cleanup() {
   done
 
   echo "[wrapper] live log: $LOG" >&2
-  echo "[wrapper] raw json: $RAW"  >&2
+  echo "[wrapper] raw json: $RAW" >&2
   exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
@@ -191,7 +197,7 @@ trap cleanup EXIT INT TERM
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
 
-cd "$REPO"
+cd "$REPO" || exit 1
 
 echo "[wrapper] mode: $MODE${TARGET_PR:+ (PR #$TARGET_PR)} run_id=$DEV_AGENT_RUN_ID"
 echo "[wrapper] live log: $LOG"
@@ -200,7 +206,7 @@ echo "[wrapper] tail with: tail -f $LOG"
 echo
 
 PAGER=cat GIT_PAGER=cat \
-claude -p "$KICKOFF" \
+  claude -p "$KICKOFF" \
   --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$DEV_MAX_TURNS" \

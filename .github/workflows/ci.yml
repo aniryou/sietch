@@ -5,16 +5,68 @@ on:
     branches: [main]
   pull_request:
 
+# Single source of truth for the shell files we lint.
+# Keep in sync with the local commands documented in CONTRIBUTING / issue #21.
+env:
+  SHELL_FILES: >-
+    install.sh
+    bin/st
+    runners/run-conflict-triage.sh
+    runners/run-developer.sh
+    runners/run-issue-author.sh
+    runners/run-loop.sh
+    runners/run-reviewer.sh
+    runners/lib/dispatcher.sh
+    runners/lib/eligibility.sh
+    runners/lib/jitter.sh
+    runners/lib/jq_filter.sh
+    runners/lib/onboard.sh
+    runners/lib/render-prompt.sh
+    tests/helpers.bash
+  SHFMT_FLAGS: -i 2 -ci -bn
+
 jobs:
-  bats:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies (bats, gettext, jq)
+      - name: Install shellcheck and shfmt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+          # shfmt is not packaged in apt; pull a pinned release binary.
+          SHFMT_VERSION=v3.13.1
+          sudo curl -fsSL -o /usr/local/bin/shfmt \
+            "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_linux_amd64"
+          sudo chmod +x /usr/local/bin/shfmt
+          shellcheck --version | head -3
+          shfmt --version
+
+      - name: shellcheck
+        run: shellcheck $SHELL_FILES
+
+      - name: shfmt (check only)
+        run: shfmt -d $SHFMT_FLAGS $SHELL_FILES
+
+  bats:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends bats gettext-base jq
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core gettext jq
 
       - name: Run bats suite
         run: bats tests/

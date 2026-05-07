@@ -34,7 +34,10 @@ _fail() {
   [ -n "$fix" ] && printf '  fix: %s\n' "$fix"
   return 1
 }
-_v() { [ "$ONBOARD_VERBOSE" = "1" ] && printf '  · %s\n' "$1"; return 0; }
+_v() {
+  [ "$ONBOARD_VERBOSE" = "1" ] && printf '  · %s\n' "$1"
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # Source loop.config so checks can see REPO_SLUG, WORKTREE_BASE, etc.
@@ -63,9 +66,9 @@ check_loop_config() {
     return 1
   fi
   if [ "${REPO_OWNER:-}" = "your-github-org-or-user" ] \
-     || [ "${REPO_NAME:-}" = "your-repo-name" ] \
-     || [ -z "${REPO_OWNER:-}" ] \
-     || [ -z "${REPO_NAME:-}" ]; then
+    || [ "${REPO_NAME:-}" = "your-repo-name" ] \
+    || [ -z "${REPO_OWNER:-}" ] \
+    || [ -z "${REPO_NAME:-}" ]; then
     _fail check_loop_config "REPO_OWNER/REPO_NAME still hold example placeholders" \
       "edit $cfg and set REPO_OWNER/REPO_NAME to this repo's GitHub slug"
     return 1
@@ -115,7 +118,7 @@ check_labels() {
     return 1
   fi
 
-  local existing canonical missing name color desc created=0
+  local existing canonical name color desc created=0
   if ! existing=$(
     gh label list --repo "$REPO_SLUG" --json name --limit 200 2>/dev/null \
       | jq -r '.[].name'
@@ -130,9 +133,9 @@ check_labels() {
     [ -z "$name" ] && continue
     if ! printf '%s\n' "$existing" | grep -qFx "$name"; then
       color=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .color' "$LABELS_TEMPLATE")
-      desc=$( jq -r --arg n "$name" '.[] | select(.name==$n) | .description' "$LABELS_TEMPLATE")
+      desc=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .description' "$LABELS_TEMPLATE")
       if gh label create "$name" --repo "$REPO_SLUG" \
-            --color "$color" --description "$desc" >/dev/null 2>&1; then
+        --color "$color" --description "$desc" >/dev/null 2>&1; then
         printf '  + created label %s\n' "$name"
         created=$((created + 1))
       else
@@ -198,7 +201,7 @@ check_workflows() {
   fi
   local first
   first=$(find "$dir" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) \
-            2>/dev/null | sort | head -n1)
+    2>/dev/null | sort | head -n1)
   if [ -z "$first" ]; then
     _fail check_workflows "no .yml/.yaml workflow file in $dir" \
       "add a CI workflow file (e.g. ci.yml)"
@@ -289,9 +292,15 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     shift
   fi
   case "${1:-run}" in
-    run)        onboard_run; exit $? ;;
-    check_*)    "$1"; exit $? ;;
-    -h|--help|help|"")
+    run)
+      onboard_run
+      exit $?
+      ;;
+    check_*)
+      "$1"
+      exit $?
+      ;;
+    -h | --help | help | "")
       cat <<'EOF'
 Usage: onboard.sh [-v] <command>
 
@@ -309,7 +318,11 @@ Flags:
 
 Required env: REPO_ROOT, LOOP_HOME (set automatically when invoked via bin/st).
 EOF
-      exit 0 ;;
-    *) echo "[onboard] unknown command: $1" >&2; exit 2 ;;
+      exit 0
+      ;;
+    *)
+      echo "[onboard] unknown command: $1" >&2
+      exit 2
+      ;;
   esac
 fi
