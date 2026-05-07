@@ -62,30 +62,61 @@ cleanup_stale_dispatch_locks() {
 # pane itself — no log redirection, the user sees them live. The wrappers
 # they invoke still write their own per-invocation log files.
 
+# Compute the next sleep interval given the consecutive-empty-cycle streak.
+# Exponential: POLL_INTERVAL * 2^streak, clamped at EMPTY_CYCLE_BACKOFF_CAP_SECONDS.
+# Streak 0 → POLL_INTERVAL (no backoff). Caller is responsible for resetting
+# streak to 0 on a non-empty cycle.
+empty_cycle_sleep() {
+  local streak="$1"
+  local cap="${EMPTY_CYCLE_BACKOFF_CAP_SECONDS:-300}"
+  local interval=$((POLL_INTERVAL * (1 << streak)))
+  [ "$interval" -gt "$cap" ] && interval="$cap"
+  echo "$interval"
+}
+
 loop_dev_mode1() {
   local id="$1"
+  local empty_streak=0 ec sleep_for
   while true; do
     echo "[$(ts)] [dev-${id}] starting Mode 1 cycle"
-    if "$SIETCH_HOME/wrappers/run-developer.sh"; then
-      echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
-    else
-      echo "[$(ts)] [dev-${id}] cycle done (exit $?)"
-    fi
-    echo "[$(ts)] [dev-${id}] sleeping ${POLL_INTERVAL}s..."
-    sleep "$POLL_INTERVAL"
+    ec=0
+    "$SIETCH_HOME/wrappers/run-developer.sh" || ec=$?
+    case "$ec" in
+      0)  echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
+          empty_streak=0
+          sleep_for="$POLL_INTERVAL" ;;
+      2)  empty_streak=$((empty_streak + 1))
+          sleep_for=$(empty_cycle_sleep "$empty_streak")
+          echo "[$(ts)] [dev-${id}] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)" ;;
+      *)  echo "[$(ts)] [dev-${id}] cycle done (exit ${ec})"
+          # Don't backoff on agent failures — keep base interval so we retry promptly
+          empty_streak=0
+          sleep_for="$POLL_INTERVAL" ;;
+    esac
+    echo "[$(ts)] [dev-${id}] sleeping ${sleep_for}s..."
+    sleep "$sleep_for"
   done
 }
 
 loop_reviewer() {
+  local empty_streak=0 ec sleep_for
   while true; do
     echo "[$(ts)] [reviewer] starting orchestrator cycle"
-    if "$SIETCH_HOME/wrappers/run-reviewer.sh"; then
-      echo "[$(ts)] [reviewer] cycle done (exit 0)"
-    else
-      echo "[$(ts)] [reviewer] cycle done (exit $?)"
-    fi
-    echo "[$(ts)] [reviewer] sleeping ${POLL_INTERVAL}s..."
-    sleep "$POLL_INTERVAL"
+    ec=0
+    "$SIETCH_HOME/wrappers/run-reviewer.sh" || ec=$?
+    case "$ec" in
+      0)  echo "[$(ts)] [reviewer] cycle done (exit 0)"
+          empty_streak=0
+          sleep_for="$POLL_INTERVAL" ;;
+      2)  empty_streak=$((empty_streak + 1))
+          sleep_for=$(empty_cycle_sleep "$empty_streak")
+          echo "[$(ts)] [reviewer] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)" ;;
+      *)  echo "[$(ts)] [reviewer] cycle done (exit ${ec})"
+          empty_streak=0
+          sleep_for="$POLL_INTERVAL" ;;
+    esac
+    echo "[$(ts)] [reviewer] sleeping ${sleep_for}s..."
+    sleep "$sleep_for"
   done
 }
 

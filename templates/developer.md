@@ -52,7 +52,14 @@ If an issue has no severity label, skip it.
 
 Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
-1. **Check for available work** (run both queries once):
+0. **Fast eligibility gate.** Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
+   ```bash
+   bash "$SIETCH_HOME/lib/eligibility.sh" dev
+   # exit 0 = candidates exist; exit 1 = no eligible work; exit 2 = predicate failed
+   ```
+   If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate; the call here protects against direct `claude -p` invocations.
+
+1. **Full scan** (only reached if the gate found candidates) — run both queries once:
    ```bash
    gh issue list --repo ${REPO_SLUG} --state open \
      --label "${SEVERITY_LABEL_HIGH}" --json number,title,labels,assignees,url --limit 50

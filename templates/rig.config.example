@@ -49,6 +49,11 @@ TRIAGE_LINE_LIMIT=10
 DEV_INSTANCES_DEFAULT=3       # parallel polecats; capacity governor
 POLL_INTERVAL_DEFAULT=60      # seconds between scan cycles
 
+# Cap for exponential backoff on consecutive empty cycles (no eligible work).
+# Sleep grows POLL_INTERVAL * 2^streak, clamped here. Resets to POLL_INTERVAL
+# on the first non-empty cycle.
+EMPTY_CYCLE_BACKOFF_CAP_SECONDS=300
+
 # ---------------------------------------------------------------------------
 # Per-mode caps
 # ---------------------------------------------------------------------------

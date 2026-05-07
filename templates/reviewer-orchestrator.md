@@ -21,9 +21,20 @@ You are the **orchestrator** for the reviewer agent system. Your only job is to 
 
 ## Workflow
 
+### Step 0 — Fast eligibility gate
+
+Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
+
+```bash
+bash "$SIETCH_HOME/lib/eligibility.sh" review
+# exit 0 = PRs need review; exit 1 = nothing pending; exit 2 = predicate failed
+```
+
+If exit code is 1, print `[reviewer-orchestrator] result=none-found-fast` and **exit cleanly**. No dispatch. If exit code is 2 (gh/jq failure), proceed with the full scan below. When invoked via `st review` / `st loop`, the wrapper has already passed this gate; the call here protects against direct `claude -p` invocations.
+
 ### Step 1 — Scan candidate PRs
 
-Run **once**:
+Run **once** (only reached if the gate found candidates):
 
 ```bash
 gh pr list --repo ${REPO_SLUG} --state open \

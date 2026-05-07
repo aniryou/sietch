@@ -16,6 +16,20 @@ REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.sietch/rig.config"
 
+# Preflight: skip the LLM if no dev-agent PR needs review at its current
+# headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
+# from "ran successfully" so it can apply exponential backoff.
+EL_COUNT=$("$SIETCH_HOME/lib/eligibility.sh" review)
+EL_RC=$?
+case "$EL_RC" in
+  0) echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding" ;;
+  1) echo "[wrapper] eligibility: no PRs need review; skipping LLM invocation"
+     echo "[wrapper] result=no-work"
+     exit 2 ;;
+  *) echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); proceeding to be safe" >&2 ;;
+esac
+unset EL_COUNT EL_RC
+
 TS="$(date +%Y%m%d-%H%M%S)"
 LOG="/tmp/reviewer-agent-${TS}.log"
 RAW="/tmp/reviewer-agent-${TS}.jsonl"

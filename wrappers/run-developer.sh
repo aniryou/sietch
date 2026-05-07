@@ -60,6 +60,23 @@ REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.sietch/rig.config"
 
+# Mode 1 only — preflight: skip the LLM if there are no eligible issues.
+# Modes 2/3 already arrive with a specific PR number and don't scan.
+# Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
+# so run-loop.sh can apply exponential backoff to consecutive empty cycles.
+if [ "$MODE" = "default" ]; then
+  EL_COUNT=$("$SIETCH_HOME/lib/eligibility.sh" dev)
+  EL_RC=$?
+  case "$EL_RC" in
+    0) echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding" ;;
+    1) echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
+       echo "[wrapper] result=no-work mode=$MODE"
+       exit 2 ;;
+    *) echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); proceeding to be safe" >&2 ;;
+  esac
+  unset EL_COUNT EL_RC
+fi
+
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
 TS="$(date +%Y%m%d-%H%M%S)"
 
