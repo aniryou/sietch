@@ -9,10 +9,10 @@
 load 'helpers'
 
 setup() {
-  RIG=$(make_rig)
-  # Source the rig.config to expose the regexes the script uses.
+  REPO=$(make_repo)
+  # Source the loop.config to expose the regexes the script uses.
   # shellcheck disable=SC1091
-  . "$RIG/.sietch/rig.config"
+  . "$REPO/.loop/loop.config"
 }
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# Conflict-line counter (Rule 4) — sietch-s3g semantics: counts BOTH sides
+# Conflict-line counter (Rule 4) — loop-s3g semantics: counts BOTH sides
 # ---------------------------------------------------------------------------
 # Mirrors the algorithm at wrappers/triage-conflict.sh:Rule 4 exactly.
 count_conflict_lines() {
@@ -76,13 +76,13 @@ count_conflict_lines() {
 
 @test "counter: symmetric 5+5 conflict counts as 10 (ours+theirs)" {
   local n
-  n=$(count_conflict_lines "$SIETCH_ROOT/tests/fixtures/conflict-symmetric-5x5.txt")
+  n=$(count_conflict_lines "$LOOP_ROOT/tests/fixtures/conflict-symmetric-5x5.txt")
   [ "$n" -eq 10 ]
 }
 
 @test "counter: tiny 1+1 conflict counts as 2" {
   local n
-  n=$(count_conflict_lines "$SIETCH_ROOT/tests/fixtures/conflict-tiny.txt")
+  n=$(count_conflict_lines "$LOOP_ROOT/tests/fixtures/conflict-tiny.txt")
   [ "$n" -eq 2 ]
 }
 
@@ -90,7 +90,7 @@ count_conflict_lines() {
   # Documents the intentional semantics — a symmetric 5-vs-5 hits the cap
   # rather than being treated as 5 lines of "real" change.
   local n
-  n=$(count_conflict_lines "$SIETCH_ROOT/tests/fixtures/conflict-symmetric-5x5.txt")
+  n=$(count_conflict_lines "$LOOP_ROOT/tests/fixtures/conflict-symmetric-5x5.txt")
   [ "$n" -le "$TRIAGE_LINE_LIMIT" ]
   [ "$n" -eq "$TRIAGE_LINE_LIMIT" ]
 }
@@ -99,14 +99,14 @@ count_conflict_lines() {
 # CLI shape
 # ---------------------------------------------------------------------------
 @test "triage-conflict.sh exits 2 on missing PR arg" {
-  REPO_ROOT="$RIG" SIETCH_HOME="$SIETCH_ROOT" \
-    run bash "$SIETCH_ROOT/wrappers/triage-conflict.sh"
+  REPO_ROOT="$REPO" LOOP_HOME="$LOOP_ROOT" \
+    run bash "$LOOP_ROOT/wrappers/triage-conflict.sh"
   [ "$status" -eq 2 ]
   echo "$output" | grep -qF 'Usage:'
 }
 
 @test "triage-conflict.sh exits 2 on non-numeric PR arg" {
-  REPO_ROOT="$RIG" SIETCH_HOME="$SIETCH_ROOT" \
-    run bash "$SIETCH_ROOT/wrappers/triage-conflict.sh" not-a-number
+  REPO_ROOT="$REPO" LOOP_HOME="$LOOP_ROOT" \
+    run bash "$LOOP_ROOT/wrappers/triage-conflict.sh" not-a-number
   [ "$status" -eq 2 ]
 }

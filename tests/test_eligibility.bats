@@ -5,7 +5,7 @@
 load 'helpers'
 
 # ---------------------------------------------------------------------------
-# eligibility_dev_count: lock-dir post-filter (sietch-06r)
+# eligibility_dev_count: lock-dir post-filter (loop-06r)
 # ---------------------------------------------------------------------------
 # Pure-jq tests — these exercise the same lock-dir-skip logic the script uses
 # without needing to mock `gh`. The script extracts numbers via
@@ -18,7 +18,7 @@ load 'helpers'
   local lock_dir="$BATS_TEST_TMPDIR/locks"
   mkdir -p "$lock_dir/gh-101.lock" "$lock_dir/gh-103.lock"
   local nums
-  nums=$(jq -r '.[].number' < "$SIETCH_ROOT/tests/fixtures/gh/issues-with-locks.json")
+  nums=$(jq -r '.[].number' < "$LOOP_ROOT/tests/fixtures/gh/issues-with-locks.json")
   local filtered=0 n
   for n in $nums; do
     [ -d "$lock_dir/gh-${n}.lock" ] && continue
@@ -32,7 +32,7 @@ load 'helpers'
   local lock_dir="$BATS_TEST_TMPDIR/empty-locks"
   mkdir -p "$lock_dir"
   local nums
-  nums=$(jq -r '.[].number' < "$SIETCH_ROOT/tests/fixtures/gh/issues-with-locks.json")
+  nums=$(jq -r '.[].number' < "$LOOP_ROOT/tests/fixtures/gh/issues-with-locks.json")
   local filtered=0 n
   for n in $nums; do
     [ -d "$lock_dir/gh-${n}.lock" ] && continue
@@ -55,7 +55,7 @@ REVIEW_FILTER='[.[]
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local n
   n=$(jq --arg re "$re" "$REVIEW_FILTER" \
-        < "$SIETCH_ROOT/tests/fixtures/gh/prs-current.json")
+        < "$LOOP_ROOT/tests/fixtures/gh/prs-current.json")
   [ "$n" -eq 0 ]
 }
 
@@ -63,7 +63,7 @@ REVIEW_FILTER='[.[]
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local n
   n=$(jq --arg re "$re" "$REVIEW_FILTER" \
-        < "$SIETCH_ROOT/tests/fixtures/gh/prs-stale.json")
+        < "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json")
   [ "$n" -eq 1 ]
 }
 
@@ -71,7 +71,7 @@ REVIEW_FILTER='[.[]
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local n
   n=$(jq --arg re "$re" "$REVIEW_FILTER" \
-        < "$SIETCH_ROOT/tests/fixtures/gh/prs-mixed.json")
+        < "$LOOP_ROOT/tests/fixtures/gh/prs-mixed.json")
   # 200 has current review (excluded), 201 has stale (included), 202 has no
   # reviews at all (included). Expect 2.
   [ "$n" -eq 2 ]
@@ -81,10 +81,10 @@ REVIEW_FILTER='[.[]
 # CLI shape — unknown mode exits 2.
 # ---------------------------------------------------------------------------
 @test "eligibility.sh CLI errors on unknown mode" {
-  local rig
-  rig=$(make_rig)
-  REPO_ROOT="$rig" SIETCH_HOME="$SIETCH_ROOT" \
-    run bash "$SIETCH_ROOT/lib/eligibility.sh" bogus
+  local repo
+  repo=$(make_repo)
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run bash "$LOOP_ROOT/lib/eligibility.sh" bogus
   [ "$status" -eq 2 ]
   echo "$output" | grep -qF '[eligibility] unknown mode'
 }

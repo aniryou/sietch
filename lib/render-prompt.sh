@@ -41,7 +41,7 @@ command -v envsubst >/dev/null 2>&1 || {
 # Add new loop.config keys that templates may reference here.
 # Anything outside this list passes through literally — essential for
 # $REPO_ROOT, which the agent expands via bash at runtime, not here.
-RIG_KEYS=(
+REPO_KEYS=(
   REPO_OWNER REPO_NAME REPO_SLUG DEFAULT_BRANCH
   BRANCH_PREFIX WORKTREE_BASE LOCK_DIR DISPATCH_LOCK_DIR
   SEVERITY_LABEL_HIGH SEVERITY_LABEL_MEDIUM SEVERITY_LABEL_LOW TYPE_LABELS
@@ -54,6 +54,6 @@ RIG_KEYS=(
   REVIEWER_AGENT_COMMENT_PREFIX REVIEWER_AGENT_VERDICT_REGEX
 )
 
-export "${RIG_KEYS[@]}"
-printf -v ALLOWLIST ' ${%s}' "${RIG_KEYS[@]}"
+export "${REPO_KEYS[@]}"
+printf -v ALLOWLIST ' ${%s}' "${REPO_KEYS[@]}"
 envsubst "$ALLOWLIST" < "$TEMPLATE"

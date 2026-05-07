@@ -31,7 +31,7 @@ DEV_AGENT_PR_BODY_TAG=${DEV_AGENT_PR_BODY_TAG}
 REVIEWER_AGENT_COMMENT_PREFIX=${REVIEWER_AGENT_COMMENT_PREFIX}
 REVIEWER_AGENT_VERDICT_REGEX=${REVIEWER_AGENT_VERDICT_REGEX}
 
-# Variables OUTSIDE the RIG_KEYS allowlist must pass through literally
+# Variables OUTSIDE the REPO_KEYS allowlist must pass through literally
 # so the agent expands them via bash at runtime.
 PASSTHROUGH_REPO_ROOT=${REPO_ROOT}
 PASSTHROUGH_HOLDER=${HOLDER}

@@ -2,19 +2,19 @@
 # Shared bats helpers. Sourced by every *.bats file via load 'helpers'.
 
 # Absolute path to the repo root (one level up from tests/).
-SIETCH_ROOT="$( cd "$BATS_TEST_DIRNAME/.." && pwd )"
-export SIETCH_ROOT
+LOOP_ROOT="$( cd "$BATS_TEST_DIRNAME/.." && pwd )"
+export LOOP_ROOT
 
-# Make a throwaway consumer-rig dir under $BATS_TEST_TMPDIR and echo its path.
-# rig.config is a copy of templates/rig.config.example with placeholders
+# Make a throwaway consumer-repo dir under $BATS_TEST_TMPDIR and echo its path.
+# loop.config is a copy of templates/loop.config.example with placeholders
 # rewritten to test-owner/test-repo so REPO_SLUG is well-formed.
-make_rig() {
-  local rig="$BATS_TEST_TMPDIR/rig-$$"
-  mkdir -p "$rig/.sietch"
+make_repo() {
+  local repo="$BATS_TEST_TMPDIR/repo-$$"
+  mkdir -p "$repo/.loop"
   awk '
     /^REPO_OWNER=/   { print "REPO_OWNER=\"test-owner\""; next }
     /^REPO_NAME=/    { print "REPO_NAME=\"test-repo\""; next }
     { print }
-  ' "$SIETCH_ROOT/templates/rig.config.example" > "$rig/.sietch/rig.config"
-  echo "$rig"
+  ' "$LOOP_ROOT/templates/loop.config.example" > "$repo/.loop/loop.config"
+  echo "$repo"
 }
