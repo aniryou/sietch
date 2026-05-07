@@ -183,6 +183,28 @@ HELP
     pr list --state all --json number,commits,reviews --limit 25
   gen_schema prs-dispatch.json \
     pr list --state all --json number,headRefName,isDraft,mergeable --limit 50
+
+  # --- pr view shape (single PR, object root) ---
+  # eligibility_followup_pr: --json reviews,comments
+  # `gh pr view` requires a specific PR number, so pick the most recent one
+  # in $REPO. If the repo has zero PRs, skip — the union-merge guarantees the
+  # existing on-disk schema survives untouched.
+  local pr_view_num
+  pr_view_num=$(
+    PAGER=cat GIT_PAGER=cat gh pr list --state all --repo "$REPO" \
+      --json number --limit 1 2>/dev/null \
+      | jq -r '.[0].number // empty'
+  )
+  if [ -n "$pr_view_num" ]; then
+    # Tolerate transient `pr view` failures (PR deleted between list and view,
+    # rate-limit, etc.) without aborting the whole refresh under `set -e`. The
+    # union-merge ensures the existing on-disk schema survives untouched.
+    gen_schema pr-followup.json \
+      pr view "$pr_view_num" --json reviews,comments \
+      || echo "[refresh] pr-followup.json gen failed; schema left untouched" >&2
+  else
+    echo "[refresh] no PRs in $REPO; pr-followup.schema.json left untouched" >&2
+  fi
 }
 
 main "$@"
