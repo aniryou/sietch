@@ -38,6 +38,8 @@ REPO="$REPO_ROOT"
 . "$LOOP_HOME/runners/lib/dispatcher.sh"
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jitter.sh"
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/eligibility.sh"
 
 SESSION=agent-loop
 
@@ -161,11 +163,14 @@ loop_reviewer() {
 
 loop_dispatcher_followup() {
   while true; do
-    # Re-read lib/dispatcher.sh each cycle so on-disk fixes apply without
-    # restarting the long-running tmux pane. Failure (mid-edit, syntax error)
-    # logs a WARN and continues with the previously cached helpers.
+    # Re-read lib/dispatcher.sh and lib/eligibility.sh each cycle so on-disk
+    # fixes apply without restarting the long-running tmux pane. Failure
+    # (mid-edit, syntax error) logs a WARN and continues with the previously
+    # cached helpers.
     # shellcheck disable=SC1091
     . "$LOOP_HOME/runners/lib/dispatcher.sh" || echo "[$(ts)] [dispatch:followup] WARN: failed to re-source lib/dispatcher.sh; using cached helpers"
+    # shellcheck disable=SC1091
+    . "$LOOP_HOME/runners/lib/eligibility.sh" || echo "[$(ts)] [dispatch:followup] WARN: failed to re-source lib/eligibility.sh; using cached predicates"
     cleanup_stale_dispatch_locks
     echo "[$(ts)] [dispatch:followup] scanning open dev-agent PRs..."
 
@@ -182,32 +187,24 @@ loop_dispatcher_followup() {
         break
       fi
 
-      local data latest_review latest_devcomment
-      data=$(gh pr view "$pr" --repo "$REPO_SLUG" --json reviews,comments 2>/dev/null) || continue
+      # Verdict-aware gate (GH#24): skip clean/nits unconditionally, and
+      # changes/comment/blocked once the dev-agent has already responded.
+      # The predicate prints the verdict (or "none" / "?") to stdout for
+      # log visibility; exit 0 means dispatch, 1 means skip, 2 means gh/jq
+      # failure (treat as skip — next cycle re-checks).
+      local verdict ec=0
+      verdict=$(eligibility_followup_pr "$pr") || ec=$?
+      if [ "$ec" -ne 0 ]; then
+        echo "[$(ts)] [dispatch:followup] skip PR #${pr} (verdict=${verdict})"
+        continue
+      fi
 
-      latest_review=$(echo "$data" | jq -r --arg re "$REVIEWER_AGENT_VERDICT_REGEX" '
-        .reviews
-        | map(select(.body | test($re)))
-        | sort_by(.submittedAt)
-        | last | .submittedAt // "none"
-      ')
-      [ "$latest_review" = "none" ] && continue
-
-      latest_devcomment=$(echo "$data" | jq -r --arg prefix "$DEV_AGENT_COMMENT_PREFIX" '
-        .comments
-        | map(select(.body | startswith($prefix)))
-        | sort_by(.createdAt)
-        | last | .createdAt // "none"
-      ')
-
-      if [ "$latest_devcomment" = "none" ] || [[ "$latest_review" > "$latest_devcomment" ]]; then
-        if mkdir "$lock" 2>/dev/null; then
-          echo "$$" >"$lock/pid"
-          echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (review=${latest_review} dev=${latest_devcomment})"
-          ("$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
-          local child=$!
-          echo "$child" >"$lock/pid"
-        fi
+      if mkdir "$lock" 2>/dev/null; then
+        echo "$$" >"$lock/pid"
+        echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (verdict=${verdict})"
+        ("$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
+        local child=$!
+        echo "$child" >"$lock/pid"
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \

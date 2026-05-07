@@ -1,0 +1,30 @@
+{
+  "reviews": [
+    {
+      "author": {"login": "claude"},
+      "authorAssociation": "OWNER",
+      "body": "[reviewer-agent: changes] P0: please address the failing test.",
+      "commit": {"oid": "abc1230000000000000000000000000000000000"},
+      "id": "RV_kwDOABCD0000000001",
+      "includesCreatedEdit": false,
+      "reactionGroups": [],
+      "state": "CHANGES_REQUESTED",
+      "submittedAt": "2026-05-07T12:00:00Z"
+    }
+  ],
+  "comments": [
+    {
+      "author": {"login": "claude"},
+      "authorAssociation": "OWNER",
+      "body": "🤖 Developer agent — follow-up cycle 1\n\n## Fixed\n- ...",
+      "createdAt": "2026-05-07T11:00:00Z",
+      "id": "IC_kwDOABCD0000000001",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/test-owner/test-repo/pull/1#issuecomment-1",
+      "viewerDidAuthor": true
+    }
+  ]
+}

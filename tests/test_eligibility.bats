@@ -115,6 +115,275 @@ REVIEW_FILTER='[.[]
 }
 
 # ---------------------------------------------------------------------------
+# eligibility_followup_pr: verdict-aware gate for the follow-up dispatcher
+# (GH#24). The filter classifies the latest reviewer-agent review on a PR
+# and decides whether to dispatch a Mode 2 dev-agent. Verdicts {clean,nits}
+# always skip; {changes,comment,blocked} dispatch iff the review is newer
+# than the latest dev-agent comment (otherwise the dev already responded).
+#
+# Tests exercise the same jq filter the predicate uses, kept in lockstep
+# with runners/lib/eligibility.sh. Each test mutates the canonical fixture
+# (one [reviewer-agent: changes] review newer than one dev-comment) to
+# inject the scenario-specific verdict / timestamp ordering.
+# ---------------------------------------------------------------------------
+FOLLOWUP_FILTER='
+  (.reviews // []
+    | map(select(.body | test($re)))
+    | sort_by(.submittedAt)
+    | last) as $latest_review
+  | (.comments // []
+    | map(select(.body | startswith($prefix)))
+    | sort_by(.createdAt)
+    | last) as $latest_devcomment
+  | if $latest_review == null then "none\tno"
+    else
+      ($latest_review.body | match($re).captures[0].string) as $verdict
+      | if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"
+        elif ($latest_devcomment == null
+              or $latest_review.submittedAt > $latest_devcomment.createdAt) then
+          "\($verdict)\tyes"
+        else "\($verdict)\tno"
+        end
+    end
+'
+
+# Helper: rewrite the latest review body in the fixture to a given verdict
+# and emit the modified JSON. Keeps each test focused on the verdict logic
+# without forking N near-identical fixture files.
+_with_verdict() {
+  local verdict="$1"
+  jq --arg body "[reviewer-agent: ${verdict}] generated" \
+     '.reviews[-1].body = $body' \
+     "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json"
+}
+
+# Helper: backdate the review to make the dev-comment newer (the
+# "dev-already-responded" case).
+_with_review_older_than_devcomment() {
+  jq '.reviews[-1].submittedAt = "2026-05-07T10:00:00Z"
+      | .comments[-1].createdAt = "2026-05-07T11:00:00Z"' \
+     "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json"
+}
+
+@test "followup filter: clean verdict skipped (review newer than dev-comment)" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_verdict clean | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'clean\tno' ]
+}
+
+@test "followup filter: nits verdict skipped (review newer than dev-comment)" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_verdict nits | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'nits\tno' ]
+}
+
+@test "followup filter: changes verdict dispatches when review is newer" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_verdict changes | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'changes\tyes' ]
+}
+
+@test "followup filter: comment verdict dispatches when review is newer" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_verdict comment | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'comment\tyes' ]
+}
+
+@test "followup filter: blocked verdict dispatches when review is newer" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_verdict blocked | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'blocked\tyes' ]
+}
+
+@test "followup filter: changes verdict skipped when dev-comment is newer" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_review_older_than_devcomment \
+        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'changes\tno' ]
+}
+
+@test "followup filter: PR with no reviewer-agent review is skipped" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(jq '.reviews = []' "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" \
+        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'none\tno' ]
+}
+
+@test "followup filter: dispatches when no dev-agent comment exists yet" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(jq '.comments = []' "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" \
+        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'changes\tyes' ]
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_followup_pr (function-level): exercises the predicate
+# end-to-end via PATH-mocked gh, confirming exit-code semantics match
+# eligibility_dev_count / eligibility_review_pending (0=work, 1=skip, 2=fail).
+# ---------------------------------------------------------------------------
+_make_gh_stub() {
+  # Args: <fixture-json-path>. Writes a gh shim that returns the fixture for
+  # any `pr view ... --json reviews,comments` invocation.
+  local fixture="$1"
+  local tmpbin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    cat '$fixture'
+    exit 0
+    ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  echo "$tmpbin"
+}
+
+@test "eligibility_followup_pr: clean verdict exits 1 (skip), prints 'clean'" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/clean.json"
+  _with_verdict clean > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 1 ]
+  [ "$output" = "clean" ]
+}
+
+@test "eligibility_followup_pr: nits verdict exits 1 (skip), prints 'nits'" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/nits.json"
+  _with_verdict nits > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 1 ]
+  [ "$output" = "nits" ]
+}
+
+@test "eligibility_followup_pr: changes verdict (review newer) exits 0, prints 'changes'" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/changes.json"
+  _with_verdict changes > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 0 ]
+  [ "$output" = "changes" ]
+}
+
+@test "eligibility_followup_pr: comment verdict (review newer) exits 0" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/comment.json"
+  _with_verdict comment > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 0 ]
+  [ "$output" = "comment" ]
+}
+
+@test "eligibility_followup_pr: blocked verdict (review newer) exits 0" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/blocked.json"
+  _with_verdict blocked > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 0 ]
+  [ "$output" = "blocked" ]
+}
+
+@test "eligibility_followup_pr: changes verdict but dev-comment newer exits 1" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/already-responded.json"
+  _with_review_older_than_devcomment > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 1 ]
+  [ "$output" = "changes" ]
+}
+
+@test "eligibility_followup_pr: gh failure exits 2, prints '?'" {
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin-fail"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+@test "eligibility_followup_pr: missing PR# arg exits 2, prints '?'" {
+  local repo
+  repo=$(make_repo)
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+# ---------------------------------------------------------------------------
+# Source-of-truth check: run-loop.sh's follow-up dispatcher must consume the
+# new predicate, not the old timestamp-only check (regression guard for the
+# bug GH#24 actually fixes).
+# ---------------------------------------------------------------------------
+@test "run-loop.sh: follow-up dispatcher invokes eligibility_followup_pr" {
+  grep -qF 'eligibility_followup_pr' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh: follow-up dispatcher re-sources lib/eligibility.sh per cycle (hot-reload)" {
+  # The dispatcher must pick up on-disk fixes to the predicate without a
+  # tmux-pane restart, mirroring the existing lib/dispatcher.sh hot-reload.
+  awk '/loop_dispatcher_followup\(\)/,/^}/' "$LOOP_ROOT/runners/run-loop.sh" \
+    | grep -qF 'lib/eligibility.sh'
+}
+
+# ---------------------------------------------------------------------------
 # CLI shape — unknown mode exits 2.
 # ---------------------------------------------------------------------------
 @test "eligibility.sh CLI errors on unknown mode" {

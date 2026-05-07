@@ -26,6 +26,7 @@ Last refreshed: **2026-05-07** (against `aniryou/loop`).
 | `prs-stale.json` | (same command) | One PR whose `[reviewer-agent: changes]` review is *older* than the head commit; the filter must INCLUDE it. |
 | `prs-mixed.json` | (same command) | Three PRs covering current/stale/no-reviews so the filter returns 2. |
 | `prs-dispatch.json` | `gh pr list --repo $REPO --state open --json number,headRefName,isDraft,mergeable --limit 100` | Six PRs covering every dispatcher branch: `dev-agent/*` non-draft / draft / conflicting, plus `feature/*` to verify branch-prefix filtering. |
+| `pr-followup.json` | `gh pr view <N> --repo $REPO --json reviews,comments` | Single PR (object root, not array) with one `[reviewer-agent: changes]` review newer than one `🤖 Developer agent` comment. Bats tests mutate the body/timestamps to cover every verdict (`clean`/`nits`/`comment`/`changes`/`blocked`) and the dev-comment-newer-than-review case for `eligibility_followup_pr`. |
 
 ## Schema notes
 

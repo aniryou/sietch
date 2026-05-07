@@ -124,9 +124,93 @@ eligibility_review_pending() {
 }
 
 # ---------------------------------------------------------------------------
+# Mode 2 follow-up dispatcher: should we spin up a dev-agent on PR <N>?
+#
+# Until GH#24 the dispatcher fired on a pure timestamp comparison — every
+# `[reviewer-agent: clean]` review beat the latest dev-comment by definition,
+# so the LLM was woken up only to discover there was nothing actionable. Cost
+# recurred every poll cycle until the PR merged (severity:medium token leak).
+#
+# The verdict-aware gate:
+#   - {clean, nits}             → skip regardless of timestamp ordering
+#                                   (`nits` is explicitly optional in Mode 2;
+#                                    `clean` is by definition no-op).
+#   - {changes, comment, blocked} → dispatch IFF the review's submittedAt
+#                                   is newer than the latest dev-agent
+#                                   comment's createdAt (otherwise the dev
+#                                   already responded; another dispatch
+#                                   would re-do work).
+#   - no reviewer-agent review yet → skip (nothing to follow-up on).
+#
+# Prints the verdict (or "none" / "?") on stdout for log visibility.
+# ---------------------------------------------------------------------------
+eligibility_followup_pr() {
+  local pr="${1:-}"
+  if [ -z "$pr" ]; then
+    echo "?"
+    return 2
+  fi
+
+  local data
+  if ! data=$(
+    PAGER=cat GIT_PAGER=cat gh pr view "$pr" \
+      --repo "$REPO_SLUG" \
+      --json reviews,comments 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+
+  # One pass of jq: classify the latest reviewer-agent review and the
+  # ordering vs the latest dev-agent comment, emit a TAB-separated
+  # "<verdict>\t<dispatch?>" string.
+  local result
+  if ! result=$(
+    echo "$data" | jq -r \
+      --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+      --arg prefix "$DEV_AGENT_COMMENT_PREFIX" '
+      (.reviews // []
+        | map(select(.body | test($re)))
+        | sort_by(.submittedAt)
+        | last) as $latest_review
+      | (.comments // []
+        | map(select(.body | startswith($prefix)))
+        | sort_by(.createdAt)
+        | last) as $latest_devcomment
+      | if $latest_review == null then "none\tno"
+        else
+          ($latest_review.body | match($re).captures[0].string) as $verdict
+          | if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"
+            elif ($latest_devcomment == null
+                  or $latest_review.submittedAt > $latest_devcomment.createdAt) then
+              "\($verdict)\tyes"
+            else "\($verdict)\tno"
+            end
+        end
+      ' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+
+  local verdict should
+  # `result` is "<verdict>\t<dispatch>"; use cut(1) instead of literal-tab
+  # parameter expansion so the source is robust to whitespace re-indenting.
+  verdict=$(printf '%s\n' "$result" | cut -f1)
+  should=$(printf '%s\n' "$result" | cut -f2)
+  echo "$verdict"
+  if [ "$should" = "yes" ]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # CLI entry point. Lets agents invoke this via:
 #   bash $LOOP_HOME/runners/lib/eligibility.sh dev
 #   bash $LOOP_HOME/runners/lib/eligibility.sh review
+#   bash $LOOP_HOME/runners/lib/eligibility.sh followup <PR#>
 # Wrappers source the file and call functions directly.
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -139,15 +223,23 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       eligibility_review_pending
       exit $?
       ;;
+    followup)
+      eligibility_followup_pr "${2:-}"
+      exit $?
+      ;;
     -h | --help | help | "")
       cat <<'EOF'
-Usage: eligibility.sh <mode>
+Usage: eligibility.sh <mode> [args]
 
 Modes:
-  dev     Count open severity:high|medium issues with no assignee.
-  review  Count open dev-agent PRs not yet reviewed at current head SHA.
+  dev              Count open severity:high|medium issues with no assignee.
+  review           Count open dev-agent PRs not yet reviewed at current head SHA.
+  followup <PR#>   Should the follow-up dispatcher dispatch a Mode 2 dev-agent
+                   for PR <PR#>? Skips clean/nits verdicts unconditionally;
+                   dispatches changes/comment/blocked iff the review is newer
+                   than the latest dev-agent comment.
 
-Output: one line with the count (or '?' on gh/jq failure).
+Output: one line — count (dev/review) or verdict (followup), or '?' on failure.
 Exit:   0 = work to do, 1 = nothing eligible, 2 = predicate failed.
 
 Required env:
