@@ -195,9 +195,117 @@ fixture_conforms() {
 }
 
 # ---------------------------------------------------------------------------
+# Refresh.sh self-tests — exercised offline using a synthetic schema/fixture.
+# These guard the union-merge and --print behaviors that defend against
+# sparse-repo regressions and accidental working-tree mutation during
+# inspection. See refresh.sh comments for the contract.
+# ---------------------------------------------------------------------------
+
+@test "fixtures/gh: refresh.sh advertises --print in its --help output" {
+  run bash "$FIXTURE_DIR/refresh.sh" --help
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q -- '--print'
+}
+
+@test "fixtures/gh: refresh.sh --print emits stdout but does not modify schemas" {
+  # Stub gh to return a valid empty array for every list query. The script
+  # then derives a minimal schema, but --print must route it to stdout, not
+  # to the *.schema.json files. We verify by hashing the directory before
+  # and after.
+  local sandbox="$BATS_TEST_TMPDIR/sandbox"
+  cp -r "$FIXTURE_DIR" "$sandbox"
+  local before_hash
+  before_hash=$(find "$sandbox" -name '*.schema.json' -exec sha256sum {} + | sort)
+
+  local tmpbin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  auth) exit 0 ;;
+  issue|pr)
+    [ "$2" = "list" ] && { echo '[]'; exit 0; }
+    ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+
+  run env PATH="$tmpbin:$PATH" bash "$sandbox/refresh.sh" --print
+  [ "$status" -eq 0 ]
+  # Stdout should contain the schema-header markers so callers can grep.
+  echo "$output" | grep -q '===== issues-high.schema.json ====='
+  echo "$output" | grep -q '===== prs-dispatch.schema.json ====='
+
+  # Schema files must be byte-identical to before.
+  local after_hash
+  after_hash=$(find "$sandbox" -name '*.schema.json' -exec sha256sum {} + | sort)
+  [ "$before_hash" = "$after_hash" ]
+}
+
+@test "fixtures/gh: union-merge preserves nested keys when new schema is sparse" {
+  # Simulates the sparse-repo regression the reviewer flagged: an existing
+  # rich schema, plus a freshly-derived sparse schema (because the queried
+  # repo had e.g. no assigned issues). The merged result must keep the
+  # rich keys.
+  #
+  # We exercise refresh.sh end-to-end by stubbing gh on PATH to return our
+  # synthetic sparse JSON, then inspect the on-disk schema afterward.
+  local sandbox="$BATS_TEST_TMPDIR/sandbox"
+  cp -r "$FIXTURE_DIR" "$sandbox"
+
+  # Pre-seed a richer-than-sparse schema so we can prove union-merge
+  # preserves the extra paths.
+  cat > "$sandbox/issues-high.schema.json" <<'EOF'
+{
+  ".": "array",
+  ".[]": "object",
+  ".[].assignees": "array",
+  ".[].assignees[]": "object",
+  ".[].assignees[].fictional_field": "string",
+  ".[].assignees[].login": "string",
+  ".[].number": "number"
+}
+EOF
+
+  # Stub gh: return one issue with no assignees (sparse) for any list query.
+  local tmpbin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  auth) exit 0 ;;
+  issue|pr)
+    if [[ "$2" = "list" ]]; then
+      echo '[{"number": 1, "assignees": []}]'
+      exit 0
+    fi
+    ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+
+  PATH="$tmpbin:$PATH" bash "$sandbox/refresh.sh" >/dev/null 2>&1
+
+  # The fictional_field came only from the prior on-disk schema — if union-merge
+  # works it should still be there. The .login key was implicitly recorded
+  # before; same.
+  run jq -r '.[".[].assignees[].fictional_field"]' "$sandbox/issues-high.schema.json"
+  [ "$status" -eq 0 ]
+  [ "$output" = "string" ]
+
+  run jq -r '.[".[].assignees[].login"]' "$sandbox/issues-high.schema.json"
+  [ "$status" -eq 0 ]
+  [ "$output" = "string" ]
+}
+
+# ---------------------------------------------------------------------------
 # Live mode — opt-in via LOOP_FIXTURE_LIVE=1. Skipped in CI.
 # Reruns refresh.sh against $LOOP_FIXTURE_REPO and asserts no git diff
-# in tests/fixtures/gh/. Catches gh-API shape drift over time.
+# in tests/fixtures/gh/. Catches gh-API shape drift over time. With
+# union-merge in place, sparse queries against a different LOOP_FIXTURE_REPO
+# no longer cause spurious diffs — only genuinely new gh keys do.
 # ---------------------------------------------------------------------------
 
 @test "fixtures/gh: live mode — refresh.sh produces no git diff" {
@@ -206,6 +314,20 @@ fixture_conforms() {
   gh auth status >/dev/null 2>&1 || skip "gh not authenticated"
   bash "$FIXTURE_DIR/refresh.sh"
   run git -C "$LOOP_ROOT" diff --exit-code -- tests/fixtures/gh/
+  if [ "$status" -ne 0 ]; then
+    echo "$output"
+    return 1
+  fi
+}
+
+@test "fixtures/gh: live mode — refresh.sh --print does not modify schemas" {
+  [ "${LOOP_FIXTURE_LIVE:-0}" = "1" ] || skip "set LOOP_FIXTURE_LIVE=1 to enable"
+  command -v gh >/dev/null || skip "gh not installed"
+  gh auth status >/dev/null 2>&1 || skip "gh not authenticated"
+  bash "$FIXTURE_DIR/refresh.sh" --print >/dev/null
+  # Scope the diff to *.schema.json — script-/manifest-level edits during
+  # development shouldn't break this test, only schema mutations.
+  run git -C "$LOOP_ROOT" diff --exit-code -- 'tests/fixtures/gh/*.schema.json'
   if [ "$status" -ne 0 ]; then
     echo "$output"
     return 1

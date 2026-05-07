@@ -50,13 +50,33 @@ Last refreshed: **2026-05-07** (against `aniryou/loop`).
 # Default — regenerate schemas against aniryou/loop
 tests/fixtures/gh/refresh.sh
 
-# Different source repo (must have at least one open issue and PR)
+# Dry-run — emit schemas to stdout, leave tests/fixtures/gh/ untouched
+tests/fixtures/gh/refresh.sh --print
+
+# Different source repo. Should be a "rich" repo: at least one assigned
+# issue + one PR with at least one review, so nested keys like
+# `.[].assignees[].login` and `.[].reviews[].submittedAt` show up.
 LOOP_FIXTURE_REPO=octocat/hello-world tests/fixtures/gh/refresh.sh
 
 # Live contract test — runs refresh.sh and asserts no git diff
 LOOP_FIXTURE_LIVE=1 bats tests/test_fixture_contract.bats
 ```
 
+### Source-repo contract & union-merge
+
 `refresh.sh` is **read-only** (only `gh ... list` / `gh ... view`); it never
-mutates the source repo. Running it twice in a row produces no `git diff`
-unless the gh API shape itself has drifted.
+mutates the source repo. It is also **monotonic**: each run union-merges the
+freshly-derived schema with the existing on-disk schema (per path: union of
+types, deduped, sorted, rejoined with `|`). Consequences:
+
+- Running it twice in a row produces no `git diff`.
+- Running it against a *sparser* `LOOP_FIXTURE_REPO` than was used previously
+  also produces no diff — previously-recorded paths survive.
+- The only diffs you'll see are when real `gh` surfaces a new key the schema
+  doesn't already know about, which is the drift CI should flag.
+
+The union-merge is a defensive backstop, not a substitute for using a rich
+source repo. If `LOOP_FIXTURE_REPO` has zero PRs or zero assigned issues, the
+*initial* schema generation against it will undercount nested keys; the
+union-merge only helps once those keys have been recorded at least once
+(typically by an earlier run against `aniryou/loop`).
