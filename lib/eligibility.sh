@@ -88,9 +88,10 @@ eligibility_review_pending() {
   if ! count=$(
     echo "$data" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" '
       [.[]
-       | select((.reviews // [])
+       | . as $pr
+       | select(($pr.reviews // [])
                 | map(select(.body | test($re)) | .commit_id)
-                | index(.headRefOid) | not)
+                | index($pr.headRefOid) | not)
       ] | length
     ' 2>/dev/null
   ); then
