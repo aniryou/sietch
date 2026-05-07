@@ -10,8 +10,14 @@
 # Each predicate prints the candidate count to stdout (one line) and exits:
 #   0  → there is work; the wrapper should proceed to invoke the agent
 #   1  → there is NO work; the wrapper should exit early without invoking
-#   2  → gh / jq invocation failed (network, auth); fall back to "assume work"
-#         so transient errors don't silently halt the loop
+#   2  → gh / jq invocation failed (network, auth, GraphQL schema drift, ...).
+#         Wrappers must skip the LLM and back off (treat rc=2 as rc=1) —
+#         run-loop.sh already applies exponential backoff on wrapper exit 2.
+#         The previous "fall back to assume work" policy turned any persistent
+#         predicate failure into a per-cycle token leak, since the LLM was
+#         spawned every poll cycle while doing nothing useful. Loud logging
+#         on stderr is the operator-visibility signal that the predicate is
+#         wedged. (GH#27)
 #
 # Required env (set by the loop CLI):
 #   REPO_ROOT     consumer repo (contains .loop/loop.config)
