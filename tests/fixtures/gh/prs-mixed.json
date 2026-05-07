@@ -1,0 +1,17 @@
+[
+  {
+    "number": 200,
+    "headRefOid": "deadbeef",
+    "reviews": [{"body": "[reviewer-agent: clean] LGTM.", "commit_id": "deadbeef"}]
+  },
+  {
+    "number": 201,
+    "headRefOid": "newcommit",
+    "reviews": [{"body": "[reviewer-agent: changes] please fix.", "commit_id": "oldcommit"}]
+  },
+  {
+    "number": 202,
+    "headRefOid": "abcd1234",
+    "reviews": []
+  }
+]

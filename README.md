@@ -84,6 +84,16 @@ st loop stop                                    # tear it down
 - `envsubst` (gettext) — required for prompt rendering. macOS: `brew install
   gettext && brew link --force gettext`. Debian: `apt-get install gettext-base`.
 
+## Tests
+
+Bats suite covering render-prompt, triage-conflict, and the eligibility
+predicates. CI runs them on push to main and on PR.
+
+```bash
+bats tests/                     # macOS: brew install bats-core
+                                # Debian: apt-get install bats
+```
+
 ## Status
 
 Early. Single-rig tested. Multi-rig untested. No `sietch update` to

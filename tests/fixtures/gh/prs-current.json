@@ -1,0 +1,9 @@
+[
+  {
+    "number": 200,
+    "headRefOid": "deadbeef",
+    "reviews": [
+      {"body": "[reviewer-agent: clean] LGTM.", "commit_id": "deadbeef"}
+    ]
+  }
+]

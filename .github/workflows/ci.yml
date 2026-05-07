@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (bats, gettext, jq)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bats gettext-base jq
+
+      - name: Run bats suite
+        run: bats tests/

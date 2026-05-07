@@ -1,0 +1,15 @@
+unchanged line above
+<<<<<<< HEAD
+ours-line-1
+ours-line-2
+ours-line-3
+ours-line-4
+ours-line-5
+=======
+theirs-line-1
+theirs-line-2
+theirs-line-3
+theirs-line-4
+theirs-line-5
+>>>>>>> branch
+unchanged line below
