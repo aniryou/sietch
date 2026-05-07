@@ -1,9 +1,7 @@
 [
   {
     "number": 201,
-    "commits": [
-      {"committedDate": "2026-05-07T12:00:00Z"}
-    ],
+    "headRefOid": "aabbccddeeff00112233445566778899aabbccdd",
     "reviews": [
       {"body": "[reviewer-agent: changes] please address findings.", "submittedAt": "2026-05-07T10:00:00Z"}
     ]
