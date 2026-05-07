@@ -14,6 +14,7 @@
 
 set -u
 set -o pipefail
+\unalias -a 2>/dev/null || true
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
 : "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"

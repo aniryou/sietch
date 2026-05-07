@@ -14,27 +14,22 @@ bd dolt push          # Push beads data to remote
 
 ## Non-Interactive Shell Commands
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+This guidance is for **LLM-issued shell calls** — i.e. commands a Claude agent runs via the Bash tool inside a sietch wrapper. The wrappers themselves run `\unalias -a 2>/dev/null || true` near the top of every script, so the framework's own shell calls are protected. Any shell call you (the agent) issue at runtime needs the same care.
 
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+`cp`, `mv`, and `rm` are aliased to `-i` on many systems. Headless agents block forever on the y/n prompt. Always pass `-f`:
 
-**Use these forms instead:**
 ```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
-
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
+cp -f src dst        # not: cp src dst
+mv -f src dst        # not: mv src dst
+rm -f file           # not: rm file
+rm -rf dir           # not: rm -r dir
+cp -rf src dst       # not: cp -r src dst
 ```
 
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+Other interactive commands to harden:
+- `scp` / `ssh` — `-o BatchMode=yes`
+- `apt-get` — `-y`
+- `brew` — `HOMEBREW_NO_AUTO_UPDATE=1`
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker

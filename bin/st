@@ -19,6 +19,7 @@
 #   st help                       # this message
 
 set -u
+\unalias -a 2>/dev/null || true
 
 # Resolve symlinks so SIETCH_HOME points at the real ~/code/sietch/, not
 # wherever ~/.local/bin/st happens to live.

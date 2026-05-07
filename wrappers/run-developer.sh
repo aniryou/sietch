@@ -12,6 +12,7 @@
 
 set -u
 set -o pipefail
+\unalias -a 2>/dev/null || true
 
 usage() {
   cat >&2 <<'EOF'

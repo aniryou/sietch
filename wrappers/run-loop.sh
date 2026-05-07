@@ -27,6 +27,7 @@
 # Use 'stop' from any terminal to terminate cleanly.
 
 set -u
+\unalias -a 2>/dev/null || true
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
 : "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"
