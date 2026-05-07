@@ -81,7 +81,8 @@ if [ "$MODE" = "default" ]; then
 fi
 
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
-TS="$(date +%Y%m%d-%H%M%S)"
+# $$ suffix keeps log paths unique when two wrappers start in the same second.
+TS="$(date +%Y%m%d-%H%M%S)-$$"
 
 # Unique ID per wrapper invocation so the trap can release exactly the locks
 # this run owns when multiple wrappers are running in parallel.

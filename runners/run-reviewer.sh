@@ -33,7 +33,8 @@ case "$EL_RC" in
 esac
 unset EL_COUNT EL_RC
 
-TS="$(date +%Y%m%d-%H%M%S)"
+# $$ suffix keeps log paths unique when two wrappers start in the same second.
+TS="$(date +%Y%m%d-%H%M%S)-$$"
 LOG="/tmp/reviewer-agent-${TS}.log"
 RAW="/tmp/reviewer-agent-${TS}.jsonl"
 
