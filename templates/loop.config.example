@@ -32,6 +32,14 @@ SEVERITY_LABEL_MEDIUM="severity:medium"
 SEVERITY_LABEL_LOW="severity:low"
 TYPE_LABELS="bug,enhancement,testing,documentation"
 
+# Applied by the dev-agent's safety-net flow to issues that need human action
+# before any further automated work (e.g. CI-affecting changes, > 200 LOC
+# deletions, missing external services). Issues carrying this label are
+# excluded from `eligibility_dev_count`, so the wrapper stops re-spawning the
+# LLM on each poll cycle. Remove the label manually to re-make an issue
+# eligible.
+BLOCKED_HUMAN_LABEL="blocked:human"
+
 # ---------------------------------------------------------------------------
 # Triage rules (Mode 3 conflict resolution)
 # ---------------------------------------------------------------------------

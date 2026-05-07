@@ -42,6 +42,109 @@ load 'helpers'
 }
 
 # ---------------------------------------------------------------------------
+# eligibility_dev_count: blocked:human label post-filter (GH#28)
+# Issues carrying the BLOCKED_HUMAN_LABEL label have already been flagged for
+# human action by the safety-net flow. They must be skipped to break the
+# rediscovery loop that re-spawns the LLM every cycle on the same blocked
+# issue. The post-filter is a label-name lookup added next to the existing
+# assignee filter; this test exercises the same jq pipeline against fixture
+# JSON.
+# ---------------------------------------------------------------------------
+
+@test "dev-count blocked:human filter drops labeled issues" {
+  local nums
+  nums=$(jq -r '.[]
+    | select(.assignees == [])
+    | select((.labels // [] | map(.name)) | index("blocked:human") | not)
+    | .number' \
+    < "$LOOP_ROOT/tests/fixtures/gh/issues-with-blocked-label.json")
+  # Fixture: 201 (no blocked label), 202 + 203 (blocked label) → expect 201 only.
+  [ "$(printf '%s' "$nums" | sort -u | tr '\n' ' ')" = "201 " ]
+}
+
+@test "dev-count blocked:human filter is permissive when label is absent" {
+  # issues-high.json has no `labels` field; the filter must fall through and
+  # count both unassigned issues (101, 102), proving the filter doesn't
+  # accidentally drop label-less fixtures.
+  local nums
+  nums=$(jq -r '.[]
+    | select(.assignees == [])
+    | select((.labels // [] | map(.name)) | index("blocked:human") | not)
+    | .number' \
+    < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
+  [ "$(printf '%s' "$nums" | sort -u | tr '\n' ' ')" = "101 102 " ]
+}
+
+@test "eligibility.sh: dev-count references BLOCKED_HUMAN_LABEL" {
+  # Source-of-truth: the predicate must consume the configurable label name
+  # (default 'blocked:human'), not silently hard-code a different string.
+  grep -qF 'BLOCKED_HUMAN_LABEL' "$LOOP_ROOT/runners/lib/eligibility.sh"
+  grep -qF 'blocked:human' "$LOOP_ROOT/runners/lib/eligibility.sh"
+}
+
+@test "developer.md: safety-net flow applies blocked:human label before exit" {
+  # Source-of-truth: the prompt must instruct the agent to label the GH issue,
+  # not just bd-flag the parent. Without this the eligibility predicate
+  # rediscovers the blocked issue every cycle (GH#28). The template uses the
+  # ${BLOCKED_HUMAN_LABEL} placeholder so renderer + config stay in lockstep;
+  # also assert `gh issue edit ... --add-label` is the mechanism.
+  grep -qF 'BLOCKED_HUMAN_LABEL' "$LOOP_ROOT/templates/developer.md"
+  grep -qF -- '--add-label' "$LOOP_ROOT/templates/developer.md"
+}
+
+@test "eligibility_dev_count: blocked:human-only fixture exits 1 (no work)" {
+  # End-to-end via the CLI with a stubbed gh: every eligible issue has the
+  # blocked:human label, so the predicate must report 0 and exit 1 — proving
+  # the label filter actually short-circuits the wrapper LLM spawn.
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue list")
+    # Mirror gh: every eligible issue carries the blocked:human label.
+    echo '[{"number":9991,"assignees":[],"labels":[{"name":"blocked:human"}]}]'
+    exit 0
+    ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
+}
+
+@test "eligibility_dev_count: removing blocked:human re-makes issue eligible" {
+  # Regression guard for the un-block path: same fixture as the previous test
+  # minus the blocked:human label → count 1, exit 0 (LLM is invoked again).
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue list")
+    echo '[{"number":9992,"assignees":[],"labels":[{"name":"severity:medium"}]}]'
+    exit 0
+    ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+# ---------------------------------------------------------------------------
 # eligibility_dev_count: REST-list path replaces --search (loop-d8j)
 # Two `gh issue list --label X` calls (one per severity) are unioned with
 # `sort -u`. Assigned issues are dropped via `select(.assignees == [])`.

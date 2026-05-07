@@ -31,9 +31,20 @@ set -o pipefail
 # shellcheck disable=SC1091
 . "$REPO_ROOT/.loop/loop.config"
 
+# Default for older loop.config files predating GH#28. Set unconditionally
+# (default-if-unset) so consumer repos don't have to re-run `st init` to pick
+# up the new safety-net skip marker.
+: "${BLOCKED_HUMAN_LABEL:=blocked:human}"
+
 # ---------------------------------------------------------------------------
-# Mode 1 dev-agent: open severity:high|medium issues with no assignee AND no
-# live filesystem lock under $LOCK_DIR.
+# Mode 1 dev-agent: open severity:high|medium issues with no assignee, no
+# ${BLOCKED_HUMAN_LABEL} label, AND no live filesystem lock under $LOCK_DIR.
+#
+# The label filter (GH#28) drops issues the safety-net flow has flagged as
+# permanently ineligible until a human acts. Without it, every poll cycle
+# rediscovers the same blocked issue, the wrapper spawns a fresh LLM, the
+# LLM re-trips the same safety-net rule, and exits — burning tokens until
+# the human closes/reassigns the GH issue.
 #
 # The lock-dir post-filter is advisory: the agent still does the atomic mkdir
 # for the actual claim. Without it, every parallel wrapper sees the same gh
@@ -56,9 +67,14 @@ eligibility_dev_count() {
       PAGER=cat GIT_PAGER=cat gh issue list \
         --repo "$REPO_SLUG" --state open \
         --label "$label" \
-        --json number,assignees \
+        --json number,assignees,labels \
         --limit 50 2>/dev/null \
-        | jq -r '.[] | select(.assignees == []) | .number' 2>/dev/null
+        | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
+            .[]
+            | select(.assignees == [])
+            | select((.labels // [] | map(.name)) | index($blocked) | not)
+            | .number
+          ' 2>/dev/null
     ); then
       echo "?"
       return 2

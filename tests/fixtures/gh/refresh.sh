@@ -162,11 +162,13 @@ HELP
   # (assignees[].login, reviews[].submittedAt, ...) are more likely to be
   # surfaced; the union-merge above is the fallback if the sample is sparse.
   gen_schema issues-high.json \
-    issue list --state all --json number,assignees --limit 50
+    issue list --state all --json number,assignees,labels --limit 50
   gen_schema issues-medium.json \
-    issue list --state all --json number,assignees --limit 50
+    issue list --state all --json number,assignees,labels --limit 50
   gen_schema issues-with-locks.json \
     issue list --state all --json number --limit 50
+  gen_schema issues-with-blocked-label.json \
+    issue list --state all --json number,assignees,labels --limit 50
 
   # --- pr list shapes ---
   # eligibility_review_pending: --json number,commits,reviews
