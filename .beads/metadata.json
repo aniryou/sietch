@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "sietch",
+  "project_id": "c717e7da-60c5-400d-9d1e-13470713046c"
+}
