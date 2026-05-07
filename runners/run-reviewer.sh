@@ -44,32 +44,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Same stream-json → human-readable filter as run-developer.sh.
-JQ_FILTER='
-  if .type == "system" and .subtype == "init" then
-    "[init] model=\(.model) tools=\(.tools | length) cwd=\(.cwd)"
-  elif .type == "assistant" then
-    (.message.content // [])[] | (
-      if .type == "text" then
-        "[text] " + ((.text // "") | gsub("\n"; " ⏎ ") | .[0:400])
-      elif .type == "tool_use" then
-        "[tool] " + .name + " " + ((.input // {}) | tostring | .[0:300])
-      else empty end
-    )
-  elif .type == "user" then
-    (.message.content // [])[] | (
-      if .type == "tool_result" then
-        "[result] " + (
-          if (.content | type) == "array" then
-            (.content[0].text // "" | gsub("\n"; " ⏎ ") | .[0:400])
-          else (.content // "" | tostring | .[0:400]) end
-        )
-      else empty end
-    )
-  elif .type == "result" then
-    "[done] " + .subtype + " duration=\(.duration_ms)ms turns=\(.num_turns) cost=$\(.total_cost_usd // 0)"
-  else empty end
-'
+# jq filter: same stream-json → human-readable filter as run-developer.sh,
+# sourced from the shared lib so both panes emit identical event tags and
+# ANSI colors. Honors NO_COLOR.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/jq_filter.sh"
 
 cd "$REPO"
 
