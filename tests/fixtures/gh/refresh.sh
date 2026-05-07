@@ -123,8 +123,26 @@ main() {
         shift
         ;;
       -h|--help)
-        # Echo the leading comment block as the help text.
-        sed -n '2,/^set -euo/{ /^set -euo/d; s/^# \?//; p; }' "${BASH_SOURCE[0]}"
+        cat <<'HELP'
+refresh.sh — regenerate *.schema.json snapshots for tests/fixtures/gh/
+
+Usage:
+  refresh.sh           Update <name>.schema.json files in place (union-merged
+                       with the existing on-disk schema, so previously-recorded
+                       paths are never lost).
+  refresh.sh --print   Emit schemas to stdout, leave the working tree untouched.
+  refresh.sh --help    Show this message.
+
+Env:
+  LOOP_FIXTURE_REPO    Source repo to query (default: aniryou/loop). Should be
+                       a "rich" repo — at least one assigned issue + one PR
+                       with at least one review — so the queries surface every
+                       nested key. Sparse queries are union-merged with the
+                       existing schema, so the schema only ever grows.
+
+See the comment block at the top of this file (and tests/fixtures/gh/MANIFEST.md)
+for details on the contract this script enforces.
+HELP
         exit 0
         ;;
       *)
