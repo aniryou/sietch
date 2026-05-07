@@ -113,6 +113,14 @@ bd remember "developer-agent claimed GitHub issue #${ISSUE_NUM} at $(date -Iseco
 
 **Lock release.** The wrapper (`run-developer.sh`) registers a `trap` that releases all locks tagged with this run's `DEV_AGENT_RUN_ID` on exit — regardless of success, give-up, crash, or kill. You don't need to release the lock yourself, but it's safe to do so on the success path (idempotent: `rm -rf "$LOCK"`).
 
+**Supported kill mechanisms.** The wrapper runs the `claude` pipeline asynchronously and uses bash's `wait` builtin (which is signal-interruptible), so any of the following will fire the cleanup trap promptly and tear down `claude`/`tee`/`jq` along with releasing the lock:
+
+- `Ctrl+C` inside the tmux pane (SIGINT to the pgroup).
+- `st loop stop` (kills the tmux session, signaling all panes).
+- `kill <wrapper-pid>` or `kill -INT <wrapper-pid>` (SIGTERM/SIGINT to the wrapper bash). The trap forwards the signal to the pipeline's process group.
+
+`SIGKILL` bypasses traps by definition — that's the only path that can leave a stale lock.
+
 **Stale locks** can occur if a wrapper is killed with `SIGKILL` (which bypasses traps). If you ever scan and find a lock whose `started` is more than ${STALE_LOCK_HOURS} hours old, treat it as stale: `rm -rf` the lock and log the takeover.
 
 The lock only protects the brief window between scan-pick and the durable side-effects (worktree exists, PR opened). Once the PR exists, the "skip issues with an existing dev-agent PR" filter takes over — the lock is no longer load-bearing.

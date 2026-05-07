@@ -38,9 +38,15 @@ TS="$(date +%Y%m%d-%H%M%S)-$$"
 LOG="/tmp/reviewer-agent-${TS}.log"
 RAW="/tmp/reviewer-agent-${TS}.jsonl"
 
+# Pipeline state — the cleanup trap forwards SIGTERM/SIGINT to PIPELINE_PGID
+# so an external `kill <wrapper-pid>` actually tears down claude/tee/jq.
+PIPELINE_PID=""
+PIPELINE_PGID=""
+
 cleanup() {
   local exit_code=$?
   echo "[wrapper] reviewer exited with code $exit_code" >&2
+  pipeline_kill_pgroup_if_alive "${PIPELINE_PGID:-}"
   echo "[wrapper] live log: $LOG" >&2
   echo "[wrapper] raw json: $RAW" >&2
   exit "$exit_code"
@@ -53,6 +59,11 @@ trap cleanup EXIT INT TERM
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
 
+# Signal-forwarding helpers — see runners/lib/pipeline_signal.sh for the
+# full explanation of why foreground pipelines hang on `kill <pid>`.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
+
 cd "$REPO" || exit 1
 
 echo "[wrapper] live log: $LOG"
@@ -60,14 +71,25 @@ echo "[wrapper] raw json: $RAW"
 echo "[wrapper] tail with: tail -f $LOG"
 echo
 
-PAGER=cat GIT_PAGER=cat \
-  claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
-  --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
-  --permission-mode bypassPermissions \
-  --max-turns "$REVIEWER_MAX_TURNS" \
-  --verbose \
-  --output-format stream-json \
-  2> >(tee "$RAW.stderr" >&2) \
-  | tee "$RAW" \
-  | jq -r --unbuffered "$JQ_FILTER" 2>/dev/null \
-  | tee "$LOG"
+# Background the pipeline in a subshell with `set -m` so `wait` (below) is
+# signal-interruptible and the pipeline lives in its own process group. See
+# runners/lib/pipeline_signal.sh for the rationale.
+set -m
+(
+  PAGER=cat GIT_PAGER=cat \
+    claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
+    --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
+    --permission-mode bypassPermissions \
+    --max-turns "$REVIEWER_MAX_TURNS" \
+    --verbose \
+    --output-format stream-json \
+    2> >(tee "$RAW.stderr" >&2) \
+    | tee "$RAW" \
+    | jq -r --unbuffered "$JQ_FILTER" 2>/dev/null \
+    | tee "$LOG"
+) &
+PIPELINE_PID=$!
+PIPELINE_PGID=$(pipeline_capture_pgid "$PIPELINE_PID")
+set +m
+
+wait "$PIPELINE_PID"

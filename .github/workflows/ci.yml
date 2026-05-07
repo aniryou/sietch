@@ -21,6 +21,7 @@ env:
     runners/lib/jitter.sh
     runners/lib/jq_filter.sh
     runners/lib/onboard.sh
+    runners/lib/pipeline_signal.sh
     runners/lib/render-prompt.sh
     tests/helpers.bash
   SHFMT_FLAGS: -i 2 -ci -bn
