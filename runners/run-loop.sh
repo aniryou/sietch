@@ -146,6 +146,11 @@ loop_reviewer() {
 
 loop_dispatcher_followup() {
   while true; do
+    # Re-read lib/dispatcher.sh each cycle so on-disk fixes apply without
+    # restarting the long-running tmux pane. Failure (mid-edit, syntax error)
+    # logs a WARN and continues with the previously cached helpers.
+    # shellcheck disable=SC1091
+    . "$LOOP_HOME/runners/lib/dispatcher.sh" || echo "[$(ts)] [dispatch:followup] WARN: failed to re-source lib/dispatcher.sh; using cached helpers"
     cleanup_stale_dispatch_locks
     echo "[$(ts)] [dispatch:followup] scanning open dev-agent PRs..."
 
@@ -204,6 +209,11 @@ loop_dispatcher_followup() {
 loop_dispatcher_conflicts() {
   local empty_streak=0 dispatched sleep_for
   while true; do
+    # Re-read lib/dispatcher.sh each cycle so on-disk fixes apply without
+    # restarting the long-running tmux pane. Failure (mid-edit, syntax error)
+    # logs a WARN and continues with the previously cached helpers.
+    # shellcheck disable=SC1091
+    . "$LOOP_HOME/runners/lib/dispatcher.sh" || echo "[$(ts)] [dispatch:conflicts] WARN: failed to re-source lib/dispatcher.sh; using cached helpers"
     cleanup_stale_dispatch_locks
     echo "[$(ts)] [dispatch:conflicts] scanning for CONFLICTING dev-agent PRs..."
     dispatched=0
