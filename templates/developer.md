@@ -113,6 +113,15 @@ bd remember "developer-agent claimed GitHub issue #${ISSUE_NUM} at $(date -Iseco
 
 **Lock release.** The wrapper (`run-developer.sh`) registers a `trap` that releases all locks tagged with this run's `DEV_AGENT_RUN_ID` on exit — regardless of success, give-up, crash, or kill. You don't need to release the lock yourself, but it's safe to do so on the success path (idempotent: `rm -rf "$LOCK"`).
 
+**Supported kill mechanisms.** The wrapper runs the `claude` pipeline asynchronously and uses bash's `wait` builtin (which is signal-interruptible), so any of the following will fire the cleanup trap promptly and tear down `claude`/`tee`/`jq` along with releasing the lock:
+
+- `Ctrl+C` inside the tmux pane — works (signals the whole pgroup; the wrapper bash and pipeline children all receive SIGINT).
+- `st loop stop` — works (kills the tmux session; all panes get SIGHUP/SIGTERM).
+- `kill <wrapper-pid>` (SIGTERM) — works in **every** launch context: interactive shells, tmux panes, and non-interactive parents (e.g. our dispatcher's `( ... ) &` in `run-loop.sh`). The trap forwards SIGTERM to the pipeline's pgroup. **This is the portable kill signal — prefer it over `kill -INT` for scripts and tooling.**
+- `kill -INT <wrapper-pid>` (SIGINT) — works **only** when the wrapper was launched from a parent with job control on (interactive tmux pane, `bash -i`, login shell). When launched from a non-interactive parent as a backgrounded subshell — including the `run-loop.sh` dispatcher pattern `( "$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" ) &` — bash inherits SIGINT set to `SIG_IGN`, and per `man bash` *"Signals ignored upon entry to the shell cannot be trapped or reset"*. The wrapper's `trap cleanup INT` is therefore a no-op in that context, and `kill -INT` is silently swallowed. Use SIGTERM there.
+
+`SIGKILL` bypasses traps by definition — that's the only path that can leave a stale lock.
+
 **Stale locks** can occur if a wrapper is killed with `SIGKILL` (which bypasses traps). If you ever scan and find a lock whose `started` is more than ${STALE_LOCK_HOURS} hours old, treat it as stale: `rm -rf` the lock and log the takeover.
 
 The lock only protects the brief window between scan-pick and the durable side-effects (worktree exists, PR opened). Once the PR exists, the "skip issues with an existing dev-agent PR" filter takes over — the lock is no longer load-bearing.

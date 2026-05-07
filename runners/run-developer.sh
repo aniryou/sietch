@@ -135,9 +135,19 @@ fi
 # shellcheck disable=SC2034 # reserved for diff-against-post snapshot in cleanup; not yet wired
 PRE_WORKTREES=$(git -C "$REPO" worktree list --porcelain | awk '/^worktree/ {print $2}' | grep "^${WORKTREE_BASE}/" || true)
 
+# Pipeline state — the cleanup trap forwards SIGTERM/SIGINT to PIPELINE_PGID
+# so an external `kill <wrapper-pid>` actually tears down claude/tee/jq.
+# Without forwarding, those children survive and re-parent to PID 1.
+PIPELINE_PID=""
+PIPELINE_PGID=""
+
 cleanup() {
   local exit_code=$?
   echo "[wrapper] agent exited with code $exit_code; cleaning up..." >&2
+
+  # If the pipeline is still running (we got here via SIGTERM/SIGINT, not
+  # natural completion of `wait`), forward the signal to its process group.
+  pipeline_kill_pgroup_if_alive "${PIPELINE_PGID:-}"
 
   # Always cd out of any worktree before removing it.
   cd "$REPO" || cd /
@@ -198,6 +208,14 @@ trap cleanup EXIT INT TERM
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
 
+# Signal-forwarding helpers (pipeline_capture_pgid, pipeline_kill_pgroup_if_alive).
+# See the lib file for the full rationale; in short: the bash `wait` builtin is
+# signal-interruptible, but only when the pipeline is asynchronous. Foreground
+# pipelines defer the trap. So we background the pipeline below and forward
+# signals here.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
+
 cd "$REPO" || exit 1
 
 echo "[wrapper] mode: $MODE${TARGET_PR:+ (PR #$TARGET_PR)} run_id=$DEV_AGENT_RUN_ID"
@@ -206,14 +224,29 @@ echo "[wrapper] raw json: $RAW"
 echo "[wrapper] tail with: tail -f $LOG"
 echo
 
-PAGER=cat GIT_PAGER=cat \
-  claude -p "$KICKOFF" \
-  --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
-  --permission-mode bypassPermissions \
-  --max-turns "$DEV_MAX_TURNS" \
-  --verbose \
-  --output-format stream-json \
-  2> >(tee "$RAW.stderr" >&2) \
-  | tee "$RAW" \
-  | jq -r --unbuffered "$JQ_FILTER" 2>/dev/null \
-  | tee "$LOG"
+# Background the pipeline in a subshell with `set -m` so:
+#   1. `wait` (used below) is signal-interruptible — bash defers traps for
+#      foreground pipelines, but fires them immediately for async ones.
+#   2. The subshell becomes its own process-group leader, so the cleanup
+#      trap can kill claude+tee+jq with one `kill -- -<pgid>` syscall.
+# Without (1), `kill <wrapper-pid>` hangs the wrapper. Without (2), the
+# children survive the trap and re-parent to PID 1.
+set -m
+(
+  PAGER=cat GIT_PAGER=cat \
+    claude -p "$KICKOFF" \
+    --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
+    --permission-mode bypassPermissions \
+    --max-turns "$DEV_MAX_TURNS" \
+    --verbose \
+    --output-format stream-json \
+    2> >(tee "$RAW.stderr" >&2) \
+    | tee "$RAW" \
+    | jq -r --unbuffered "$JQ_FILTER" 2>/dev/null \
+    | tee "$LOG"
+) &
+PIPELINE_PID=$!
+PIPELINE_PGID=$(pipeline_capture_pgid "$PIPELINE_PID")
+set +m
+
+wait "$PIPELINE_PID"
