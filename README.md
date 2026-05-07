@@ -23,18 +23,19 @@ A single `st loop start` brings them all up in tmux panes.
 ## Architecture
 
 ```
-~/code/loop/                    ← framework (this repo)
-├── bin/st                      ← global CLI dispatcher
-├── templates/                  ← parameterized prompt templates
+~/code/loop/                       ← framework (this repo)
+├── bin/st                         ← global CLI dispatcher
+├── templates/                     ← parameterized prompt templates
 │   ├── developer.md
 │   ├── reviewer.md
 │   ├── reviewer-orchestrator.md
 │   ├── issue-author.md
-│   └── loop.config.example     ← template for `st init`
-├── lib/render-prompt.sh        ← envsubst-based template renderer
-├── lib/eligibility.sh          ← shell-side eligibility predicates
-├── wrappers/                   ← headless agent wrappers (run-*.sh)
-└── install.sh                  ← symlinks CLI into ~/.local/bin
+│   └── loop.config.example        ← template for `st init`
+├── runners/                       ← headless agent runners (run-*.sh)
+│   └── lib/                       ← shared shell helpers
+│       ├── render-prompt.sh       ← envsubst-based template renderer
+│       └── eligibility.sh         ← shell-side eligibility predicates
+└── install.sh                     ← symlinks CLI into ~/.local/bin
 
 <consumer-repo>/.loop/          ← per-repo config, the only thing in-repo
 └── loop.config                 ← REPO_OWNER, branch prefix, labels, etc.
@@ -66,9 +67,7 @@ git add .loop && git commit -m "loop: onboard this repo"
 
 ```bash
 st issue "tests should cover negative inputs"   # draft → confirm → file
-st dev                                          # claim & ship one issue
-st review                                       # review one dev-agent PR
-st loop start                                   # all of the above in tmux
+st loop start                                   # bring up the multi-agent fleet in tmux
 st loop status                                  # check what's running
 st loop stop                                    # tear it down
 ```

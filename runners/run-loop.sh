@@ -94,7 +94,7 @@ loop_dev_mode1() {
   while true; do
     echo "[$(ts)] [dev-${id}] starting Mode 1 cycle"
     ec=0
-    "$LOOP_HOME/wrappers/run-developer.sh" || ec=$?
+    "$LOOP_HOME/runners/run-developer.sh" || ec=$?
     case "$ec" in
       0)  echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
           empty_streak=0
@@ -117,7 +117,7 @@ loop_reviewer() {
   while true; do
     echo "[$(ts)] [reviewer] starting orchestrator cycle"
     ec=0
-    "$LOOP_HOME/wrappers/run-reviewer.sh" || ec=$?
+    "$LOOP_HOME/runners/run-reviewer.sh" || ec=$?
     case "$ec" in
       0)  echo "[$(ts)] [reviewer] cycle done (exit 0)"
           empty_streak=0
@@ -174,7 +174,7 @@ loop_dispatcher_followup() {
         if mkdir "$lock" 2>/dev/null; then
           echo "$$" > "$lock/pid"
           echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (review=${latest_review} dev=${latest_devcomment})"
-          ( "$LOOP_HOME/wrappers/run-developer.sh" follow-up "$pr" > /dev/null 2>&1 ) &
+          ( "$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" > /dev/null 2>&1 ) &
           local child=$!
           echo "$child" > "$lock/pid"
         fi
@@ -215,7 +215,7 @@ loop_dispatcher_conflicts() {
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" > "$lock/pid"
         echo "[$(ts)] [dispatch:conflicts] dispatching resolve-conflicts for PR #${pr}"
-        ( "$LOOP_HOME/wrappers/run-developer.sh" resolve-conflicts "$pr" > /dev/null 2>&1 ) &
+        ( "$LOOP_HOME/runners/run-developer.sh" resolve-conflicts "$pr" > /dev/null 2>&1 ) &
         local child=$!
         echo "$child" > "$lock/pid"
         dispatched=$((dispatched + 1))
@@ -328,7 +328,7 @@ done
 [ "$POLL_INTERVAL" -ge 10 ] || { echo "--poll-interval must be >= 10 (gh rate limits)" >&2; exit 2; }
 [[ "$MAX_RUNTIME" =~ ^[0-9]+$ ]] || { echo "--max-runtime must be numeric" >&2; exit 2; }
 
-SCRIPT="$LOOP_HOME/wrappers/run-loop.sh"
+SCRIPT="$LOOP_HOME/runners/run-loop.sh"
 
 require_tmux() {
   command -v tmux >/dev/null || {

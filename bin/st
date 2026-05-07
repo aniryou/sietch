@@ -110,11 +110,11 @@ case "$CMD" in
   help|-h|--help)  usage ;;
   version)         cmd_version ;;
   init)            cmd_init "$@" ;;
-  dev|developer)   require_repo_root; exec "$LOOP_HOME/wrappers/run-developer.sh" "$@" ;;
-  review|reviewer) require_repo_root; exec "$LOOP_HOME/wrappers/run-reviewer.sh" "$@" ;;
-  issue|issues)    require_repo_root; exec "$LOOP_HOME/wrappers/run-issue-author.sh" "$@" ;;
-  loop)            require_repo_root; exec "$LOOP_HOME/wrappers/run-loop.sh" "$@" ;;
-  triage)          require_repo_root; exec "$LOOP_HOME/wrappers/triage-conflict.sh" "$@" ;;
+  dev|developer)   require_repo_root; exec "$LOOP_HOME/runners/run-developer.sh" "$@" ;;
+  review|reviewer) require_repo_root; exec "$LOOP_HOME/runners/run-reviewer.sh" "$@" ;;
+  issue|issues)    require_repo_root; exec "$LOOP_HOME/runners/run-issue-author.sh" "$@" ;;
+  loop)            require_repo_root; exec "$LOOP_HOME/runners/run-loop.sh" "$@" ;;
+  triage)          require_repo_root; exec "$LOOP_HOME/runners/run-conflict-triage.sh" "$@" ;;
   *)
     echo "[st] unknown command: $CMD" >&2
     echo "Run 'st help' for the command list." >&2

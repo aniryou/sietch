@@ -20,8 +20,8 @@ else
 fi
 
 chmod +x "$LOOP_HOME/bin/st" \
-         "$LOOP_HOME/wrappers"/*.sh \
-         "$LOOP_HOME/lib"/*.sh
+         "$LOOP_HOME/runners"/*.sh \
+         "$LOOP_HOME/runners/lib"/*.sh
 
 case ":$PATH:" in
   *":$TARGET_DIR:"*) ;;

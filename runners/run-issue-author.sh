@@ -20,7 +20,7 @@ REPO="$REPO_ROOT"
 cd "$REPO"
 
 INITIAL_MSG="${1:-}"
-PROMPT="$("$LOOP_HOME/lib/render-prompt.sh" "$LOOP_HOME/templates/issue-author.md")"
+PROMPT="$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/issue-author.md")"
 
 if [ -n "$INITIAL_MSG" ]; then
   PAGER=cat GIT_PAGER=cat \

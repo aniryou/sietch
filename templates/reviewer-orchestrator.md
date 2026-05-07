@@ -26,7 +26,7 @@ You are the **orchestrator** for the reviewer agent system. Your only job is to 
 Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
 
 ```bash
-bash "$LOOP_HOME/lib/eligibility.sh" review
+bash "$LOOP_HOME/runners/lib/eligibility.sh" review
 # exit 0 = PRs need review; exit 1 = nothing pending; exit 2 = predicate failed
 ```
 

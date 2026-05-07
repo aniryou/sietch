@@ -20,7 +20,7 @@ REPO="$REPO_ROOT"
 # Preflight: skip the LLM if no dev-agent PR needs review at its current
 # headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
 # from "ran successfully" so it can apply exponential backoff.
-EL_COUNT=$("$LOOP_HOME/lib/eligibility.sh" review)
+EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" review)
 EL_RC=$?
 case "$EL_RC" in
   0) echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding" ;;
@@ -80,7 +80,7 @@ echo
 
 PAGER=cat GIT_PAGER=cat \
 claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
-  --append-system-prompt "$("$LOOP_HOME/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
+  --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$REVIEWER_MAX_TURNS" \
   --verbose \

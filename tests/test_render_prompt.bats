@@ -11,7 +11,7 @@ setup() {
 }
 
 @test "every REPO_KEYS variable substitutes (no literal \${KEY} left for any repo key)" {
-  run bash "$LOOP_ROOT/lib/render-prompt.sh" "$TEMPLATE"
+  run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$TEMPLATE"
   [ "$status" -eq 0 ]
   # No literal \${KEY} remaining for any of the known repo keys.
   for key in REPO_OWNER REPO_NAME REPO_SLUG BRANCH_PREFIX LOCK_DIR \
@@ -28,7 +28,7 @@ setup() {
 }
 
 @test "concrete repo values appear in output" {
-  run bash "$LOOP_ROOT/lib/render-prompt.sh" "$TEMPLATE"
+  run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$TEMPLATE"
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF 'REPO_OWNER=test-owner'
   echo "$output" | grep -qF 'REPO_SLUG=test-owner/test-repo'
@@ -40,7 +40,7 @@ setup() {
 }
 
 @test "non-REPO_KEYS variables pass through literally" {
-  run bash "$LOOP_ROOT/lib/render-prompt.sh" "$TEMPLATE"
+  run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$TEMPLATE"
   [ "$status" -eq 0 ]
   # \${REPO_ROOT} and \${HOLDER} are NOT in REPO_KEYS — must remain literal so
   # the agent (or its bash subshell) can expand them at runtime.
@@ -49,28 +49,28 @@ setup() {
 }
 
 @test "missing template path exits 2" {
-  run bash "$LOOP_ROOT/lib/render-prompt.sh" "$BATS_TEST_TMPDIR/does-not-exist.md"
+  run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$BATS_TEST_TMPDIR/does-not-exist.md"
   [ "$status" -eq 2 ]
   echo "$output" | grep -qF '[render-prompt] template not found'
 }
 
 @test "missing loop.config exits 1" {
   REPO_ROOT="$BATS_TEST_TMPDIR/empty-repo" \
-    run bash "$LOOP_ROOT/lib/render-prompt.sh" "$TEMPLATE"
+    run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$TEMPLATE"
   [ "$status" -eq 1 ]
   echo "$output" | grep -qF '[render-prompt] missing config'
 }
 
 @test "missing REPO_ROOT exits non-zero" {
   unset REPO_ROOT
-  run bash "$LOOP_ROOT/lib/render-prompt.sh" "$TEMPLATE"
+  run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$TEMPLATE"
   [ "$status" -ne 0 ]
 }
 
 @test "envsubst not on PATH exits 1 with helpful message" {
   # Strip envsubst from PATH. /usr/bin and /bin do not contain envsubst on
   # macOS or Debian (gettext lives in /usr/local/bin or /opt/homebrew/bin).
-  PATH=/usr/bin:/bin run bash "$LOOP_ROOT/lib/render-prompt.sh" "$TEMPLATE"
+  PATH=/usr/bin:/bin run bash "$LOOP_ROOT/runners/lib/render-prompt.sh" "$TEMPLATE"
   if command -v envsubst >/dev/null 2>&1 && \
      [ "$(PATH=/usr/bin:/bin command -v envsubst 2>/dev/null)" != "" ]; then
     skip "envsubst is on /usr/bin or /bin in this environment; cannot exercise the missing-envsubst path"

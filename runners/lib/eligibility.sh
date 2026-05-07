@@ -105,8 +105,8 @@ eligibility_review_pending() {
 
 # ---------------------------------------------------------------------------
 # CLI entry point. Lets agents invoke this via:
-#   bash $LOOP_HOME/lib/eligibility.sh dev
-#   bash $LOOP_HOME/lib/eligibility.sh review
+#   bash $LOOP_HOME/runners/lib/eligibility.sh dev
+#   bash $LOOP_HOME/runners/lib/eligibility.sh review
 # Wrappers source the file and call functions directly.
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

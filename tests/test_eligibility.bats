@@ -84,7 +84,7 @@ REVIEW_FILTER='[.[]
   local repo
   repo=$(make_repo)
   REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
-    run bash "$LOOP_ROOT/lib/eligibility.sh" bogus
+    run bash "$LOOP_ROOT/runners/lib/eligibility.sh" bogus
   [ "$status" -eq 2 ]
   echo "$output" | grep -qF '[eligibility] unknown mode'
 }

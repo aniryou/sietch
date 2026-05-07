@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# triage-conflict.sh — rule-pattern + line-counter coverage.
+# run-conflict-triage.sh — rule-pattern + line-counter coverage.
 #
 # The full script invokes `gh pr view` and `git rebase` against a real remote;
 # end-to-end coverage requires standing up an upstream + clone fixture and
@@ -55,7 +55,7 @@ setup() {
 # ---------------------------------------------------------------------------
 # Conflict-line counter (Rule 4) — loop-s3g semantics: counts BOTH sides
 # ---------------------------------------------------------------------------
-# Mirrors the algorithm at wrappers/triage-conflict.sh:Rule 4 exactly.
+# Mirrors the algorithm at runners/run-conflict-triage.sh:Rule 4 exactly.
 count_conflict_lines() {
   local file="$1"
   local in_conflict=0 lines=0
@@ -98,15 +98,15 @@ count_conflict_lines() {
 # ---------------------------------------------------------------------------
 # CLI shape
 # ---------------------------------------------------------------------------
-@test "triage-conflict.sh exits 2 on missing PR arg" {
+@test "run-conflict-triage.sh exits 2 on missing PR arg" {
   REPO_ROOT="$REPO" LOOP_HOME="$LOOP_ROOT" \
-    run bash "$LOOP_ROOT/wrappers/triage-conflict.sh"
+    run bash "$LOOP_ROOT/runners/run-conflict-triage.sh"
   [ "$status" -eq 2 ]
   echo "$output" | grep -qF 'Usage:'
 }
 
-@test "triage-conflict.sh exits 2 on non-numeric PR arg" {
+@test "run-conflict-triage.sh exits 2 on non-numeric PR arg" {
   REPO_ROOT="$REPO" LOOP_HOME="$LOOP_ROOT" \
-    run bash "$LOOP_ROOT/wrappers/triage-conflict.sh" not-a-number
+    run bash "$LOOP_ROOT/runners/run-conflict-triage.sh" not-a-number
   [ "$status" -eq 2 ]
 }
