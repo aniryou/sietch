@@ -1,0 +1,9 @@
+{
+  ".": "array",
+  ".[]": "object",
+  ".[].assignees": "array",
+  ".[].labels": "array",
+  ".[].labels[]": "object",
+  ".[].labels[].name": "string",
+  ".[].number": "number"
+}

@@ -18,7 +18,7 @@ setup() {
              DISPATCH_LOCK_DIR TRIAGE_CORE_FILES_REGEX TRIAGE_TESTS_REGEX \
              TRIAGE_CI_SECRETS_REGEX TRIAGE_LINE_LIMIT \
              DISPATCH_MAX_CONCURRENT \
-             REVIEWER_AGENT_VERDICT_REGEX \
+             REVIEWER_AGENT_VERDICT_REGEX BLOCKED_HUMAN_LABEL \
              DEV_AGENT_COMMENT_PREFIX REVIEWER_AGENT_COMMENT_PREFIX; do
     if echo "$output" | grep -qF "\${$key}"; then
       echo "key not substituted: $key" >&2

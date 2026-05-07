@@ -19,9 +19,10 @@ Last refreshed: **2026-05-07** (against `aniryou/loop`).
 
 | Fixture | Source `gh` command (production) | Scenario |
 |---|---|---|
-| `issues-high.json` | `gh issue list --repo $REPO --state open --label severity:high --json number,assignees --limit 50` | Two unassigned + one assigned; backs `eligibility_dev_count` and the assignee filter test in `test_eligibility.bats`. |
-| `issues-medium.json` | `gh issue list --repo $REPO --state open --label severity:medium --json number,assignees --limit 50` | Different unassigned numbers from `issues-high.json` so the union-with-overlap test exercises `sort -u`. |
+| `issues-high.json` | `gh issue list --repo $REPO --state open --label severity:high --json number,assignees,labels --limit 50` | Two unassigned + one assigned; backs `eligibility_dev_count` and the assignee filter test in `test_eligibility.bats`. (No `labels` field — exercises the "permissive when label absent" path.) |
+| `issues-medium.json` | `gh issue list --repo $REPO --state open --label severity:medium --json number,assignees,labels --limit 50` | Different unassigned numbers from `issues-high.json` so the union-with-overlap test exercises `sort -u`. |
 | `issues-with-locks.json` | `gh issue list --repo $REPO --state open --label severity:high --json number --limit 50` | Four issue numbers (101–104) used by the lock-dir post-filter test. Number-only shape (no `assignees`). |
+| `issues-with-blocked-label.json` | `gh issue list --repo $REPO --state open --label severity:medium --json number,assignees,labels --limit 50` | Three unassigned issues; one without `blocked:human` (201) and two with (202, 203). Backs the GH#28 label post-filter tests. |
 | `prs-current.json` | `gh pr list --repo $REPO --state open --search "head:dev-agent/ -is:draft" --json number,commits,reviews --limit 100` | One PR whose `[reviewer-agent: clean]` review is *newer* than the head commit; the `eligibility_review_pending` jq filter must filter it OUT. |
 | `prs-stale.json` | (same command) | One PR whose `[reviewer-agent: changes]` review is *older* than the head commit; the filter must INCLUDE it. |
 | `prs-mixed.json` | (same command) | Three PRs covering current/stale/no-reviews so the filter returns 2. |

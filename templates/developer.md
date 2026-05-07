@@ -726,7 +726,21 @@ If you encounter any of the following, stop and flag for human review (`bd human
 - Pre-commit's gitleaks flags a real secret in the existing codebase (not something you added).
 - Two consecutive attempts fail with the same error in different ways than expected, suggesting a misunderstanding of the issue.
 
-When in doubt: stop, file a `bd human` request, and **exit**. (Single-pass mode — do not pick another issue.)
+When you trip a safety-net rule, before exiting you MUST also tag the GitHub issue with the `${BLOCKED_HUMAN_LABEL}` label so the eligibility predicate skips it on subsequent scans. `bd human <PARENT>` only writes to the local Beads store, which `eligibility_dev_count` does not consult — without the label the wrapper rediscovers the same blocked issue every poll cycle and burns tokens re-tripping the same rule. Run:
+
+```bash
+# Idempotent label create + apply. --force makes create a no-op if the label
+# already exists, so this is safe to run repeatedly.
+gh label create "${BLOCKED_HUMAN_LABEL}" --repo "${REPO_SLUG}" \
+  --color d73a4a --description "Blocked on human action; dev-agent will skip" \
+  --force >/dev/null 2>&1 || true
+gh issue edit <ISSUE_NUM> --repo "${REPO_SLUG}" --add-label "${BLOCKED_HUMAN_LABEL}"
+```
+
+A human can `gh issue edit <N> --remove-label ${BLOCKED_HUMAN_LABEL}` once the
+underlying blocker is resolved to re-make the issue eligible.
+
+When in doubt: stop, label the GH issue, file a `bd human` request, and **exit**. (Single-pass mode — do not pick another issue.)
 
 ## Exit Conditions
 
