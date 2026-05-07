@@ -112,10 +112,7 @@ gen_schema() {
 }
 
 main() {
-  command -v gh >/dev/null || { echo "[refresh] gh not on PATH" >&2; exit 1; }
-  command -v jq >/dev/null || { echo "[refresh] jq not on PATH" >&2; exit 1; }
-  gh auth status >/dev/null 2>&1 || { echo "[refresh] gh not authenticated" >&2; exit 1; }
-
+  # Parse flags first — --help must work even without gh installed/authenticated.
   while [ $# -gt 0 ]; do
     case "$1" in
       --print)
@@ -151,6 +148,10 @@ HELP
         ;;
     esac
   done
+
+  command -v gh >/dev/null || { echo "[refresh] gh not on PATH" >&2; exit 1; }
+  command -v jq >/dev/null || { echo "[refresh] jq not on PATH" >&2; exit 1; }
+  gh auth status >/dev/null 2>&1 || { echo "[refresh] gh not authenticated" >&2; exit 1; }
 
   # --- issue list shapes ---
   # Production runners query: --json number,assignees (eligibility_dev_count)
