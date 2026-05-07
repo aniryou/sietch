@@ -171,18 +171,18 @@ HELP
     issue list --state all --json number,assignees,labels --limit 50
 
   # --- pr list shapes ---
-  # eligibility_review_pending: --json number,commits,reviews
+  # eligibility_review_pending: --json number,headRefOid,reviews
+  #   (commits was removed per GH#26 — `--json commits` bloats GraphQL node
+  #   count past the 500k limit on repos with ≥10 dev-agent PRs. The head
+  #   commit's committedDate is now resolved via a separate `gh api graphql`
+  #   call per headRefOid, which is bounded at 1 commit × 1 field per PR.)
   # dispatcher.sh: --json number,headRefName,isDraft,mergeable
-  #
-  # Heavy queries (commits+reviews) are bounded at --limit 25 because
-  # GraphQL caps per-query node cost at 500k and ~50 PRs exceeds it on
-  # active repos. 25 is still 5x the original and well under the cap.
   gen_schema prs-current.json \
-    pr list --state all --json number,commits,reviews --limit 25
+    pr list --state all --json number,headRefOid,reviews --limit 25
   gen_schema prs-stale.json \
-    pr list --state all --json number,commits,reviews --limit 25
+    pr list --state all --json number,headRefOid,reviews --limit 25
   gen_schema prs-mixed.json \
-    pr list --state all --json number,commits,reviews --limit 25
+    pr list --state all --json number,headRefOid,reviews --limit 25
   gen_schema prs-dispatch.json \
     pr list --state all --json number,headRefName,isDraft,mergeable --limit 50
 

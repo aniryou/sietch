@@ -414,11 +414,15 @@ JSON
 
 # ---------------------------------------------------------------------------
 # eligibility_review_pending: jq filter for "no agent review covers head"
-# Compares review.submittedAt against the PR head commit's committedDate.
+# Compares review.submittedAt against the head commit's committedDate. The
+# committedDate is no longer carried in the gh pr list payload — that hit
+# GH#26's GraphQL 500k-node ceiling — so the predicate now resolves it via
+# a per-headRefOid `gh api graphql` call and injects the resulting map as
+# the `$dates` jq variable, keyed by `headRefOid`.
 # ---------------------------------------------------------------------------
 REVIEW_FILTER='[.[]
   | . as $pr
-  | ((($pr.commits // [])[-1] | .committedDate) // null) as $head_date
+  | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
   | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
   | select(
       $head_date == null
@@ -426,10 +430,16 @@ REVIEW_FILTER='[.[]
     )
 ] | length'
 
+# Per-fixture oid → committedDate maps. Each PR's headRefOid in the fixture is
+# resolved here to the date the production code would fetch via gh api graphql.
+DATES_CURRENT='{"0011223344556677889900112233445566778899":"2026-05-07T10:00:00Z"}'
+DATES_STALE='{"aabbccddeeff00112233445566778899aabbccdd":"2026-05-07T12:00:00Z"}'
+DATES_MIXED='{"0011223344556677889900112233445566778899":"2026-05-07T10:00:00Z","aabbccddeeff00112233445566778899aabbccdd":"2026-05-07T12:00:00Z","ffeeddccbbaa99887766554433221100ffeeddcc":"2026-05-07T09:00:00Z"}'
+
 @test "review filter: PR with review at current head is filtered OUT" {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local n
-  n=$(jq --arg re "$re" "$REVIEW_FILTER" \
+  n=$(jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER" \
         < "$LOOP_ROOT/tests/fixtures/gh/prs-current.json")
   [ "$n" -eq 0 ]
 }
@@ -437,7 +447,7 @@ REVIEW_FILTER='[.[]
 @test "review filter: PR with review at stale head is INCLUDED" {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local n
-  n=$(jq --arg re "$re" "$REVIEW_FILTER" \
+  n=$(jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER" \
         < "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json")
   [ "$n" -eq 1 ]
 }
@@ -445,11 +455,224 @@ REVIEW_FILTER='[.[]
 @test "review filter: mixed list returns only the un-reviewed PRs" {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local n
-  n=$(jq --arg re "$re" "$REVIEW_FILTER" \
+  n=$(jq --arg re "$re" --argjson dates "$DATES_MIXED" "$REVIEW_FILTER" \
         < "$LOOP_ROOT/tests/fixtures/gh/prs-mixed.json")
   # 200 has current review (excluded), 201 has stale (included), 202 has no
   # reviews at all (included). Expect 2.
   [ "$n" -eq 2 ]
+}
+
+@test "review filter: PR whose headRefOid is missing from \$dates → INCLUDED" {
+  # Defensive guard. If the gh api graphql call fails or the oid is orphaned,
+  # \$dates simply omits the key. The filter must fall through to head_date=null
+  # (which selects the PR for review) rather than crashing or excluding it.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(jq --arg re "$re" --argjson dates '{}' "$REVIEW_FILTER" \
+        < "$LOOP_ROOT/tests/fixtures/gh/prs-current.json")
+  [ "$n" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_review_pending (function-level, GH#26): exercise the predicate
+# end-to-end via PATH-mocked gh, confirming exit-code semantics match the
+# rest of the predicate family (0=work, 1=skip, 2=fail) AND that the gh
+# query no longer requests the bloated `commits` connection.
+# ---------------------------------------------------------------------------
+
+# Helper: write a gh stub that:
+#   - serves a fixed `gh pr list` body (the PR list with headRefOid + reviews),
+#     honoring the --jq flag the way real gh does (post-filter via jq).
+#   - resolves `gh api graphql -F oid=<X> ...` against an oid→date JSON map.
+#
+# Returns the bin dir to prepend to PATH.
+_make_review_gh_stub() {
+  # $1 = path to a JSON file containing the gh pr list response
+  # $2 = path to a JSON file mapping headRefOid → committedDate
+  local prs_path="$1"
+  local dates_path="$2"
+  local tmpbin="$BATS_TEST_TMPDIR/review-bin-$$"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+ARGS=("\$@")
+SUB1="\${ARGS[0]:-}"
+SUB2="\${ARGS[1]:-}"
+
+# Real gh post-filters output through jq when --jq <expr> is set.
+JQ_EXPR=""
+for ((i=0; i<\${#ARGS[@]}; i++)); do
+  if [ "\${ARGS[i]}" = "--jq" ]; then JQ_EXPR="\${ARGS[i+1]:-}"; fi
+done
+
+emit() {
+  if [ -n "\$JQ_EXPR" ]; then
+    printf '%s\n' "\$1" | jq -r "\$JQ_EXPR"
+  else
+    printf '%s\n' "\$1"
+  fi
+}
+
+case "\$SUB1 \$SUB2" in
+  "pr list")
+    emit "\$(cat '$prs_path')"
+    exit 0
+    ;;
+  "api graphql")
+    OID=""
+    for ((i=0; i<\${#ARGS[@]}; i++)); do
+      if [ "\${ARGS[i]}" = "-F" ] && [[ "\${ARGS[i+1]:-}" == oid=* ]]; then
+        OID="\${ARGS[i+1]#oid=}"
+      fi
+    done
+    DATE=\$(jq -r --arg oid "\$OID" '.[\$oid] // ""' '$dates_path')
+    if [ -z "\$DATE" ]; then
+      emit '{"data":{"repository":{"object":null}}}'
+    else
+      emit "\$(printf '{"data":{"repository":{"object":{"committedDate":"%s"}}}}' "\$DATE")"
+    fi
+    exit 0
+    ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  echo "$tmpbin"
+}
+
+@test "eligibility_review_pending: empty PR list exits 1 (skip), prints '0'" {
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-empty.json"
+  local dates="$BATS_TEST_TMPDIR/dates-empty.json"
+  printf '[]\n' >"$prs"
+  printf '{}\n' >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
+}
+
+@test "eligibility_review_pending: all PRs covered by review exits 1, prints '0'" {
+  local repo
+  repo=$(make_repo)
+  local prs="$LOOP_ROOT/tests/fixtures/gh/prs-current.json"
+  local dates="$BATS_TEST_TMPDIR/dates-current.json"
+  printf '%s' "$DATES_CURRENT" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
+}
+
+@test "eligibility_review_pending: PR with stale review exits 0, prints '1'" {
+  local repo
+  repo=$(make_repo)
+  local prs="$LOOP_ROOT/tests/fixtures/gh/prs-stale.json"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "eligibility_review_pending: mixed list (1 current, 1 stale, 1 no-review) exits 0, prints '2'" {
+  local repo
+  repo=$(make_repo)
+  local prs="$LOOP_ROOT/tests/fixtures/gh/prs-mixed.json"
+  local dates="$BATS_TEST_TMPDIR/dates-mixed.json"
+  printf '%s' "$DATES_MIXED" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 0 ]
+  [ "$output" = "2" ]
+}
+
+@test "eligibility_review_pending: gh pr list failure exits 2, prints '?'" {
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin-prfail"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list") exit 1 ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+@test "eligibility_review_pending: gh api graphql failure exits 2, prints '?'" {
+  # gh pr list succeeds, but the per-oid GraphQL resolution fails. The
+  # predicate must surface this as rc=2 — not silently fall back to a
+  # missing date and treat the PR as un-reviewed (which would burn tokens
+  # by spawning the reviewer LLM on a transient gh failure).
+  local repo
+  repo=$(make_repo)
+  local prs="$LOOP_ROOT/tests/fixtures/gh/prs-current.json"
+  local tmpbin="$BATS_TEST_TMPDIR/bin-graphqlfail"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr list") cat '$prs'; exit 0 ;;
+  "api graphql") exit 1 ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+# ---------------------------------------------------------------------------
+# Source-of-truth: regression guard against re-introducing the GraphQL
+# 500k-node bloat.
+#
+# Pre-GH#26 the predicate ran `gh pr list ... --json number,commits,reviews`,
+# which the GraphQL planner expanded to ~1M nodes (commits × reviews × 100
+# PRs × neighbouring connections) and the gateway rejected outright. The fix
+# replaced `commits` with `headRefOid` and resolves committedDate per oid via
+# a separate `gh api graphql` call. These greps assert the function body
+# still consumes the narrower shape.
+# ---------------------------------------------------------------------------
+
+@test "eligibility_review_pending: --json field set excludes 'commits' (GH#26 regression guard)" {
+  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  # Must request headRefOid (the new shape).
+  grep -qF -- '--json number,headRefOid,reviews' "$BATS_TEST_TMPDIR/fn.sh"
+  # Must NOT request commits (the bloating field).
+  ! grep -qF -- '--json number,commits' "$BATS_TEST_TMPDIR/fn.sh"
+  ! grep -qE -- '--json[[:space:]]*[A-Za-z,]*commits' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_review_pending: resolves committedDate via gh api graphql (GH#26)" {
+  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  # The narrowed-fetch fix resolves committedDate per oid via gh api graphql.
+  grep -qF 'gh api graphql' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'committedDate' "$BATS_TEST_TMPDIR/fn.sh"
 }
 
 # ---------------------------------------------------------------------------
