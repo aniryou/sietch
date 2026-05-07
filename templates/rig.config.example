@@ -41,6 +41,12 @@ TYPE_LABELS="bug,enhancement,testing,documentation"
 TRIAGE_CORE_FILES_REGEX='^(Dockerfile|\.pre-commit-config\.yaml)$'
 TRIAGE_TESTS_REGEX='(^|/)tests?/|(^|/)test_.*\.py$|_test\.py$'
 TRIAGE_CI_SECRETS_REGEX='\.github/|secrets|credentials|\.env'
+
+# Counts ALL lines inside conflict regions across all conflicted files,
+# including BOTH the "ours" and "theirs" sides of every <<<<<<< / >>>>>>>
+# block. A symmetric 5-line-vs-5-line conflict counts as 10. The default
+# is conservative by design — sietch's auto-resolve path is a mechanical-
+# rebase rescue, not a semantic merge solver.
 TRIAGE_LINE_LIMIT=10
 
 # ---------------------------------------------------------------------------

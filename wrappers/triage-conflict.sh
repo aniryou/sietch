@@ -6,7 +6,7 @@
 #   - any conflict in a test file (tests/, test_*.py, *_test.py)
 #   - any conflict in CI / secrets / .github / .env
 #   - any conflict in core code files (eval.py, Dockerfile, .pre-commit-config.yaml)
-#   - total conflict lines > 10
+#   - total conflict lines (ours + theirs combined, summed across files) > 10
 #
 # Otherwise: TRACTABLE.
 #
@@ -115,7 +115,11 @@ for f in "${CONFLICT_FILES[@]}"; do
   fi
 done
 
-# Rule 4: total conflict lines
+# Rule 4: total conflict lines.
+# Counts every non-marker line inside a conflict region — both the "ours"
+# and "theirs" sides. The ======= separator does NOT toggle in_conflict,
+# so a 5-vs-5 symmetric conflict contributes 10 lines. This is intentional
+# (conservative); see TRIAGE_LINE_LIMIT in rig.config.example.
 CONFLICT_LINES=0
 for f in "${CONFLICT_FILES[@]}"; do
   in_conflict=0
@@ -123,7 +127,7 @@ for f in "${CONFLICT_FILES[@]}"; do
     case "$line" in
       "<<<<<<< "*) in_conflict=1 ;;
       ">>>>>>> "*) in_conflict=0 ;;
-      "=======")   ;; # separator — don't count, don't toggle
+      "=======")   ;; # separator — don't count, don't toggle (intentional)
       *)
         if [ "$in_conflict" = "1" ]; then
           CONFLICT_LINES=$((CONFLICT_LINES + 1))
