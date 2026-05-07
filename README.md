@@ -58,9 +58,35 @@ Make sure `~/.local/bin` is on your `$PATH`.
 
 ```bash
 cd path/to/your-repo
-st init                         # creates .loop/loop.config + README
+st init                         # creates .loop/loop.config + README; appends a LOOP block to CLAUDE.md
 $EDITOR .loop/loop.config       # set REPO_OWNER, REPO_NAME, branch prefix, etc.
-git add .loop && git commit -m "loop: onboard this repo"
+st onboard                      # audit prerequisites; auto-create canonical labels on the GitHub repo
+git add .loop CLAUDE.md && git commit -m "loop: onboard this repo"
+```
+
+`st onboard` runs nine checks. All are read-only **except** `check_labels`,
+which creates any missing canonical labels on `$REPO_SLUG` (it never
+modifies labels that already exist).
+
+| Check | Verifies |
+|---|---|
+| `check_loop_config` | `.loop/loop.config` exists and isn't holding placeholder values |
+| `check_beads` | `.beads/` directory exists in the repo |
+| `check_gh_auth` | `gh` CLI is authenticated |
+| `check_labels` | severity + type labels exist on the GitHub repo (auto-creates missing) |
+| `check_pre_commit_config` | `.pre-commit-config.yaml` exists at the repo root |
+| `check_pre_commit_hook` | `.git/hooks/pre-commit` is installed (not the stock sample) |
+| `check_workflows` | first file under `.github/workflows/` triggers on `pull_request` |
+| `check_test_dir` | `tests/` or `test/` exists with at least one file |
+| `check_worktree_base` | `WORKTREE_BASE` (default `/tmp/dev-agent`) is writable |
+
+Each check prints `✓` or `✗ <why>` plus a copy-pasteable `fix:` line on
+failure. Exit code is non-zero iff any check fails.
+
+```bash
+st onboard                      # run all checks
+st onboard -v                   # also print the path each check inspected
+st onboard check_gh_auth        # run a single check
 ```
 
 ## Daily use
