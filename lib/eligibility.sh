@@ -31,28 +31,37 @@ set -o pipefail
 . "$REPO_ROOT/.sietch/rig.config"
 
 # ---------------------------------------------------------------------------
-# Mode 1 dev-agent: open severity:high|medium issues with no assignee.
+# Mode 1 dev-agent: open severity:high|medium issues with no assignee AND no
+# live filesystem lock under $LOCK_DIR.
 #
-# Lower-bound predicate. The agent re-checks for already-locked, already-PR'd,
-# already-claimed-via-bd-memory in its own scan. False positives here just
-# cost a single agent run; false negatives skip real work, so we keep this
-# permissive (only filter on label + assignee).
+# The lock-dir post-filter is advisory: the agent still does the atomic mkdir
+# for the actual claim. Without it, every parallel wrapper sees the same gh
+# count, every wrapper invokes the LLM, and N-1 lose the lock race and exit
+# after a wasted scan — the dominant cost path under DEV_INSTANCES>1.
+#
+# Stale-lock cleanup remains the agent's responsibility (STALE_LOCK_HOURS).
+# False negatives (gh hit but lock present) still skip real work for one
+# cycle, but the next cycle picks them up once the lock is released.
 # ---------------------------------------------------------------------------
 eligibility_dev_count() {
-  local count
-  if ! count=$(
+  local nums n filtered
+  if ! nums=$(
     PAGER=cat GIT_PAGER=cat gh issue list \
       --repo "$REPO_SLUG" --state open \
       --search "label:${SEVERITY_LABEL_HIGH},${SEVERITY_LABEL_MEDIUM} no:assignee" \
       --json number \
-      --limit 50 2>/dev/null | jq 'length' 2>/dev/null
+      --limit 50 2>/dev/null | jq -r '.[].number' 2>/dev/null
   ); then
     echo "?"
     return 2
   fi
-  count="${count:-0}"
-  echo "$count"
-  [ "$count" -gt 0 ]
+  filtered=0
+  for n in $nums; do
+    [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    filtered=$((filtered + 1))
+  done
+  echo "$filtered"
+  [ "$filtered" -gt 0 ]
 }
 
 # ---------------------------------------------------------------------------
