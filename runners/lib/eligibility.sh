@@ -42,6 +42,13 @@ set -o pipefail
 # up the new safety-net skip marker.
 : "${BLOCKED_HUMAN_LABEL:=blocked:human}"
 
+# Defaults for older loop.config files predating GH#37 (merger dispatcher).
+# Same default-if-unset pattern as BLOCKED_HUMAN_LABEL — consumer repos don't
+# have to re-run `st init` to pick up the merger.
+: "${MERGER_VERDICTS_ALLOWED:=clean nits}"
+: "${MERGER_MERGE_METHOD:=squash}"
+: "${MERGER_DELETE_BRANCH:=1}"
+
 # ---------------------------------------------------------------------------
 # Mode 1 dev-agent: open severity:high|medium issues with no assignee, no
 # ${BLOCKED_HUMAN_LABEL} label, AND no live filesystem lock under $LOCK_DIR.
@@ -348,11 +355,114 @@ eligibility_followup_pr() {
 }
 
 # ---------------------------------------------------------------------------
+# Merger dispatcher (GH#37): should we squash-merge PR <N> right now?
+#
+# Closes the loop end-to-end: scans dev-agent PRs that earned a `clean` (or
+# `nits`) verdict from the reviewer-agent and have green CI / no conflicts,
+# and squash-merges them — eliminating the manual `gh pr merge` step the
+# loop used to require (#34, #30, #25, #23 all merged by hand).
+#
+# A PR is mergeable iff ALL of:
+#   - The latest reviewer-agent review's verdict is in $MERGER_VERDICTS_ALLOWED
+#     (default: "clean nits"; configurable per-repo).
+#   - The agent review covers the current head commit. Prefer a `commit.oid`
+#     match (the post-#14 fixture shape); fall back to `submittedAt > head
+#     committedDate` when the API returns commit.oid as null. Stale reviews
+#     get skipped — a `clean` verdict on yesterday's HEAD doesn't bless
+#     today's HEAD.
+#   - No human comment (body NOT prefixed with the dev-agent automation
+#     marker `🤖`) and no human review (body NOT matching the reviewer-agent
+#     verdict regex) postdates the agent review. Either is a veto signal —
+#     the human is engaging mid-flight, so the merger waits.
+#   - mergeable == "MERGEABLE" AND mergeStateStatus == "CLEAN". Combined,
+#     these cover green CI + no conflicts + branch up-to-date with base —
+#     so the merger never auto-merges a PR that needs a rebase or has a red
+#     check.
+#
+# Always prints the verdict (or "none" / "?") on stdout for the dispatcher's
+# log line. Exit 0 = merge, 1 = skip, 2 = gh/jq failure (treat as skip;
+# next cycle re-checks).
+#
+# No locks — gh refuses to merge an already-merged PR (idempotent), and the
+# verdict-aware gate prevents racing two parallel merger panes from
+# accepting the same PR more than once at the API layer.
+# ---------------------------------------------------------------------------
+eligibility_merge_pr() {
+  local pr="${1:-}"
+  if [ -z "$pr" ]; then
+    echo "?"
+    return 2
+  fi
+
+  local data
+  if ! data=$(
+    PAGER=cat GIT_PAGER=cat gh pr view "$pr" \
+      --repo "$REPO_SLUG" \
+      --json reviews,comments,commits,mergeable,mergeStateStatus,headRefOid 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+
+  local result
+  if ! result=$(
+    echo "$data" | jq -r \
+      --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+      --arg allowed "$MERGER_VERDICTS_ALLOWED" '
+      . as $pr
+      | (((.commits // [])[-1] | .committedDate) // null) as $head_date
+      | (.reviews // []
+          | map(select(.body | test($re)))
+          | sort_by(.submittedAt)
+          | last) as $latest_review
+      | if $latest_review == null then "none\tno"
+        else
+          ($latest_review.body | match($re).captures[0].string) as $verdict
+          | ($allowed | split(" ") | map(select(. != ""))) as $allowed_list
+          | (if (($latest_review.commit // {}).oid // null) != null then
+               $latest_review.commit.oid == $pr.headRefOid
+             else
+               ($head_date != null and $latest_review.submittedAt > $head_date)
+             end) as $covers_head
+          | ([($pr.comments // [])[]
+              | select((.body // "") | startswith("🤖") | not)
+              | select(.createdAt > $latest_review.submittedAt)] | length == 0) as $no_human_comment
+          | ([($pr.reviews // [])[]
+              | select((.body // "") | test($re) | not)
+              | select(.submittedAt > $latest_review.submittedAt)] | length == 0) as $no_human_review
+          | (($pr.mergeable == "MERGEABLE") and ($pr.mergeStateStatus == "CLEAN")) as $ci_clean
+          | if (($allowed_list | index($verdict)) != null
+                and $covers_head
+                and $no_human_comment
+                and $no_human_review
+                and $ci_clean) then "\($verdict)\tyes"
+            else "\($verdict)\tno"
+            end
+        end
+      ' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+
+  local verdict should
+  verdict=$(printf '%s\n' "$result" | cut -f1)
+  should=$(printf '%s\n' "$result" | cut -f2)
+  echo "$verdict"
+  if [ "$should" = "yes" ]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # CLI entry point. Lets agents invoke this via:
 #   bash $LOOP_HOME/runners/lib/eligibility.sh dev
 #   bash $LOOP_HOME/runners/lib/eligibility.sh dev-candidates
 #   bash $LOOP_HOME/runners/lib/eligibility.sh review
 #   bash $LOOP_HOME/runners/lib/eligibility.sh followup <PR#>
+#   bash $LOOP_HOME/runners/lib/eligibility.sh merge <PR#>
 # Wrappers source the file and call functions directly.
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -373,6 +483,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       eligibility_followup_pr "${2:-}"
       exit $?
       ;;
+    merge)
+      eligibility_merge_pr "${2:-}"
+      exit $?
+      ;;
     -h | --help | help | "")
       cat <<'EOF'
 Usage: eligibility.sh <mode> [args]
@@ -387,8 +501,13 @@ Modes:
                    for PR <PR#>? Skips clean/nits verdicts unconditionally;
                    dispatches changes/comment/blocked iff the review is newer
                    than the latest dev-agent comment.
+  merge <PR#>      Should the merger dispatcher squash-merge PR <PR#>? Returns
+                   merge iff the latest reviewer-agent verdict is in
+                   $MERGER_VERDICTS_ALLOWED (default: clean nits), the review
+                   covers the current head, no human has engaged after the
+                   review, and mergeable=MERGEABLE + mergeStateStatus=CLEAN.
 
-Output: one line — count (dev/review) or verdict (followup), or '?' on failure.
+Output: one line — count (dev/review) or verdict (followup/merge), or '?' on failure.
         Multi-line for dev-candidates (one number per line, empty if none).
 Exit:   0 = work to do, 1 = nothing eligible, 2 = predicate failed.
 

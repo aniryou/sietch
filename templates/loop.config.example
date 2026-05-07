@@ -77,6 +77,28 @@ EMPTY_CYCLE_BACKOFF_CAP_SECONDS=300
 DISPATCH_MAX_CONCURRENT=3
 
 # ---------------------------------------------------------------------------
+# Merger dispatcher (opt-in; activated via `st loop start --enable-merger`)
+# ---------------------------------------------------------------------------
+# Verdict whitelist: which reviewer-agent verdicts trigger an auto-merge.
+# Space-separated. Allowed tokens: clean | nits | comment | changes | blocked.
+# Default ("clean nits") matches the loop's actual review pattern: PRs that
+# earned a clean or nits-only verdict have no actionable findings, so the
+# merger can ship them without further human input. Tighten to "clean" if a
+# repo wants every nits-only PR to wait for human eyes.
+MERGER_VERDICTS_ALLOWED="clean nits"
+
+# Merge method passed as `--<method>` to `gh pr merge`. Allowed values:
+#   squash | merge | rebase
+# Squash is the default — the loop produces small, single-purpose PRs and a
+# squash keeps main's history flat.
+MERGER_MERGE_METHOD="squash"
+
+# 1 = pass `--delete-branch` to `gh pr merge` (cleans up the agent branch
+# on origin once the PR lands). 0 = leave the branch (useful for repos that
+# retain branches for archival or compliance reasons).
+MERGER_DELETE_BRANCH=1
+
+# ---------------------------------------------------------------------------
 # Per-mode caps
 # ---------------------------------------------------------------------------
 DEV_MAX_TURNS=200

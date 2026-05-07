@@ -94,6 +94,7 @@ st onboard check_gh_auth        # run a single check
 ```bash
 st issue "tests should cover negative inputs"   # draft → confirm → file
 st loop start                                   # bring up the multi-agent fleet in tmux
+st loop start --enable-merger                   # also auto-merge clean/nits PRs
 st loop status                                  # check what's running
 st loop stop                                    # tear it down
 ```

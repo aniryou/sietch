@@ -204,6 +204,9 @@ HELP
     gen_schema pr-followup.json \
       pr view "$pr_view_num" --json reviews,comments \
       || echo "[refresh] pr-followup.json gen failed; schema left untouched" >&2
+    gen_schema pr-merger.json \
+      pr view "$pr_view_num" --json reviews,comments,commits,mergeable,mergeStateStatus,headRefOid,isDraft \
+      || echo "[refresh] pr-merger.json gen failed; schema left untouched" >&2
   else
     echo "[refresh] no PRs in $REPO; pr-followup.schema.json left untouched" >&2
   fi

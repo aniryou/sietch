@@ -47,6 +47,7 @@ DEV_INSTANCES="$DEV_INSTANCES_DEFAULT"
 POLL_INTERVAL="$POLL_INTERVAL_DEFAULT"
 MAX_RUNTIME=0
 DETACH=0
+ENABLE_MERGER=0
 
 # ---- helpers ------------------------------------------------------------
 
@@ -221,6 +222,73 @@ loop_dispatcher_followup() {
   done
 }
 
+loop_dispatcher_merge() {
+  # Closes the loop end-to-end (GH#37): scan dev-agent PRs that earned a
+  # `clean`/`nits` verdict + green CI and squash-merge them. Off by default;
+  # activated by `st loop start --enable-merger`. Mirrors the follow-up
+  # dispatcher's shape — pure shell, no LLM.
+  local empty_streak=0 dispatched sleep_for
+  while true; do
+    # Re-read lib/dispatcher.sh and lib/eligibility.sh each cycle so on-disk
+    # fixes apply without restarting the long-running tmux pane. Failure
+    # (mid-edit, syntax error) logs a WARN and continues with the previously
+    # cached helpers.
+    # shellcheck disable=SC1091
+    . "$LOOP_HOME/runners/lib/dispatcher.sh" || echo "[$(ts)] [merger] WARN: failed to re-source lib/dispatcher.sh; using cached helpers"
+    # shellcheck disable=SC1091
+    . "$LOOP_HOME/runners/lib/eligibility.sh" || echo "[$(ts)] [merger] WARN: failed to re-source lib/eligibility.sh; using cached predicates"
+    echo "[$(ts)] [merger] scanning open dev-agent PRs..."
+    dispatched=0
+
+    while IFS= read -r pr; do
+      [ -z "$pr" ] && continue
+
+      # Verdict + staleness + human-veto + CI gate. The predicate prints the
+      # verdict on stdout for the log line; exit 0 = merge, 1 = skip, 2 =
+      # gh/jq failure (treat as skip — next cycle re-checks).
+      local verdict ec=0
+      verdict=$(eligibility_merge_pr "$pr") || ec=$?
+      if [ "$ec" -ne 0 ]; then
+        echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict}"
+        continue
+      fi
+
+      # `gh pr merge` is idempotent for already-merged PRs — no lock needed.
+      # Use --auto only via the configured method flag; --delete-branch is
+      # opt-out via MERGER_DELETE_BRANCH=0 for repos that retain branches.
+      local merge_args=("--$MERGER_MERGE_METHOD")
+      [ "$MERGER_DELETE_BRANCH" = "1" ] && merge_args+=(--delete-branch)
+      if PAGER=cat GIT_PAGER=cat gh pr merge "$pr" --repo "$REPO_SLUG" "${merge_args[@]}" >/dev/null 2>&1; then
+        echo "[$(ts)] [merger] merged pr=#${pr} verdict=${verdict}"
+        dispatched=$((dispatched + 1))
+      else
+        # gh failure here is rare (network, permissions, race with a human
+        # merging concurrently). Log and move on; the candidate scan will
+        # re-test next cycle.
+        echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict} reason=gh-merge-failed"
+      fi
+    done < <(
+      gh pr list --repo "$REPO_SLUG" --state open \
+        --json number,headRefName,isDraft \
+        --jq "$(_dispatch_merge_jq "$BRANCH_PREFIX")" \
+        2>/dev/null
+    )
+
+    # Backoff on cycles where nothing was merged. Mirrors the conflict
+    # dispatcher's shape — `dispatched` here counts successful merges only.
+    if [ "$dispatched" -eq 0 ]; then
+      empty_streak=$((empty_streak + 1))
+      sleep_for=$(empty_cycle_sleep "$empty_streak")
+      echo "[$(ts)] [merger] no merges (streak=${empty_streak}, next sleep=${sleep_for}s)"
+    else
+      empty_streak=0
+      sleep_for="$POLL_INTERVAL"
+      echo "[$(ts)] [merger] merged ${dispatched} PR(s); sleeping ${sleep_for}s..."
+    fi
+    sleep "$sleep_for"
+  done
+}
+
 loop_dispatcher_conflicts() {
   local empty_streak=0 dispatched sleep_for
   while true; do
@@ -294,6 +362,7 @@ if [[ "${1:-}" == --internal-role=* ]]; then
     reviewer) loop_reviewer ;;
     dispatch-followup) loop_dispatcher_followup ;;
     dispatch-conflicts) loop_dispatcher_conflicts ;;
+    dispatch-merge) loop_dispatcher_merge ;;
     *)
       echo "Unknown internal role: $ROLE" >&2
       exit 2
@@ -318,11 +387,15 @@ Options (for 'start'):
   --dev-instances=N      Number of parallel Mode 1 dev-agents (default: 3, range 1-9).
   --poll-interval=SECS   Seconds between polling cycles (default: 60, min 10).
   --max-runtime=SECS     Auto-stop after this many seconds (default: 0 = unlimited).
+  --enable-merger        Add a 4th top-row pane that auto-merges dev-agent PRs
+                         with a clean/nits reviewer-agent verdict + green CI.
+                         Off by default; squash-merges via gh, deletes branch
+                         (configurable via MERGER_* keys in loop.config).
   --detach               Don't attach to the session after creating it.
   --help, -h             Show this help.
 
 Layout:
-  Top row:    reviewer | dispatch:followup | dispatch:conflicts
+  Top row:    reviewer | dispatch:followup | dispatch:conflicts [| merger]
   Bottom row: dev-1, dev-2, ..., dev-<N>
 
 Inside tmux:
@@ -370,6 +443,10 @@ while [ $# -gt 0 ]; do
       ;;
     --detach)
       DETACH=1
+      shift
+      ;;
+    --enable-merger)
+      ENABLE_MERGER=1
       shift
       ;;
     --help | -h)
@@ -435,10 +512,19 @@ start_session() {
   # Split horizontally to create the bottom row at 50% height.
   BOT1=$(tmux split-window -P -F '#{pane_id}' -t "$TOP1" -v -p 50)
 
-  # Split top into 3 cols: reviewer | dispatch:followup | dispatch:conflicts.
-  # Percentages 67 then 50 produce roughly 33/33/33.
-  TOP2=$(tmux split-window -P -F '#{pane_id}' -t "$TOP1" -h -p 67)
-  TOP3=$(tmux split-window -P -F '#{pane_id}' -t "$TOP2" -h -p 50)
+  # Split top into 3 cols (reviewer | dispatch:followup | dispatch:conflicts),
+  # or 4 cols when --enable-merger adds the merger pane on the right.
+  # Even-split percentages: for N panes, split[i] = 100*(N-i)/(N-i+1).
+  if [ "$ENABLE_MERGER" -eq 1 ]; then
+    # 4 panes → splits at 75, 67, 50 produce ~25/25/25/25.
+    TOP2=$(tmux split-window -P -F '#{pane_id}' -t "$TOP1" -h -p 75)
+    TOP3=$(tmux split-window -P -F '#{pane_id}' -t "$TOP2" -h -p 67)
+    TOP4=$(tmux split-window -P -F '#{pane_id}' -t "$TOP3" -h -p 50)
+  else
+    # 3 panes → splits at 67, 50 produce ~33/33/33.
+    TOP2=$(tmux split-window -P -F '#{pane_id}' -t "$TOP1" -h -p 67)
+    TOP3=$(tmux split-window -P -F '#{pane_id}' -t "$TOP2" -h -p 50)
+  fi
 
   # Split bottom into DEV_INSTANCES even cols using the formula
   # split_pct[i] = 100 * (N - i + 1) / (N - i + 2)  for i in 2..N.
@@ -455,6 +541,9 @@ start_session() {
   tmux select-pane -t "$TOP1" -T "reviewer"
   tmux select-pane -t "$TOP2" -T "dispatch:followup"
   tmux select-pane -t "$TOP3" -T "dispatch:conflicts"
+  if [ "$ENABLE_MERGER" -eq 1 ]; then
+    tmux select-pane -t "$TOP4" -T "merger"
+  fi
   for ((i = 1; i <= DEV_INSTANCES; i++)); do
     tmux select-pane -t "${DEV_PANES[$((i - 1))]}" -T "dev-$i"
   done
@@ -464,6 +553,9 @@ start_session() {
   tmux send-keys -t "$TOP1" "cd '$REPO' && '$SCRIPT' --internal-role=reviewer $COMMON_ARGS" Enter
   tmux send-keys -t "$TOP2" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-followup $COMMON_ARGS" Enter
   tmux send-keys -t "$TOP3" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-conflicts $COMMON_ARGS" Enter
+  if [ "$ENABLE_MERGER" -eq 1 ]; then
+    tmux send-keys -t "$TOP4" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-merge $COMMON_ARGS" Enter
+  fi
   for ((i = 1; i <= DEV_INSTANCES; i++)); do
     tmux send-keys -t "${DEV_PANES[$((i - 1))]}" "cd '$REPO' && '$SCRIPT' --internal-role=dev-$i $COMMON_ARGS" Enter
   done
