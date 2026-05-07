@@ -1,9 +1,7 @@
 [
   {
     "number": 200,
-    "commits": [
-      {"committedDate": "2026-05-07T10:00:00Z"}
-    ],
+    "headRefOid": "0011223344556677889900112233445566778899",
     "reviews": [
       {"body": "[reviewer-agent: clean] LGTM.", "submittedAt": "2026-05-07T11:00:00Z"}
     ]

@@ -98,6 +98,79 @@ eligibility_dev_count() {
 }
 
 # ---------------------------------------------------------------------------
+# Mode 1 dev-agent (lock-acquisition variant): same filter semantics as
+# eligibility_dev_count but emits one candidate-number per line on stdout
+# in priority order (severity:high first, then medium), de-duplicated.
+#
+# This is what run-developer.sh consumes to acquire the lock BEFORE spawning
+# the LLM (GH#31). The wrapper iterates the printed numbers and tries
+# `mkdir "$LOCK_DIR/gh-N.lock"` on each; the first successful mkdir is the
+# wrapper's claim. Without this list, the wrapper had only a count and the
+# LLM did its own discovery + lock — the TOCTOU window between count and
+# lock cost ~$0.20-$0.50 per losing parallel agent under DEV_INSTANCES>1.
+#
+# Output and exit-code shape mirrors eligibility_dev_count:
+#   stdout: candidate numbers, one per line (no trailing blank), or `?` on
+#           predicate failure
+#   exit:   0 = at least one candidate, 1 = none, 2 = gh/jq failure
+# ---------------------------------------------------------------------------
+eligibility_dev_candidates() {
+  local raw_h raw_m all filtered_lines n filtered_count
+  # Filter set must mirror eligibility_dev_count exactly: assignees == []
+  # AND no BLOCKED_HUMAN_LABEL. The label filter is GH#28 — without it the
+  # wrapper happily mkdir-locks a blocked issue and the LLM (which skips its
+  # own discovery when DEV_AGENT_TARGET_ISSUE is set) re-trips the safety net,
+  # reopening the rediscovery loop GH#28 closed.
+  if ! raw_h=$(
+    PAGER=cat GIT_PAGER=cat gh issue list \
+      --repo "$REPO_SLUG" --state open \
+      --label "$SEVERITY_LABEL_HIGH" \
+      --json number,assignees,labels \
+      --limit 50 2>/dev/null \
+      | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
+          .[]
+          | select(.assignees == [])
+          | select((.labels // [] | map(.name)) | index($blocked) | not)
+          | .number
+        ' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+  if ! raw_m=$(
+    PAGER=cat GIT_PAGER=cat gh issue list \
+      --repo "$REPO_SLUG" --state open \
+      --label "$SEVERITY_LABEL_MEDIUM" \
+      --json number,assignees,labels \
+      --limit 50 2>/dev/null \
+      | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
+          .[]
+          | select(.assignees == [])
+          | select((.labels // [] | map(.name)) | index($blocked) | not)
+          | .number
+        ' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+  # Preserve high-then-medium order (sort -u would lose it). awk's
+  # !seen[$0]++ keeps the first occurrence and drops later duplicates,
+  # so an issue tagged both severities surfaces in its high-side slot.
+  all=$(printf '%s\n%s\n' "$raw_h" "$raw_m" | awk 'NF && !seen[$0]++')
+  filtered_count=0
+  filtered_lines=""
+  for n in $all; do
+    [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    filtered_lines+="$n"$'\n'
+    filtered_count=$((filtered_count + 1))
+  done
+  if [ -n "$filtered_lines" ]; then
+    printf '%s' "$filtered_lines"
+  fi
+  [ "$filtered_count" -gt 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Reviewer orchestrator: open ${BRANCH_PREFIX}/* PRs whose head commit is not
 # yet covered by a [reviewer-agent: ...] review.
 #
@@ -107,28 +180,74 @@ eligibility_dev_count() {
 #
 # Mirrors the orchestrator's own filter, so false-positive rate is minimal.
 # The orchestrator still re-checks before dispatching its sub-agent.
+#
+# GH#26: pre-fix this issued `gh pr list --json number,commits,reviews
+# --limit 100`, which the GraphQL planner expanded by every neighbouring
+# connection (`commits.authors[]`, `reviews.author`, ...) and the gateway
+# rejected with "1,000,000 possible nodes which exceeds the maximum limit of
+# 500,000". gh exited non-zero, the predicate fell through to its rc=2 branch,
+# and the wrapper's "proceed to be safe" policy spawned the reviewer LLM on
+# every cycle even with no work to do (~$1.90 per 10 idle cycles).
+#
+# The fix narrows the query to `--json number,headRefOid,reviews` (no
+# `commits` connection) and resolves the head commit's `committedDate` per
+# `headRefOid` via a separate `gh api graphql` call — bounded at 1 commit
+# × 1 field per PR, well under the 500k node ceiling.
 # ---------------------------------------------------------------------------
 eligibility_review_pending() {
-  # `gh pr list --json reviews` populates each review's `commit_id` as null,
-  # so the previous `index($pr.headRefOid)` lookup never matched and every
-  # PR was wrongly counted as needing review. Use review.submittedAt vs the
-  # head commit's committedDate — both are non-null in real gh output.
-  local data count
-  if ! data=$(
+  local prs owner repo oid_dates oid date_iso count
+  if ! prs=$(
     PAGER=cat GIT_PAGER=cat gh pr list \
       --repo "$REPO_SLUG" --state open \
       --search "head:${BRANCH_PREFIX}/ -is:draft" \
-      --json number,commits,reviews \
+      --json number,headRefOid,reviews \
       --limit 100 2>/dev/null
   ); then
     echo "?"
     return 2
   fi
+
+  # Split REPO_SLUG ("owner/repo") for the GraphQL variables.
+  owner="${REPO_SLUG%%/*}"
+  repo="${REPO_SLUG##*/}"
+
+  # Build an oid → committedDate map by issuing one tiny GraphQL query per
+  # head sha. The per-PR query is intentionally minimal (object resolved by
+  # oid → Commit → committedDate) so total node count stays bounded.
+  oid_dates="{}"
+  while IFS= read -r oid; do
+    [ -z "$oid" ] && continue
+    # $owner/$name/$oid below are GraphQL variables, not bash. Single quotes
+    # on the query body are intentional (and required) — silence SC2016.
+    # shellcheck disable=SC2016
+    if ! date_iso=$(
+      PAGER=cat GIT_PAGER=cat gh api graphql \
+        -F owner="$owner" -F name="$repo" -F oid="$oid" \
+        -f query='
+          query($owner:String!,$name:String!,$oid:GitObjectID!) {
+            repository(owner:$owner,name:$name) {
+              object(oid:$oid) { ... on Commit { committedDate } }
+            }
+          }' \
+        --jq '.data.repository.object.committedDate // ""' 2>/dev/null
+    ); then
+      echo "?"
+      return 2
+    fi
+    oid_dates=$(jq --arg oid "$oid" --arg d "$date_iso" '. + {($oid): $d}' <<<"$oid_dates")
+  done < <(echo "$prs" | jq -r '.[].headRefOid // empty')
+
+  # Apply the same "no review covers head" filter as before, but look up the
+  # head date in $dates (keyed by headRefOid) instead of pulling it from the
+  # PR's commits sub-selection. Missing/orphan oids fall through to
+  # head_date=null and the PR is treated as "not yet reviewed" (same as the
+  # pre-fix behaviour for PRs whose `commits` field happened to be empty).
   if ! count=$(
-    echo "$data" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" '
+    echo "$prs" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+      --argjson dates "$oid_dates" '
       [.[]
        | . as $pr
-       | ((($pr.commits // [])[-1] | .committedDate) // null) as $head_date
+       | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
        | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
        | select(
            $head_date == null
@@ -231,6 +350,7 @@ eligibility_followup_pr() {
 # ---------------------------------------------------------------------------
 # CLI entry point. Lets agents invoke this via:
 #   bash $LOOP_HOME/runners/lib/eligibility.sh dev
+#   bash $LOOP_HOME/runners/lib/eligibility.sh dev-candidates
 #   bash $LOOP_HOME/runners/lib/eligibility.sh review
 #   bash $LOOP_HOME/runners/lib/eligibility.sh followup <PR#>
 # Wrappers source the file and call functions directly.
@@ -239,6 +359,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     dev)
       eligibility_dev_count
+      exit $?
+      ;;
+    dev-candidates)
+      eligibility_dev_candidates
       exit $?
       ;;
     review)
@@ -255,6 +379,9 @@ Usage: eligibility.sh <mode> [args]
 
 Modes:
   dev              Count open severity:high|medium issues with no assignee.
+  dev-candidates   Print one candidate-number per line (high-priority first),
+                   so the wrapper can mkdir-acquire a lock BEFORE spawning the
+                   LLM (closes the TOCTOU window of 'dev').
   review           Count open dev-agent PRs not yet reviewed at current head SHA.
   followup <PR#>   Should the follow-up dispatcher dispatch a Mode 2 dev-agent
                    for PR <PR#>? Skips clean/nits verdicts unconditionally;
@@ -262,6 +389,7 @@ Modes:
                    than the latest dev-agent comment.
 
 Output: one line — count (dev/review) or verdict (followup), or '?' on failure.
+        Multi-line for dev-candidates (one number per line, empty if none).
 Exit:   0 = work to do, 1 = nothing eligible, 2 = predicate failed.
 
 Required env:

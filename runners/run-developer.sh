@@ -91,13 +91,20 @@ if [ "$MODE" = "default" ]; then
 fi
 
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
-TS="$(date +%Y%m%d-%H%M%S)"
+# $$ suffix keeps log paths unique when two wrappers start in the same second.
+TS="$(date +%Y%m%d-%H%M%S)-$$"
 
 # Unique ID per wrapper invocation so the trap can release exactly the locks
-# this run owns when multiple wrappers are running in parallel.
+# this run owns when multiple wrappers are running in parallel. Computed
+# BEFORE lock acquisition because the lock-write below stamps it into the
+# acquired lock dir's run_id file.
 _run_ts=$(date +%s%N 2>/dev/null || date +%s)
 export DEV_AGENT_RUN_ID="$$-$_run_ts"
 unset _run_ts
+
+# LOG / RAW / KICKOFF must be set before `cleanup` is registered — the trap
+# references $LOG / $RAW under `set -u`, so an INT/TERM arriving before the
+# preflight finished would otherwise hit an unbound-variable error in cleanup.
 if [ "$MODE" = "follow-up" ]; then
   LOG="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.log"
   RAW="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.jsonl"
@@ -112,41 +119,23 @@ else
   KICKOFF="Run the developer agent workflow defined in your system prompt. Begin the single-pass scan now."
 fi
 
-# Mode 3 only: run the triage gate BEFORE invoking the LLM. If triage says
-# untractable, the wrapper itself escalates via gh and exits — no LLM call.
-if [ "$MODE" = "resolve-conflicts" ]; then
-  echo "[wrapper] running triage for PR #$TARGET_PR..."
-  if TRIAGE_OUTPUT=$("$LOOP_HOME/runners/run-conflict-triage.sh" "$TARGET_PR" 2>&1); then
-    echo "$TRIAGE_OUTPUT"
-    echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
-  else
-    echo "$TRIAGE_OUTPUT" >&2
-    REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
-    echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
-    PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
-      cat <<EOF
-🤖 Conflict triage — auto-resolution declined.
-
-**Reason:** \`${REASON}\`
-
-The triage rules deemed these merge conflicts not safe for autonomous resolution. Please resolve manually.
-
-For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
-EOF
-    )" >/dev/null 2>&1 || true
-    PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
-    echo "[wrapper] result=triage-untractable pr=#${TARGET_PR} reason=${REASON}"
-    exit 1
-  fi
-fi
-
 # Snapshot worktrees BEFORE the run so we can detect what the agent created.
 # shellcheck disable=SC2034 # reserved for diff-against-post snapshot in cleanup; not yet wired
 PRE_WORKTREES=$(git -C "$REPO" worktree list --porcelain | awk '/^worktree/ {print $2}' | grep "^${WORKTREE_BASE}/" || true)
 
+# Pipeline state — the cleanup trap forwards SIGTERM/SIGINT to PIPELINE_PGID
+# so an external `kill <wrapper-pid>` actually tears down claude/tee/jq.
+# Without forwarding, those children survive and re-parent to PID 1.
+PIPELINE_PID=""
+PIPELINE_PGID=""
+
 cleanup() {
   local exit_code=$?
   echo "[wrapper] agent exited with code $exit_code; cleaning up..." >&2
+
+  # If the pipeline is still running (we got here via SIGTERM/SIGINT, not
+  # natural completion of `wait`), forward the signal to its process group.
+  pipeline_kill_pgroup_if_alive "${PIPELINE_PGID:-}"
 
   # Always cd out of any worktree before removing it.
   cd "$REPO" || cd /
@@ -199,13 +188,110 @@ cleanup() {
   echo "[wrapper] raw json: $RAW" >&2
   exit "$exit_code"
 }
+# Install the trap BEFORE the lock-acquisition mkdir below, so a SIGINT/SIGTERM
+# arriving in the gap between mkdir and the (former) trap-registration line
+# still releases our lock. Pre-fix the gap was ~135 lines of wrapper setup
+# (config sourcing, Mode-3 triage, jq_filter source, cd) during which any
+# signal leaked the lock until STALE_LOCK_HOURS — see GH#36 review P1.
 trap cleanup EXIT INT TERM
+
+# Mode 1 only — preflight: list eligible candidates, mkdir-acquire one's lock
+# BEFORE spawning the LLM. This closes the TOCTOU window (GH#31) where the
+# wrapper saw "1 candidate" and spawned claude, but a sibling wrapper claimed
+# the same candidate ~2-5s later in its own LLM startup → losers burned
+# ~$0.20-$0.50 per race. Now the lock is the wrapper's first side effect; the
+# LLM only runs when we've already won the claim.
+#
+# Modes 2/3 already arrive with a specific PR number and don't scan.
+# Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
+# so run-loop.sh can apply exponential backoff to consecutive empty cycles.
+if [ "$MODE" = "default" ]; then
+  CANDIDATES=$("$LOOP_HOME/runners/lib/eligibility.sh" dev-candidates)
+  EL_RC=$?
+  case "$EL_RC" in
+    0)
+      # Iterate candidates in priority order (high-first per dev-candidates
+      # contract). The first mkdir that succeeds is our lock; mkdir is the
+      # atomic primitive — exactly one caller wins under contention.
+      mkdir -p "$LOCK_DIR"
+      DEV_AGENT_TARGET_ISSUE=""
+      for _cand in $CANDIDATES; do
+        if mkdir "$LOCK_DIR/gh-${_cand}.lock" 2>/dev/null; then
+          echo "$DEV_AGENT_RUN_ID" >"$LOCK_DIR/gh-${_cand}.lock/run_id"
+          date -Iseconds >"$LOCK_DIR/gh-${_cand}.lock/started"
+          DEV_AGENT_TARGET_ISSUE="$_cand"
+          break
+        fi
+      done
+      unset _cand
+      if [ -z "$DEV_AGENT_TARGET_ISSUE" ]; then
+        # The predicate found candidates but every one was claimed between
+        # the listing and our mkdir attempts. Skip the LLM — no work left.
+        echo "[wrapper] eligibility: every candidate already locked by sibling runs; skipping LLM"
+        echo "[wrapper] result=lock-race-loss-pre-LLM mode=$MODE"
+        exit 2
+      fi
+      export DEV_AGENT_TARGET_ISSUE
+      echo "[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding"
+      ;;
+    1)
+      echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
+      echo "[wrapper] result=no-work mode=$MODE"
+      exit 2
+      ;;
+    *)
+      # Transient predicate failure (gh down, jq error). Don't burn a cycle
+      # by spawning the LLM — without a pre-locked issue the LLM would
+      # rediscover and re-race anyway. Treat as no-work.
+      echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM" >&2
+      echo "[wrapper] result=predicate-failed mode=$MODE"
+      exit 2
+      ;;
+  esac
+  unset CANDIDATES EL_RC
+fi
+
+# Mode 3 only: run the triage gate BEFORE invoking the LLM. If triage says
+# untractable, the wrapper itself escalates via gh and exits — no LLM call.
+if [ "$MODE" = "resolve-conflicts" ]; then
+  echo "[wrapper] running triage for PR #$TARGET_PR..."
+  if TRIAGE_OUTPUT=$("$LOOP_HOME/runners/run-conflict-triage.sh" "$TARGET_PR" 2>&1); then
+    echo "$TRIAGE_OUTPUT"
+    echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
+  else
+    echo "$TRIAGE_OUTPUT" >&2
+    REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
+    echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
+    PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
+      cat <<EOF
+🤖 Conflict triage — auto-resolution declined.
+
+**Reason:** \`${REASON}\`
+
+The triage rules deemed these merge conflicts not safe for autonomous resolution. Please resolve manually.
+
+For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
+EOF
+    )" >/dev/null 2>&1 || true
+    PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+    echo "[wrapper] result=triage-untractable pr=#${TARGET_PR} reason=${REASON}"
+    exit 1
+  fi
+fi
 
 # jq filter: turn each stream-json event into one human-readable line.
 # Sourced from the shared lib so both run-developer.sh and run-reviewer.sh
 # emit identical event tags and ANSI colors. Honors NO_COLOR.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
+
+# Signal-forwarding helpers (pipeline_capture_pgid, pipeline_kill_pgroup_if_alive).
+# See the lib file for the full rationale; in short: the bash `wait` builtin is
+# signal-interruptible, but only when the pipeline is asynchronous. Foreground
+# pipelines defer the trap. So we background the pipeline below and forward
+# signals here.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
 
 cd "$REPO" || exit 1
 
@@ -215,14 +301,29 @@ echo "[wrapper] raw json: $RAW"
 echo "[wrapper] tail with: tail -f $LOG"
 echo
 
-PAGER=cat GIT_PAGER=cat \
-  claude -p "$KICKOFF" \
-  --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
-  --permission-mode bypassPermissions \
-  --max-turns "$DEV_MAX_TURNS" \
-  --verbose \
-  --output-format stream-json \
-  2> >(tee "$RAW.stderr" >&2) \
-  | tee "$RAW" \
-  | jq -r --unbuffered "$JQ_FILTER" 2>/dev/null \
-  | tee "$LOG"
+# Background the pipeline in a subshell with `set -m` so:
+#   1. `wait` (used below) is signal-interruptible — bash defers traps for
+#      foreground pipelines, but fires them immediately for async ones.
+#   2. The subshell becomes its own process-group leader, so the cleanup
+#      trap can kill claude+tee+jq with one `kill -- -<pgid>` syscall.
+# Without (1), `kill <wrapper-pid>` hangs the wrapper. Without (2), the
+# children survive the trap and re-parent to PID 1.
+set -m
+(
+  PAGER=cat GIT_PAGER=cat \
+    claude -p "$KICKOFF" \
+    --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
+    --permission-mode bypassPermissions \
+    --max-turns "$DEV_MAX_TURNS" \
+    --verbose \
+    --output-format stream-json \
+    2> >(tee "$RAW.stderr" >&2) \
+    | tee "$RAW" \
+    | jq -r --unbuffered "$JQ_FILTER" 2>/dev/null \
+    | tee "$LOG"
+) &
+PIPELINE_PID=$!
+PIPELINE_PGID=$(pipeline_capture_pgid "$PIPELINE_PID")
+set +m
+
+wait "$PIPELINE_PID"

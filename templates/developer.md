@@ -52,12 +52,20 @@ If an issue has no severity label, skip it.
 
 Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
+**Wrapper pre-lock shortcut.** If `DEV_AGENT_TARGET_ISSUE` is set in your environment, the wrapper has already filtered eligibility AND acquired the filesystem lock for that issue (it `mkdir`'d `${LOCK_DIR}/gh-${DEV_AGENT_TARGET_ISSUE}.lock` and stamped your `DEV_AGENT_RUN_ID` into its `run_id` file). Skip steps 0–3 below entirely:
+
+- Set `ISSUE_NUM=$DEV_AGENT_TARGET_ISSUE` and proceed straight to "Mode 1: Per-issue Workflow" Step 0 (parent beads issue).
+- Do **not** re-run the eligibility predicate. Do **not** re-attempt the lock — you already own it. Do **not** scan for other candidates.
+- Read the issue body via `gh issue view "$ISSUE_NUM" --repo ${REPO_SLUG} --json title,body,labels,url` to capture severity and acceptance criteria.
+
+The unset-env steps below are the fallback path for direct `claude -p` invocations (no wrapper).
+
 0. **Fast eligibility gate.** Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
    ```bash
    bash "$LOOP_HOME/runners/lib/eligibility.sh" dev
    # exit 0 = candidates exist; exit 1 = no eligible work; exit 2 = predicate failed
    ```
-   If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate; the call here protects against direct `claude -p` invocations.
+   If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate (and pre-acquired a lock — see the shortcut above); the call here protects against direct `claude -p` invocations.
 
 1. **Full scan** (only reached if the gate found candidates) — run both queries once:
    ```bash
@@ -79,6 +87,8 @@ Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 ### Concurrency safety (multiple agents may run in parallel)
 
 The user may run two or more developer-agent processes in parallel. Both run as the same GitHub identity (the user's `gh` token), so **`gh issue edit --add-assignee "@me"` is NOT a working lock** — `--add-assignee` is idempotent for the same user, so both racing agents would believe they won.
+
+**When `DEV_AGENT_TARGET_ISSUE` is set, the wrapper already won the race** (the wrapper does the `mkdir` before invoking you, so by the time you start, you own the lock). Skip the lock-acquisition snippet below — it's the unwrapped-fallback path. Just proceed with the issue, and trust that `${LOCK_DIR}/gh-${DEV_AGENT_TARGET_ISSUE}.lock` exists and contains your `run_id`.
 
 Use a **filesystem lock** as the atomic primitive. `mkdir` is atomic — exactly one caller succeeds; everyone else gets `EEXIST`.
 
@@ -112,6 +122,15 @@ bd remember "developer-agent claimed GitHub issue #${ISSUE_NUM} at $(date -Iseco
 ```
 
 **Lock release.** The wrapper (`run-developer.sh`) registers a `trap` that releases all locks tagged with this run's `DEV_AGENT_RUN_ID` on exit — regardless of success, give-up, crash, or kill. You don't need to release the lock yourself, but it's safe to do so on the success path (idempotent: `rm -rf "$LOCK"`).
+
+**Supported kill mechanisms.** The wrapper runs the `claude` pipeline asynchronously and uses bash's `wait` builtin (which is signal-interruptible), so any of the following will fire the cleanup trap promptly and tear down `claude`/`tee`/`jq` along with releasing the lock:
+
+- `Ctrl+C` inside the tmux pane — works (signals the whole pgroup; the wrapper bash and pipeline children all receive SIGINT).
+- `st loop stop` — works (kills the tmux session; all panes get SIGHUP/SIGTERM).
+- `kill <wrapper-pid>` (SIGTERM) — works in **every** launch context: interactive shells, tmux panes, and non-interactive parents (e.g. our dispatcher's `( ... ) &` in `run-loop.sh`). The trap forwards SIGTERM to the pipeline's pgroup. **This is the portable kill signal — prefer it over `kill -INT` for scripts and tooling.**
+- `kill -INT <wrapper-pid>` (SIGINT) — works **only** when the wrapper was launched from a parent with job control on (interactive tmux pane, `bash -i`, login shell). When launched from a non-interactive parent as a backgrounded subshell — including the `run-loop.sh` dispatcher pattern `( "$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" ) &` — bash inherits SIGINT set to `SIG_IGN`, and per `man bash` *"Signals ignored upon entry to the shell cannot be trapped or reset"*. The wrapper's `trap cleanup INT` is therefore a no-op in that context, and `kill -INT` is silently swallowed. Use SIGTERM there.
+
+`SIGKILL` bypasses traps by definition — that's the only path that can leave a stale lock.
 
 **Stale locks** can occur if a wrapper is killed with `SIGKILL` (which bypasses traps). If you ever scan and find a lock whose `started` is more than ${STALE_LOCK_HOURS} hours old, treat it as stale: `rm -rf` the lock and log the takeover.
 

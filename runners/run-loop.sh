@@ -86,15 +86,18 @@ count_active_dispatch_locks() {
 # they invoke still write their own per-invocation log files.
 
 # Compute the next sleep interval given the consecutive-empty-cycle streak.
-# Exponential: POLL_INTERVAL * 2^streak, clamped at EMPTY_CYCLE_BACKOFF_CAP_SECONDS.
-# Streak 0 → POLL_INTERVAL (no backoff). Caller is responsible for resetting
-# streak to 0 on a non-empty cycle.
+# Exponential: POLL_INTERVAL * 2^streak, clamped at EMPTY_CYCLE_BACKOFF_CAP_SECONDS,
+# plus up to 25% additive jitter via apply_additive_jitter (lib/jitter.sh).
+# Without the jitter, N parallel dev panes converge once they all hit the cap
+# and wake in lockstep, wasting N-1× the cost on every synchronized scan
+# (GH#29). The jitter is strictly additive — the cap remains a floor.
+# Streak 0 → ~POLL_INTERVAL. Caller resets streak to 0 on a non-empty cycle.
 empty_cycle_sleep() {
   local streak="$1"
   local cap="${EMPTY_CYCLE_BACKOFF_CAP_SECONDS:-300}"
   local interval=$((POLL_INTERVAL * (1 << streak)))
   [ "$interval" -gt "$cap" ] && interval="$cap"
-  echo "$interval"
+  apply_additive_jitter "$interval"
 }
 
 loop_dev_mode1() {
