@@ -61,34 +61,73 @@ REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
 
-# Mode 1 only — preflight: skip the LLM if there are no eligible issues.
+# Mode 1 only — preflight: list eligible candidates, mkdir-acquire one's lock
+# BEFORE spawning the LLM. This closes the TOCTOU window (GH#31) where the
+# wrapper saw "1 candidate" and spawned claude, but a sibling wrapper claimed
+# the same candidate ~2-5s later in its own LLM startup → losers burned
+# ~$0.20-$0.50 per race. Now the lock is the wrapper's first side effect; the
+# LLM only runs when we've already won the claim.
+#
 # Modes 2/3 already arrive with a specific PR number and don't scan.
 # Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
 # so run-loop.sh can apply exponential backoff to consecutive empty cycles.
-if [ "$MODE" = "default" ]; then
-  EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" dev)
-  EL_RC=$?
-  case "$EL_RC" in
-    0) echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding" ;;
-    1)
-      echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
-      echo "[wrapper] result=no-work mode=$MODE"
-      exit 2
-      ;;
-    *) echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); proceeding to be safe" >&2 ;;
-  esac
-  unset EL_COUNT EL_RC
-fi
-
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
 # $$ suffix keeps log paths unique when two wrappers start in the same second.
 TS="$(date +%Y%m%d-%H%M%S)-$$"
 
 # Unique ID per wrapper invocation so the trap can release exactly the locks
-# this run owns when multiple wrappers are running in parallel.
+# this run owns when multiple wrappers are running in parallel. Computed
+# BEFORE lock acquisition because the lock-write below stamps it into the
+# acquired lock dir's run_id file.
 _run_ts=$(date +%s%N 2>/dev/null || date +%s)
 export DEV_AGENT_RUN_ID="$$-$_run_ts"
 unset _run_ts
+
+if [ "$MODE" = "default" ]; then
+  CANDIDATES=$("$LOOP_HOME/runners/lib/eligibility.sh" dev-candidates)
+  EL_RC=$?
+  case "$EL_RC" in
+    0)
+      # Iterate candidates in priority order (high-first per dev-candidates
+      # contract). The first mkdir that succeeds is our lock; mkdir is the
+      # atomic primitive — exactly one caller wins under contention.
+      mkdir -p "$LOCK_DIR"
+      DEV_AGENT_TARGET_ISSUE=""
+      for _cand in $CANDIDATES; do
+        if mkdir "$LOCK_DIR/gh-${_cand}.lock" 2>/dev/null; then
+          echo "$DEV_AGENT_RUN_ID" >"$LOCK_DIR/gh-${_cand}.lock/run_id"
+          date -Iseconds >"$LOCK_DIR/gh-${_cand}.lock/started"
+          DEV_AGENT_TARGET_ISSUE="$_cand"
+          break
+        fi
+      done
+      unset _cand
+      if [ -z "$DEV_AGENT_TARGET_ISSUE" ]; then
+        # The predicate found candidates but every one was claimed between
+        # the listing and our mkdir attempts. Skip the LLM — no work left.
+        echo "[wrapper] eligibility: every candidate already locked by sibling runs; skipping LLM"
+        echo "[wrapper] result=lock-race-loss-pre-LLM mode=$MODE"
+        exit 2
+      fi
+      export DEV_AGENT_TARGET_ISSUE
+      echo "[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding"
+      ;;
+    1)
+      echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
+      echo "[wrapper] result=no-work mode=$MODE"
+      exit 2
+      ;;
+    *)
+      # Transient predicate failure (gh down, jq error). Don't burn a cycle
+      # by spawning the LLM — without a pre-locked issue the LLM would
+      # rediscover and re-race anyway. Treat as no-work.
+      echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM" >&2
+      echo "[wrapper] result=predicate-failed mode=$MODE"
+      exit 2
+      ;;
+  esac
+  unset CANDIDATES EL_RC
+fi
 if [ "$MODE" = "follow-up" ]; then
   LOG="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.log"
   RAW="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.jsonl"

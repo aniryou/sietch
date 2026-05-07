@@ -178,6 +178,181 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# eligibility_dev_candidates: high-then-medium ordering, dedupe, lock + assignee
+# filtering. The wrapper consumes this list to claim a lock BEFORE spawning the
+# LLM (GH#31): every printed number must be a viable claim target so the
+# wrapper's mkdir loop can pick one without re-querying gh.
+#
+# Pure-shell tests exercise the same awk-dedupe + lock-skip pipeline the
+# function uses, so we don't need to mock `gh` for the ordering logic.
+# ---------------------------------------------------------------------------
+
+@test "dev-candidates: high-then-medium with overlap dedupes preserving high-first order" {
+  local high_nums med_nums all
+  high_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+                < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
+  med_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+               < "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
+  # awk dedupe preserves first occurrence, so high (101, 102) appears before
+  # the medium-only (103). 102 is in both files; should appear once, in its
+  # high-side position.
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | awk 'NF && !seen[$0]++')
+  [ "$(printf '%s' "$all" | tr '\n' ' ')" = "101 102 103" ]
+}
+
+@test "dev-candidates: lock-dir filter excludes already-locked issues from output" {
+  local lock_dir="$BATS_TEST_TMPDIR/locks"
+  mkdir -p "$lock_dir/gh-101.lock" "$lock_dir/gh-103.lock"
+  local high_nums med_nums all filtered_lines n
+  high_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+                < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
+  med_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
+               < "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | awk 'NF && !seen[$0]++')
+  filtered_lines=""
+  for n in $all; do
+    [ -d "$lock_dir/gh-${n}.lock" ] && continue
+    filtered_lines+="$n"$'\n'
+  done
+  # 101 (locked) and 103 (locked) excluded; 102 remains.
+  [ "$(printf '%s' "$filtered_lines" | tr '\n' ' ')" = "102 " ]
+}
+
+@test "dev-candidates: empty fixtures yield empty output" {
+  local high_nums med_nums all
+  high_nums=$(jq -r '.[] | select(.assignees == []) | .number' <<<'[]')
+  med_nums=$(jq -r '.[] | select(.assignees == []) | .number' <<<'[]')
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | awk 'NF && !seen[$0]++')
+  [ -z "$all" ]
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_dev_candidates (function-level): exercises the predicate
+# end-to-end via PATH-mocked gh. Confirms the new CLI mode `dev-candidates`
+# prints one candidate-number per line, exits 0 when work exists / 1 when none
+# / 2 on gh failure — same shape as `dev`/`review`/`followup`.
+# ---------------------------------------------------------------------------
+
+# Helper: writes a gh shim that returns the high-issues fixture for
+# `--label severity:high` and the medium-issues fixture for `--label severity:medium`,
+# matching the two label-scoped queries inside eligibility_dev_candidates.
+_make_gh_dev_stub() {
+  local high="$1"
+  local med="$2"
+  local tmpbin="$BATS_TEST_TMPDIR/bin-dev"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+# Minimal gh stub — just enough to satisfy eligibility_dev_candidates.
+# Args: 'issue list --repo X --state open --label LABEL --json ... --limit ...'
+label=""
+while [ \$# -gt 0 ]; do
+  if [ "\$1" = "--label" ]; then
+    label="\$2"; shift 2
+  else
+    shift
+  fi
+done
+case "\$label" in
+  severity:high)   cat '$high' ;;
+  severity:medium) cat '$med' ;;
+  *) echo '[]' ;;
+esac
+exit 0
+STUB
+  chmod +x "$tmpbin/gh"
+  echo "$tmpbin"
+}
+
+@test "eligibility_dev_candidates: prints high-then-medium one-per-line, exits 0" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks"
+  mkdir -p "$lock_dir"
+  # Override LOCK_DIR in the consumer config so the predicate sees an empty lock dir.
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  # Output: 101, 102, 103 — high candidates first, medium-only candidate after.
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "101 102 103" ]
+}
+
+@test "eligibility_dev_candidates: locked candidate excluded from output" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/some-locks"
+  mkdir -p "$lock_dir/gh-101.lock"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  # 101 is locked → excluded. Order preserved: 102 (high) then 103 (medium-only).
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "102 103" ]
+}
+
+@test "eligibility_dev_candidates: every candidate locked → empty output, exit 1" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/all-locks"
+  mkdir -p "$lock_dir/gh-101.lock" "$lock_dir/gh-102.lock" "$lock_dir/gh-103.lock"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "eligibility_dev_candidates: empty fixtures → empty output, exit 1" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks2"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local empty="$BATS_TEST_TMPDIR/empty.json"
+  echo '[]' > "$empty"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$empty" "$empty")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "eligibility_dev_candidates: gh failure exits 2, prints '?'" {
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin-fail-dev"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+# ---------------------------------------------------------------------------
 # eligibility_review_pending: jq filter for "no agent review covers head"
 # Compares review.submittedAt against the PR head commit's committedDate.
 # ---------------------------------------------------------------------------
@@ -477,6 +652,41 @@ STUB
 # ---------------------------------------------------------------------------
 @test "run-loop.sh: follow-up dispatcher invokes eligibility_followup_pr" {
   grep -qF 'eligibility_followup_pr' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+# ---------------------------------------------------------------------------
+# Source-of-truth check: run-developer.sh's preflight (Mode 1) must acquire a
+# filesystem lock BEFORE the `claude -p` invocation — otherwise the TOCTOU
+# race in GH#31 reappears. This guards against a future refactor that puts
+# lock acquisition back inside the LLM only.
+# ---------------------------------------------------------------------------
+@test "run-developer.sh: preflight calls eligibility dev-candidates" {
+  grep -qE 'eligibility\.sh.* dev-candidates' "$LOOP_ROOT/runners/run-developer.sh"
+}
+
+@test "run-developer.sh: preflight does mkdir on \$LOCK_DIR/gh-*.lock" {
+  grep -qE 'mkdir[^|;&]*"\$LOCK_DIR/gh-' "$LOOP_ROOT/runners/run-developer.sh"
+}
+
+@test "run-developer.sh: lock acquisition (mkdir LOCK_DIR/gh-) precedes claude invocation" {
+  local mkdir_line claude_line
+  mkdir_line=$(grep -nE 'mkdir[^|;&]*"\$LOCK_DIR/gh-' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  claude_line=$(grep -n '^[[:space:]]*claude -p' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  [ -n "$mkdir_line" ]
+  [ -n "$claude_line" ]
+  [ "$mkdir_line" -lt "$claude_line" ]
+}
+
+@test "run-developer.sh: exports DEV_AGENT_TARGET_ISSUE before claude invocation" {
+  # The wrapper must set DEV_AGENT_TARGET_ISSUE so the LLM skips the rediscovery
+  # flow (template Mode 1 short-circuits when this env var is set).
+  grep -qE 'DEV_AGENT_TARGET_ISSUE' "$LOOP_ROOT/runners/run-developer.sh"
+  local export_line claude_line
+  export_line=$(grep -nE 'DEV_AGENT_TARGET_ISSUE=' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  claude_line=$(grep -n '^[[:space:]]*claude -p' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  [ -n "$export_line" ]
+  [ -n "$claude_line" ]
+  [ "$export_line" -lt "$claude_line" ]
 }
 
 @test "run-loop.sh: follow-up dispatcher re-sources lib/eligibility.sh per cycle (hot-reload)" {

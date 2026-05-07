@@ -92,6 +92,64 @@ eligibility_dev_count() {
 }
 
 # ---------------------------------------------------------------------------
+# Mode 1 dev-agent (lock-acquisition variant): same filter semantics as
+# eligibility_dev_count but emits one candidate-number per line on stdout
+# in priority order (severity:high first, then medium), de-duplicated.
+#
+# This is what run-developer.sh consumes to acquire the lock BEFORE spawning
+# the LLM (GH#31). The wrapper iterates the printed numbers and tries
+# `mkdir "$LOCK_DIR/gh-N.lock"` on each; the first successful mkdir is the
+# wrapper's claim. Without this list, the wrapper had only a count and the
+# LLM did its own discovery + lock — the TOCTOU window between count and
+# lock cost ~$0.20-$0.50 per losing parallel agent under DEV_INSTANCES>1.
+#
+# Output and exit-code shape mirrors eligibility_dev_count:
+#   stdout: candidate numbers, one per line (no trailing blank), or `?` on
+#           predicate failure
+#   exit:   0 = at least one candidate, 1 = none, 2 = gh/jq failure
+# ---------------------------------------------------------------------------
+eligibility_dev_candidates() {
+  local raw_h raw_m all filtered_lines n filtered_count
+  if ! raw_h=$(
+    PAGER=cat GIT_PAGER=cat gh issue list \
+      --repo "$REPO_SLUG" --state open \
+      --label "$SEVERITY_LABEL_HIGH" \
+      --json number,assignees \
+      --limit 50 2>/dev/null \
+      | jq -r '.[] | select(.assignees == []) | .number' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+  if ! raw_m=$(
+    PAGER=cat GIT_PAGER=cat gh issue list \
+      --repo "$REPO_SLUG" --state open \
+      --label "$SEVERITY_LABEL_MEDIUM" \
+      --json number,assignees \
+      --limit 50 2>/dev/null \
+      | jq -r '.[] | select(.assignees == []) | .number' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+  # Preserve high-then-medium order (sort -u would lose it). awk's
+  # !seen[$0]++ keeps the first occurrence and drops later duplicates,
+  # so an issue tagged both severities surfaces in its high-side slot.
+  all=$(printf '%s\n%s\n' "$raw_h" "$raw_m" | awk 'NF && !seen[$0]++')
+  filtered_count=0
+  filtered_lines=""
+  for n in $all; do
+    [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    filtered_lines+="$n"$'\n'
+    filtered_count=$((filtered_count + 1))
+  done
+  if [ -n "$filtered_lines" ]; then
+    printf '%s' "$filtered_lines"
+  fi
+  [ "$filtered_count" -gt 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # Reviewer orchestrator: open ${BRANCH_PREFIX}/* PRs whose head commit is not
 # yet covered by a [reviewer-agent: ...] review.
 #
@@ -225,6 +283,7 @@ eligibility_followup_pr() {
 # ---------------------------------------------------------------------------
 # CLI entry point. Lets agents invoke this via:
 #   bash $LOOP_HOME/runners/lib/eligibility.sh dev
+#   bash $LOOP_HOME/runners/lib/eligibility.sh dev-candidates
 #   bash $LOOP_HOME/runners/lib/eligibility.sh review
 #   bash $LOOP_HOME/runners/lib/eligibility.sh followup <PR#>
 # Wrappers source the file and call functions directly.
@@ -233,6 +292,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     dev)
       eligibility_dev_count
+      exit $?
+      ;;
+    dev-candidates)
+      eligibility_dev_candidates
       exit $?
       ;;
     review)
@@ -249,6 +312,9 @@ Usage: eligibility.sh <mode> [args]
 
 Modes:
   dev              Count open severity:high|medium issues with no assignee.
+  dev-candidates   Print one candidate-number per line (high-priority first),
+                   so the wrapper can mkdir-acquire a lock BEFORE spawning the
+                   LLM (closes the TOCTOU window of 'dev').
   review           Count open dev-agent PRs not yet reviewed at current head SHA.
   followup <PR#>   Should the follow-up dispatcher dispatch a Mode 2 dev-agent
                    for PR <PR#>? Skips clean/nits verdicts unconditionally;
@@ -256,6 +322,7 @@ Modes:
                    than the latest dev-agent comment.
 
 Output: one line — count (dev/review) or verdict (followup), or '?' on failure.
+        Multi-line for dev-candidates (one number per line, empty if none).
 Exit:   0 = work to do, 1 = nothing eligible, 2 = predicate failed.
 
 Required env:

@@ -52,12 +52,20 @@ If an issue has no severity label, skip it.
 
 Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
+**Wrapper pre-lock shortcut.** If `DEV_AGENT_TARGET_ISSUE` is set in your environment, the wrapper has already filtered eligibility AND acquired the filesystem lock for that issue (it `mkdir`'d `${LOCK_DIR}/gh-${DEV_AGENT_TARGET_ISSUE}.lock` and stamped your `DEV_AGENT_RUN_ID` into its `run_id` file). Skip steps 0–3 below entirely:
+
+- Set `ISSUE_NUM=$DEV_AGENT_TARGET_ISSUE` and proceed straight to "Mode 1: Per-issue Workflow" Step 0 (parent beads issue).
+- Do **not** re-run the eligibility predicate. Do **not** re-attempt the lock — you already own it. Do **not** scan for other candidates.
+- Read the issue body via `gh issue view "$ISSUE_NUM" --repo ${REPO_SLUG} --json title,body,labels,url` to capture severity and acceptance criteria.
+
+The unset-env steps below are the fallback path for direct `claude -p` invocations (no wrapper).
+
 0. **Fast eligibility gate.** Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
    ```bash
    bash "$LOOP_HOME/runners/lib/eligibility.sh" dev
    # exit 0 = candidates exist; exit 1 = no eligible work; exit 2 = predicate failed
    ```
-   If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate; the call here protects against direct `claude -p` invocations.
+   If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate (and pre-acquired a lock — see the shortcut above); the call here protects against direct `claude -p` invocations.
 
 1. **Full scan** (only reached if the gate found candidates) — run both queries once:
    ```bash
@@ -79,6 +87,8 @@ Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 ### Concurrency safety (multiple agents may run in parallel)
 
 The user may run two or more developer-agent processes in parallel. Both run as the same GitHub identity (the user's `gh` token), so **`gh issue edit --add-assignee "@me"` is NOT a working lock** — `--add-assignee` is idempotent for the same user, so both racing agents would believe they won.
+
+**When `DEV_AGENT_TARGET_ISSUE` is set, the wrapper already won the race** (the wrapper does the `mkdir` before invoking you, so by the time you start, you own the lock). Skip the lock-acquisition snippet below — it's the unwrapped-fallback path. Just proceed with the issue, and trust that `${LOCK_DIR}/gh-${DEV_AGENT_TARGET_ISSUE}.lock` exists and contains your `run_id`.
 
 Use a **filesystem lock** as the atomic primitive. `mkdir` is atomic — exactly one caller succeeds; everyone else gets `EEXIST`.
 
