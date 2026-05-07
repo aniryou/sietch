@@ -171,9 +171,11 @@ loop_dispatcher_followup() {
 }
 
 loop_dispatcher_conflicts() {
+  local empty_streak=0 dispatched sleep_for
   while true; do
     cleanup_stale_dispatch_locks
     echo "[$(ts)] [dispatch:conflicts] scanning for CONFLICTING dev-agent PRs..."
+    dispatched=0
 
     while IFS= read -r pr; do
       [ -z "$pr" ] && continue
@@ -186,6 +188,7 @@ loop_dispatcher_conflicts() {
         ( "$SIETCH_HOME/wrappers/run-developer.sh" resolve-conflicts "$pr" > /dev/null 2>&1 ) &
         local child=$!
         echo "$child" > "$lock/pid"
+        dispatched=$((dispatched + 1))
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -199,8 +202,19 @@ loop_dispatcher_conflicts() {
         2>/dev/null
     )
 
-    echo "[$(ts)] [dispatch:conflicts] sleeping ${POLL_INTERVAL}s..."
-    sleep "$POLL_INTERVAL"
+    # Backoff on cycles where nothing new was dispatched. "Nothing new" means
+    # zero NEW lock acquisitions — already-locked PRs from prior cycles don't
+    # count as work this cycle. Resets to base on the first non-empty cycle.
+    if [ "$dispatched" -eq 0 ]; then
+      empty_streak=$((empty_streak + 1))
+      sleep_for=$(empty_cycle_sleep "$empty_streak")
+      echo "[$(ts)] [dispatch:conflicts] no new dispatches (streak=${empty_streak}, next sleep=${sleep_for}s)"
+    else
+      empty_streak=0
+      sleep_for="$POLL_INTERVAL"
+      echo "[$(ts)] [dispatch:conflicts] dispatched ${dispatched} PR(s); sleeping ${sleep_for}s..."
+    fi
+    sleep "$sleep_for"
   done
 }
 
