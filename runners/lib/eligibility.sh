@@ -110,13 +110,23 @@ eligibility_dev_count() {
 # ---------------------------------------------------------------------------
 eligibility_dev_candidates() {
   local raw_h raw_m all filtered_lines n filtered_count
+  # Filter set must mirror eligibility_dev_count exactly: assignees == []
+  # AND no BLOCKED_HUMAN_LABEL. The label filter is GH#28 — without it the
+  # wrapper happily mkdir-locks a blocked issue and the LLM (which skips its
+  # own discovery when DEV_AGENT_TARGET_ISSUE is set) re-trips the safety net,
+  # reopening the rediscovery loop GH#28 closed.
   if ! raw_h=$(
     PAGER=cat GIT_PAGER=cat gh issue list \
       --repo "$REPO_SLUG" --state open \
       --label "$SEVERITY_LABEL_HIGH" \
-      --json number,assignees \
+      --json number,assignees,labels \
       --limit 50 2>/dev/null \
-      | jq -r '.[] | select(.assignees == []) | .number' 2>/dev/null
+      | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
+          .[]
+          | select(.assignees == [])
+          | select((.labels // [] | map(.name)) | index($blocked) | not)
+          | .number
+        ' 2>/dev/null
   ); then
     echo "?"
     return 2
@@ -125,9 +135,14 @@ eligibility_dev_candidates() {
     PAGER=cat GIT_PAGER=cat gh issue list \
       --repo "$REPO_SLUG" --state open \
       --label "$SEVERITY_LABEL_MEDIUM" \
-      --json number,assignees \
+      --json number,assignees,labels \
       --limit 50 2>/dev/null \
-      | jq -r '.[] | select(.assignees == []) | .number' 2>/dev/null
+      | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
+          .[]
+          | select(.assignees == [])
+          | select((.labels // [] | map(.name)) | index($blocked) | not)
+          | .number
+        ' 2>/dev/null
   ); then
     echo "?"
     return 2

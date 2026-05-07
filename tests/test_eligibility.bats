@@ -352,6 +352,66 @@ STUB
   [ "$output" = "?" ]
 }
 
+@test "eligibility_dev_candidates: blocked:human-labeled candidates filtered out" {
+  # GH#36 P0: dev-candidates must mirror dev-count's blocked:human filter,
+  # otherwise the wrapper mkdir-locks an issue the safety-net flow already
+  # marked permanently ineligible, exports DEV_AGENT_TARGET_ISSUE, and the
+  # LLM (which skips its own discovery) re-trips the safety-net rule and
+  # exits — the exact rediscovery loop GH#28 closed for the count path.
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-blocked"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  # High fixture: 991 has blocked:human, 992 is eligible.
+  # Medium fixture: 993 has blocked:human, 994 is eligible.
+  # Expected output: 992 (high), then 994 (medium).
+  local high="$BATS_TEST_TMPDIR/blocked-high.json"
+  local med="$BATS_TEST_TMPDIR/blocked-med.json"
+  cat > "$high" <<'JSON'
+[
+  {"number":991,"assignees":[],"labels":[{"name":"severity:high"},{"name":"blocked:human"}]},
+  {"number":992,"assignees":[],"labels":[{"name":"severity:high"}]}
+]
+JSON
+  cat > "$med" <<'JSON'
+[
+  {"number":993,"assignees":[],"labels":[{"name":"severity:medium"},{"name":"blocked:human"}]},
+  {"number":994,"assignees":[],"labels":[{"name":"severity:medium"}]}
+]
+JSON
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "992 994" ]
+}
+
+@test "eligibility_dev_candidates: every candidate has blocked:human → empty output, exit 1" {
+  # End-to-end version of the filter test: when EVERY candidate in both the
+  # high and medium queries carries the blocked:human label, the wrapper must
+  # see zero candidates (exit 1) so it short-circuits without mkdir-locking
+  # and without spawning the LLM.
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-all-blocked"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local high="$BATS_TEST_TMPDIR/all-blocked-high.json"
+  local med="$BATS_TEST_TMPDIR/all-blocked-med.json"
+  echo '[{"number":991,"assignees":[],"labels":[{"name":"severity:high"},{"name":"blocked:human"}]}]' > "$high"
+  echo '[{"number":992,"assignees":[],"labels":[{"name":"severity:medium"},{"name":"blocked:human"}]}]' > "$med"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
 # ---------------------------------------------------------------------------
 # eligibility_review_pending: jq filter for "no agent review covers head"
 # Compares review.submittedAt against the PR head commit's committedDate.
@@ -675,6 +735,21 @@ STUB
   [ -n "$mkdir_line" ]
   [ -n "$claude_line" ]
   [ "$mkdir_line" -lt "$claude_line" ]
+}
+
+@test "run-developer.sh: trap cleanup is registered BEFORE lock mkdir (GH#36 P1)" {
+  # Pre-PR-36 fix the trap was registered ~135 lines after `mkdir LOCK_DIR/gh-…`
+  # (review #36 P1). A SIGINT/SIGTERM in that gap leaked the lock until
+  # STALE_LOCK_HOURS. The cleanup() function only releases locks tagged with
+  # our DEV_AGENT_RUN_ID, so registering early is safe (siblings' locks
+  # untouched). Source-of-truth check guards against a future refactor that
+  # reopens the leak window.
+  local trap_line mkdir_line
+  trap_line=$(grep -nE '^trap cleanup' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  mkdir_line=$(grep -nE 'mkdir[^|;&]*"\$LOCK_DIR/gh-' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  [ -n "$trap_line" ]
+  [ -n "$mkdir_line" ]
+  [ "$trap_line" -lt "$mkdir_line" ]
 }
 
 @test "run-developer.sh: exports DEV_AGENT_TARGET_ISSUE before claude invocation" {
