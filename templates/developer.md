@@ -115,9 +115,10 @@ bd remember "developer-agent claimed GitHub issue #${ISSUE_NUM} at $(date -Iseco
 
 **Supported kill mechanisms.** The wrapper runs the `claude` pipeline asynchronously and uses bash's `wait` builtin (which is signal-interruptible), so any of the following will fire the cleanup trap promptly and tear down `claude`/`tee`/`jq` along with releasing the lock:
 
-- `Ctrl+C` inside the tmux pane (SIGINT to the pgroup).
-- `st loop stop` (kills the tmux session, signaling all panes).
-- `kill <wrapper-pid>` or `kill -INT <wrapper-pid>` (SIGTERM/SIGINT to the wrapper bash). The trap forwards the signal to the pipeline's process group.
+- `Ctrl+C` inside the tmux pane — works (signals the whole pgroup; the wrapper bash and pipeline children all receive SIGINT).
+- `st loop stop` — works (kills the tmux session; all panes get SIGHUP/SIGTERM).
+- `kill <wrapper-pid>` (SIGTERM) — works in **every** launch context: interactive shells, tmux panes, and non-interactive parents (e.g. our dispatcher's `( ... ) &` in `run-loop.sh`). The trap forwards SIGTERM to the pipeline's pgroup. **This is the portable kill signal — prefer it over `kill -INT` for scripts and tooling.**
+- `kill -INT <wrapper-pid>` (SIGINT) — works **only** when the wrapper was launched from a parent with job control on (interactive tmux pane, `bash -i`, login shell). When launched from a non-interactive parent as a backgrounded subshell — including the `run-loop.sh` dispatcher pattern `( "$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" ) &` — bash inherits SIGINT set to `SIG_IGN`, and per `man bash` *"Signals ignored upon entry to the shell cannot be trapped or reset"*. The wrapper's `trap cleanup INT` is therefore a no-op in that context, and `kill -INT` is silently swallowed. Use SIGTERM there.
 
 `SIGKILL` bypasses traps by definition — that's the only path that can leave a stale lock.
 

@@ -111,14 +111,18 @@ _no_pgroup_orphans() {
 # entry to the shell cannot be trapped or reset." Bats spawns tests in a non-
 # interactive bash without job control, so any wrapper we launch with `&`
 # starts with SIGINT set to SIG_IGN and `trap '...' INT` becomes a no-op for
-# THAT process. There's no portable way to deliver a working SIGINT to a
-# backgrounded bash from within a bats test — the constraint is a bash
-# property of our test harness, not a wrapper bug. In production the wrapper
-# runs from an interactive tmux pane (job control on, SIGINT trappable), so
-# Ctrl+C and `kill -INT <pid>` both work end-to-end. We verify SIGINT
-# coverage via the source-of-truth grep tests below (trap includes INT) and
-# rely on the SIGTERM functional test above to prove the wait/pgroup-kill
-# mechanism — both signals share the exact same code path.
+# THAT process — and the SAME constraint holds in production whenever the
+# wrapper is launched as a backgrounded subshell from a non-interactive
+# parent (e.g. `run-loop.sh`'s dispatcher: `( run-developer.sh ... ) &`). In
+# those scripted contexts `kill -INT <wrapper-pid>` is silently ignored. The
+# wrapper's `trap cleanup INT` IS effective when the parent has job control
+# on (interactive tmux pane, `bash -i`, login shell) — Ctrl+C in a tmux
+# pane signals the whole pgroup and works end-to-end. SIGTERM is portable
+# across all launch contexts; see templates/developer.md "Supported kill
+# mechanisms" for the full breakdown. We verify SIGINT trap-registration
+# via the source-of-truth grep tests below and rely on the SIGTERM
+# functional test above to prove the wait/pgroup-kill mechanism — both
+# signals share the same code path once delivered.
 
 @test "wrapper signals: natural exit (no signal) still works — pipeline ends, wrapper exits 0-or-pipeline-rc" {
   # Replace the long sleep with a fast-exit producer so the pipeline ends on

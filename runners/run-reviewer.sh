@@ -45,7 +45,7 @@ PIPELINE_PGID=""
 
 cleanup() {
   local exit_code=$?
-  echo "[wrapper] reviewer exited with code $exit_code" >&2
+  echo "[wrapper] reviewer exited with code $exit_code; cleaning up..." >&2
   pipeline_kill_pgroup_if_alive "${PIPELINE_PGID:-}"
   echo "[wrapper] live log: $LOG" >&2
   echo "[wrapper] raw json: $RAW" >&2
