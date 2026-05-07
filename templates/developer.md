@@ -201,16 +201,32 @@ gh pr create --repo ${REPO_SLUG} \
   --title "Fix GH#<num>: <short summary>" \
   --body "$(cat <<'EOF'
 ## Summary
-<bullet list of what changed and why>
+
+- <bullet list of what changed and why; cite acceptance criteria from the issue where relevant>
+- <prefer specific, concrete language: file paths, function names, line numbers — not "refactored X" or "improved Y">
 
 ## Linked Issues
+
 - Closes #<num>
-- Beads: <PARENT>
+- Beads parent: <PARENT>
+- Beads children: <child1>, <child2>, ...   (or `(none)` if Mode 1 didn't fork children)
+
+## Commits
+
+- [`<short_sha>`](https://github.com/${REPO_SLUG}/commit/<full_sha>) — <commit subject line>
 
 ## Test plan
-- [x] Added unit tests in <path>
-- [x] Full test suite passes locally
-- [x] Pre-commit hooks pass
+
+- [x] Added unit tests in `<path>` covering <one-line scope>
+- [x] Full test suite passes locally (`pytest -q` — N passed)
+- [x] Pre-commit hooks pass (ruff, ruff-format, gitleaks, EOF/trailing-ws)
+- [ ] CI green: lint, test, docker   <!-- check after Step 6; leave unchecked until then -->
+
+## Out of scope
+
+<!-- Include this section ONLY when the issue body explicitly defers items.
+     One bullet per deferred item; otherwise omit the section entirely. -->
+- <item> — file separately if/when needed.
 
 ${DEV_AGENT_PR_BODY_TAG}
 EOF
@@ -218,6 +234,8 @@ EOF
 ```
 
 Record the PR number as `$PR`.
+
+The body above is the **complete, final** PR description — it already includes the parent/child beads IDs and the commit SHA(s) from Step 4. Step 7a does **not** rewrite this body; it only flips the unchecked CI checkbox once CI is green and appends any retry commits to `## Commits`. Do not change the section structure or add ad-hoc sections.
 
 ### Step 6 — Wait for CI
 
@@ -233,9 +251,7 @@ If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr ch
 
 When all required checks are green:
 
-1. Update the PR description to include:
-   - The beads parent ID and child IDs.
-   - The final commit SHA(s) (link to `https://github.com/${REPO_SLUG}/commit/<sha>`).
+1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. Use `gh pr edit "$PR" --body "$NEW_BODY"`. Do not change section structure or invent new sections — keep the format identical to Step 5's template.
 2. Merge is **not** your responsibility — leave that to the user, unless the user has explicitly enabled auto-merge for the repo. Do **not** force-merge.
 3. **Do NOT close the GitHub issue.** GitHub auto-closes it when the PR is merged (the PR body includes `Closes #<num>` from Step 5), and auto-adds a linking comment at that time. Closing now would mark the issue resolved before the work has actually shipped — the PR could still be abandoned, reverted, or have a P0 finding from review.
 4. Close the parent beads issue and any still-open child issues. Beads is internal tracking; closing on CI-green is acceptable since you can manually reopen with `bd update --status=open` if the PR is later abandoned:

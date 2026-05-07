@@ -136,6 +136,22 @@ Pick the verdict based on the findings you bucketed:
 | P1 (± P2)               | `[reviewer-agent: comment]` | `--comment`          |
 | Any P0                  | `[reviewer-agent: changes]` | `--request-changes`  |
 
+**Own-PR fallback for `--request-changes`.** GitHub rejects `--request-changes` (HTTP 422) when the reviewer is also the PR author — the common case in a solo setup where dev-agent and reviewer-agent run under the same `gh auth` token. Before posting a `changes`-verdict review, check:
+
+```bash
+PR_AUTHOR=$(gh pr view "$PR" --repo ${REPO_SLUG} --json author -q '.author.login')
+ME=$(gh api user -q .login)
+[ "$PR_AUTHOR" = "$ME" ] && OWN_PR=1 || OWN_PR=0
+```
+
+If `OWN_PR=1`, post with `--comment` instead of `--request-changes`, and include this note **inside** the review body, immediately after the meta lines (CI status / Linked issue / Human input considered) and before the severity sections:
+
+```
+_Note: `--request-changes` is not permitted on the author's own PR, so this is posted as `--comment`. The `[reviewer-agent: changes]` marker above is the source of truth for downstream automation._
+```
+
+The marker token remains `[reviewer-agent: changes]` — never silently demote to `comment` just because the verb fell back. Downstream (dev-agent follow-up mode, future merger scripts) reads the marker, not the GitHub review state.
+
 Post exactly **one** review using the template below. The marker token line is mandatory and must appear exactly once — the dev-agent follow-up mode and any future merger script greps for it. Omit any severity section that has no findings (don't show empty headers).
 
 ```bash
