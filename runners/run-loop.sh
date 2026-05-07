@@ -34,6 +34,8 @@ set -u
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/dispatcher.sh"
 
 SESSION=agent-loop
 
@@ -182,8 +184,7 @@ loop_dispatcher_followup() {
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
         --json number,headRefName,isDraft \
-        --jq --arg prefix "${BRANCH_PREFIX}/" \
-            '.[] | select(.headRefName | startswith($prefix)) | select(.isDraft == false) | .number' \
+        --jq "$(_dispatch_followup_jq "$BRANCH_PREFIX")" \
         2>/dev/null
     )
 
@@ -223,12 +224,7 @@ loop_dispatcher_conflicts() {
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
         --json number,headRefName,mergeable,isDraft \
-        --jq --arg prefix "${BRANCH_PREFIX}/" \
-            '.[]
-              | select(.headRefName | startswith($prefix))
-              | select(.mergeable == "CONFLICTING")
-              | select(.isDraft == false)
-              | .number' \
+        --jq "$(_dispatch_conflicts_jq "$BRANCH_PREFIX")" \
         2>/dev/null
     )
 
