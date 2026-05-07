@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Render a sietch prompt template by substituting ${VARS} from the consumer
-# repo's .sietch/rig.config.
+# Render a loop prompt template by substituting ${VARS} from the consumer
+# repo's .loop/loop.config.
 #
 # Usage:
 #   render-prompt.sh <template-path>
 #
-# Required env (set by the sietch CLI):
-#   REPO_ROOT     consumer repo (contains .sietch/rig.config)
-#   SIETCH_HOME   ~/code/sietch (or wherever this framework is installed)
+# Required env (set by the loop CLI):
+#   REPO_ROOT     consumer repo (contains .loop/loop.config)
+#   LOOP_HOME   ~/code/loop (or wherever this framework is installed)
 #
 # Outputs the rendered prompt on stdout. Wrappers pipe this into
 # `claude --append-system-prompt "$(...)"`.
@@ -16,10 +16,10 @@ set -u
 set -o pipefail
 \unalias -a 2>/dev/null || true
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
-: "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
+: "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
 
-CONFIG="$REPO_ROOT/.sietch/rig.config"
+CONFIG="$REPO_ROOT/.loop/loop.config"
 [ -f "$CONFIG" ] || { echo "[render-prompt] missing config: $CONFIG" >&2; exit 1; }
 # shellcheck disable=SC1090
 . "$CONFIG"
@@ -38,7 +38,7 @@ command -v envsubst >/dev/null 2>&1 || {
 }
 
 # Single source of truth for keys substituted into prompt templates.
-# Add new rig.config keys that templates may reference here.
+# Add new loop.config keys that templates may reference here.
 # Anything outside this list passes through literally — essential for
 # $REPO_ROOT, which the agent expands via bash at runtime, not here.
 RIG_KEYS=(

@@ -55,18 +55,18 @@ case "${1:-}" in
     ;;
 esac
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
-: "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
+: "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
-. "$REPO/.sietch/rig.config"
+. "$REPO/.loop/loop.config"
 
 # Mode 1 only — preflight: skip the LLM if there are no eligible issues.
 # Modes 2/3 already arrive with a specific PR number and don't scan.
 # Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
 # so run-loop.sh can apply exponential backoff to consecutive empty cycles.
 if [ "$MODE" = "default" ]; then
-  EL_COUNT=$("$SIETCH_HOME/lib/eligibility.sh" dev)
+  EL_COUNT=$("$LOOP_HOME/lib/eligibility.sh" dev)
   EL_RC=$?
   case "$EL_RC" in
     0) echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding" ;;
@@ -102,7 +102,7 @@ fi
 # untractable, the wrapper itself escalates via gh and exits — no LLM call.
 if [ "$MODE" = "resolve-conflicts" ]; then
   echo "[wrapper] running triage for PR #$TARGET_PR..."
-  if TRIAGE_OUTPUT=$("$SIETCH_HOME/wrappers/triage-conflict.sh" "$TARGET_PR" 2>&1); then
+  if TRIAGE_OUTPUT=$("$LOOP_HOME/wrappers/triage-conflict.sh" "$TARGET_PR" 2>&1); then
     echo "$TRIAGE_OUTPUT"
     echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
   else
@@ -224,7 +224,7 @@ echo
 
 PAGER=cat GIT_PAGER=cat \
 claude -p "$KICKOFF" \
-  --append-system-prompt "$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/templates/developer.md")" \
+  --append-system-prompt "$("$LOOP_HOME/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$DEV_MAX_TURNS" \
   --verbose \

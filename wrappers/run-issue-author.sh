@@ -12,15 +12,15 @@ set -u
 set -o pipefail
 \unalias -a 2>/dev/null || true
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
-: "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
+: "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
-. "$REPO/.sietch/rig.config"
+. "$REPO/.loop/loop.config"
 cd "$REPO"
 
 INITIAL_MSG="${1:-}"
-PROMPT="$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/templates/issue-author.md")"
+PROMPT="$("$LOOP_HOME/lib/render-prompt.sh" "$LOOP_HOME/templates/issue-author.md")"
 
 if [ -n "$INITIAL_MSG" ]; then
   PAGER=cat GIT_PAGER=cat \

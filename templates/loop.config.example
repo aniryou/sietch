@@ -1,6 +1,6 @@
-# Per-rig settings for the sietch agent-dev-loop framework.
+# Per-repo settings for the loop multi-agent dev-loop framework.
 #
-# Created by `sietch init`. Edit values to match this repo's conventions.
+# Created by `st init`. Edit values to match this repo's conventions.
 # This file is shell-sourced and substituted into prompt templates at
 # invocation time. Keep values flat (KEY="value"); no arrays, no nesting.
 
@@ -45,14 +45,14 @@ TRIAGE_CI_SECRETS_REGEX='\.github/|secrets|credentials|\.env'
 # Counts ALL lines inside conflict regions across all conflicted files,
 # including BOTH the "ours" and "theirs" sides of every <<<<<<< / >>>>>>>
 # block. A symmetric 5-line-vs-5-line conflict counts as 10. The default
-# is conservative by design — sietch's auto-resolve path is a mechanical-
+# is conservative by design — loop's auto-resolve path is a mechanical-
 # rebase rescue, not a semantic merge solver.
 TRIAGE_LINE_LIMIT=10
 
 # ---------------------------------------------------------------------------
-# Loop / dispatch defaults (sietch loop)
+# Loop / dispatch defaults (loop)
 # ---------------------------------------------------------------------------
-DEV_INSTANCES_DEFAULT=3       # parallel polecats; capacity governor
+DEV_INSTANCES_DEFAULT=3       # parallel dev-agent workers; capacity governor
 POLL_INTERVAL_DEFAULT=60      # seconds between scan cycles
 
 # Cap for exponential backoff on consecutive empty cycles (no eligible work).

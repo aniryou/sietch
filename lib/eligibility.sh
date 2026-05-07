@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/eligibility.sh — Shell-side eligibility predicates for sietch agents.
+# lib/eligibility.sh — Shell-side eligibility predicates for loop agents.
 #
 # Each function answers "does this agent mode have any work to do?" without
 # loading an LLM. Wrappers source this file and short-circuit before invoking
@@ -13,11 +13,11 @@
 #   2  → gh / jq invocation failed (network, auth); fall back to "assume work"
 #         so transient errors don't silently halt the loop
 #
-# Required env (set by the sietch CLI):
-#   REPO_ROOT     consumer repo (contains .sietch/rig.config)
-#   SIETCH_HOME   ~/code/sietch
+# Required env (set by the loop CLI):
+#   REPO_ROOT     consumer repo (contains .loop/loop.config)
+#   LOOP_HOME   ~/code/loop
 #
-# rig.config keys consumed:
+# loop.config keys consumed:
 #   REPO_SLUG, BRANCH_PREFIX, SEVERITY_LABEL_HIGH, SEVERITY_LABEL_MEDIUM,
 #   REVIEWER_AGENT_VERDICT_REGEX
 
@@ -25,11 +25,11 @@ set -u
 set -o pipefail
 \unalias -a 2>/dev/null || true
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI or wrappers}"
-: "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI or wrappers}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI or wrappers}"
+: "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI or wrappers}"
 
 # shellcheck disable=SC1091
-. "$REPO_ROOT/.sietch/rig.config"
+. "$REPO_ROOT/.loop/loop.config"
 
 # ---------------------------------------------------------------------------
 # Mode 1 dev-agent: open severity:high|medium issues with no assignee AND no
@@ -105,8 +105,8 @@ eligibility_review_pending() {
 
 # ---------------------------------------------------------------------------
 # CLI entry point. Lets agents invoke this via:
-#   bash $SIETCH_HOME/lib/eligibility.sh dev
-#   bash $SIETCH_HOME/lib/eligibility.sh review
+#   bash $LOOP_HOME/lib/eligibility.sh dev
+#   bash $LOOP_HOME/lib/eligibility.sh review
 # Wrappers source the file and call functions directly.
 # ---------------------------------------------------------------------------
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
@@ -125,7 +125,7 @@ Output: one line with the count (or '?' on gh/jq failure).
 Exit:   0 = work to do, 1 = nothing eligible, 2 = predicate failed.
 
 Required env:
-  REPO_ROOT, SIETCH_HOME (set automatically when invoked via the sietch CLI).
+  REPO_ROOT, LOOP_HOME (set automatically when invoked via the loop CLI).
 EOF
       exit 0 ;;
     *) echo "[eligibility] unknown mode: $1" >&2; exit 2 ;;

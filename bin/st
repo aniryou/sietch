@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# st — global CLI for sietch (a multi-agent dev loop framework).
+# st — global CLI for loop (a multi-agent dev loop framework).
 #
-# Sietch is modeled on Steve Yegge's GasTown, named after the Fremen
-# community concept from Dune. Each consumer repo carries a single
-# .sietch/rig.config; the framework code lives here in $SIETCH_HOME
-# and is shared across every rig you onboard.
+# Each consumer repo carries a single .loop/loop.config; the framework
+# code lives here in $LOOP_HOME and is shared across every repo you onboard.
 #
-# Invoke from anywhere inside a repo that has .sietch/rig.config:
+# Invoke from anywhere inside a repo that has .loop/loop.config:
 #   st dev                        # scan issues, claim one, drive a PR
 #   st dev follow-up <PR>         # address reviewer-agent feedback
 #   st dev resolve <PR>           # auto-resolve merge conflicts (triage-gated)
@@ -14,14 +12,14 @@
 #   st issue [message]            # interactive issue author
 #   st loop [start|stop|...]      # tmux multi-pane orchestrator
 #   st triage <PR>                # decide whether a conflict is auto-resolvable
-#   st init                       # bootstrap .sietch/rig.config in $PWD
+#   st init                       # bootstrap .loop/loop.config in $PWD
 #   st version                    # short SHA of the framework
 #   st help                       # this message
 
 set -u
 \unalias -a 2>/dev/null || true
 
-# Resolve symlinks so SIETCH_HOME points at the real ~/code/sietch/, not
+# Resolve symlinks so LOOP_HOME points at the real ~/code/loop/, not
 # wherever ~/.local/bin/st happens to live.
 src="${BASH_SOURCE[0]}"
 while [ -L "$src" ]; do
@@ -29,20 +27,20 @@ while [ -L "$src" ]; do
   src="$(readlink "$src")"
   [[ "$src" != /* ]] && src="$dir/$src"
 done
-SIETCH_HOME="$(cd -P "$(dirname "$src")/.." && pwd)"
-export SIETCH_HOME
+LOOP_HOME="$(cd -P "$(dirname "$src")/.." && pwd)"
+export LOOP_HOME
 unset src dir
 
 usage() {
   sed -n '/^# st — /,/^# *st help/p' "$0" | sed -E 's/^# ?//'
 }
 
-# Walk up from $PWD until we find a .sietch/rig.config. Echoes the dir,
+# Walk up from $PWD until we find a .loop/loop.config. Echoes the dir,
 # returns 1 if not found.
 find_repo_root() {
   local d="$PWD"
   while [ "$d" != "/" ] && [ -n "$d" ]; do
-    if [ -f "$d/.sietch/rig.config" ]; then
+    if [ -f "$d/.loop/loop.config" ]; then
       echo "$d"
       return 0
     fi
@@ -53,7 +51,7 @@ find_repo_root() {
 
 require_repo_root() {
   REPO_ROOT="$(find_repo_root)" || {
-    echo "[st] no .sietch/rig.config found in $PWD or any parent." >&2
+    echo "[st] no .loop/loop.config found in $PWD or any parent." >&2
     echo "Run 'st init' from your repo root to bootstrap one." >&2
     exit 1
   }
@@ -61,23 +59,23 @@ require_repo_root() {
 }
 
 cmd_init() {
-  local dest="$PWD/.sietch"
-  local config="$dest/rig.config"
+  local dest="$PWD/.loop"
+  local config="$dest/loop.config"
   if [ -f "$config" ]; then
     echo "[st init] $config already exists. Edit it directly." >&2
     return 1
   fi
   mkdir -p "$dest"
-  cp "$SIETCH_HOME/templates/rig.config.example" "$config"
+  cp "$LOOP_HOME/templates/loop.config.example" "$config"
   cat > "$dest/README.md" <<EOF
-# Sietch — agent-dev-loop config for this rig
+# Loop — multi-agent dev-loop config for this repo
 
-This directory carries the per-rig configuration for the [Sietch](https://github.com/aniryou/sietch)
-multi-agent dev loop. The framework itself lives in \`\$SIETCH_HOME\` (typically
-\`~/code/sietch/\`); this directory holds only \`rig.config\`, which the framework
+This directory carries the per-repo configuration for the [Loop](https://github.com/aniryou/loop)
+multi-agent dev-loop framework. The framework itself lives in \`\$LOOP_HOME\` (typically
+\`~/code/loop/\`); this directory holds only \`loop.config\`, which the framework
 substitutes into prompt templates at invocation time.
 
-## Edit rig.config
+## Edit loop.config
 
 Set \`REPO_OWNER\`, \`REPO_NAME\`, severity labels, branch prefix, and any
 project-specific overrides. Defaults are documented inline.
@@ -96,12 +94,12 @@ EOF
 }
 
 cmd_version() {
-  if [ -d "$SIETCH_HOME/.git" ]; then
-    git -C "$SIETCH_HOME" describe --always --dirty 2>/dev/null \
-      || git -C "$SIETCH_HOME" rev-parse --short HEAD 2>/dev/null \
+  if [ -d "$LOOP_HOME/.git" ]; then
+    git -C "$LOOP_HOME" describe --always --dirty 2>/dev/null \
+      || git -C "$LOOP_HOME" rev-parse --short HEAD 2>/dev/null \
       || echo "unknown"
   else
-    echo "unknown (SIETCH_HOME is not a git repo)"
+    echo "unknown (LOOP_HOME is not a git repo)"
   fi
 }
 
@@ -112,11 +110,11 @@ case "$CMD" in
   help|-h|--help)  usage ;;
   version)         cmd_version ;;
   init)            cmd_init "$@" ;;
-  dev|developer)   require_repo_root; exec "$SIETCH_HOME/wrappers/run-developer.sh" "$@" ;;
-  review|reviewer) require_repo_root; exec "$SIETCH_HOME/wrappers/run-reviewer.sh" "$@" ;;
-  issue|issues)    require_repo_root; exec "$SIETCH_HOME/wrappers/run-issue-author.sh" "$@" ;;
-  loop)            require_repo_root; exec "$SIETCH_HOME/wrappers/run-loop.sh" "$@" ;;
-  triage)          require_repo_root; exec "$SIETCH_HOME/wrappers/triage-conflict.sh" "$@" ;;
+  dev|developer)   require_repo_root; exec "$LOOP_HOME/wrappers/run-developer.sh" "$@" ;;
+  review|reviewer) require_repo_root; exec "$LOOP_HOME/wrappers/run-reviewer.sh" "$@" ;;
+  issue|issues)    require_repo_root; exec "$LOOP_HOME/wrappers/run-issue-author.sh" "$@" ;;
+  loop)            require_repo_root; exec "$LOOP_HOME/wrappers/run-loop.sh" "$@" ;;
+  triage)          require_repo_root; exec "$LOOP_HOME/wrappers/triage-conflict.sh" "$@" ;;
   *)
     echo "[st] unknown command: $CMD" >&2
     echo "Run 'st help' for the command list." >&2

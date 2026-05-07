@@ -54,7 +54,7 @@ Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
 0. **Fast eligibility gate.** Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
    ```bash
-   bash "$SIETCH_HOME/lib/eligibility.sh" dev
+   bash "$LOOP_HOME/lib/eligibility.sh" dev
    # exit 0 = candidates exist; exit 1 = no eligible work; exit 2 = predicate failed
    ```
    If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate; the call here protects against direct `claude -p` invocations.
@@ -497,7 +497,7 @@ Exit. Single-pass mode — do not pick another issue or PR.
 
 ## Mode 3: Resolve merge conflicts on existing PR
 
-Invoked when the kickoff prompt names a specific PR (e.g., "MODE 3 (resolve merge conflicts) on PR #27"). The wrapper has already run `.sietch/triage-conflict.sh` and confirmed the conflict is tractable — your job is to perform the rebase, resolve the conflicts mechanically, verify tests still pass, and force-push the result. **Skip the entire Mode 1 issue scan.**
+Invoked when the kickoff prompt names a specific PR (e.g., "MODE 3 (resolve merge conflicts) on PR #27"). The wrapper has already run `.loop/triage-conflict.sh` and confirmed the conflict is tractable — your job is to perform the rebase, resolve the conflicts mechanically, verify tests still pass, and force-push the result. **Skip the entire Mode 1 issue scan.**
 
 The triage script's strict-mode rules already guarantee that the conflicts are NOT in test files, NOT in CI workflows, NOT in secrets/credentials, NOT in core code files (`eval.py`, `Dockerfile`, `.pre-commit-config.yaml`), and total ≤ 10 lines. If any of those constraints appear violated when you start, the triage script was bypassed — abort immediately, that's a bug.
 

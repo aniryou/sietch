@@ -180,4 +180,4 @@ These represent the issue quality bar.
 
 ## When you're done
 
-Print the URL of the created issue and stop. Don't claim it, assign it, or trigger the dev-agent — that's a separate user action (`.sietch/run-developer.sh`).
+Print the URL of the created issue and stop. Don't claim it, assign it, or trigger the dev-agent — that's a separate user action (`.loop/run-developer.sh`).

@@ -11,16 +11,16 @@ set -u
 set -o pipefail
 \unalias -a 2>/dev/null || true
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
-: "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
+: "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
-. "$REPO/.sietch/rig.config"
+. "$REPO/.loop/loop.config"
 
 # Preflight: skip the LLM if no dev-agent PR needs review at its current
 # headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
 # from "ran successfully" so it can apply exponential backoff.
-EL_COUNT=$("$SIETCH_HOME/lib/eligibility.sh" review)
+EL_COUNT=$("$LOOP_HOME/lib/eligibility.sh" review)
 EL_RC=$?
 case "$EL_RC" in
   0) echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding" ;;
@@ -80,7 +80,7 @@ echo
 
 PAGER=cat GIT_PAGER=cat \
 claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
-  --append-system-prompt "$("$SIETCH_HOME/lib/render-prompt.sh" "$SIETCH_HOME/templates/reviewer-orchestrator.md")" \
+  --append-system-prompt "$("$LOOP_HOME/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
   --permission-mode bypassPermissions \
   --max-turns "$REVIEWER_MAX_TURNS" \
   --verbose \

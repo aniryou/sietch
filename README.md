@@ -1,15 +1,12 @@
-# Sietch
+# Loop
 
-A multi-agent dev loop for Claude Code. Inspired by Steve Yegge's
-[GasTown](https://github.com/steveyegge/gastown), built on top of
-[beads](https://github.com/steveyegge/beads), and named after the Fremen
-community concept from Dune — a self-contained group where every agent
-has a role and pulls weight in hostile terrain.
+A multi-agent dev loop for Claude Code, built on top of
+[beads](https://github.com/steveyegge/beads).
 
 ## What it does
 
-Given a GitHub repo with open issues labeled by severity, Sietch runs four
-headless Claude Code agents in coordinated loops:
+Given a GitHub repo with open issues labeled by severity, Loop runs four
+headless Claude Code agents in coordinated cycles:
 
 - **Issue author** (interactive) — turns rough requests into precise,
   file:line-cited GitHub issues.
@@ -26,30 +23,32 @@ A single `st loop start` brings them all up in tmux panes.
 ## Architecture
 
 ```
-~/code/sietch/                  ← framework (this repo)
-├── bin/sietch                  ← global CLI dispatcher
-├── templates/                   ← parameterized prompt templates
+~/code/loop/                    ← framework (this repo)
+├── bin/st                      ← global CLI dispatcher
+├── templates/                  ← parameterized prompt templates
 │   ├── developer.md
 │   ├── reviewer.md
 │   ├── reviewer-orchestrator.md
 │   ├── issue-author.md
-│   └── rig.config.example      ← template for `st init`
+│   └── loop.config.example     ← template for `st init`
 ├── lib/render-prompt.sh        ← envsubst-based template renderer
+├── lib/eligibility.sh          ← shell-side eligibility predicates
 ├── wrappers/                   ← headless agent wrappers (run-*.sh)
 └── install.sh                  ← symlinks CLI into ~/.local/bin
 
-<consumer-repo>/.sietch/        ← per-rig config, the only thing in-repo
-└── rig.config                  ← REPO_OWNER, branch prefix, labels, etc.
+<consumer-repo>/.loop/          ← per-repo config, the only thing in-repo
+└── loop.config                 ← REPO_OWNER, branch prefix, labels, etc.
 ```
 
 The framework lives once. Every consumer repo carries a single config
-file. Edit a prompt in `templates/` and every rig picks it up immediately.
+file. Edit a prompt in `templates/` and every consumer repo picks it up
+immediately.
 
 ## Install
 
 ```bash
-git clone git@github.com:aniryou/sietch.git ~/code/sietch
-~/code/sietch/install.sh        # symlinks ~/.local/bin/sietch
+git clone git@github.com:aniryou/loop.git ~/code/loop
+~/code/loop/install.sh          # symlinks ~/.local/bin/st
 ```
 
 Make sure `~/.local/bin` is on your `$PATH`.
@@ -58,9 +57,9 @@ Make sure `~/.local/bin` is on your `$PATH`.
 
 ```bash
 cd path/to/your-repo
-st init                      # creates .sietch/rig.config + README
-$EDITOR .sietch/rig.config       # set REPO_OWNER, REPO_NAME, branch prefix, etc.
-git add .sietch && git commit -m "sietch: onboard this repo"
+st init                         # creates .loop/loop.config + README
+$EDITOR .loop/loop.config       # set REPO_OWNER, REPO_NAME, branch prefix, etc.
+git add .loop && git commit -m "loop: onboard this repo"
 ```
 
 ## Daily use
@@ -79,15 +78,16 @@ st loop stop                                    # tear it down
 - `claude` (Claude Code CLI) on `$PATH`
 - `gh` authenticated to the consumer repo
 - `bd` (beads) for task tracking inside agents
-- `jq`, `tmux`, `git` ≥ 2.30 (worktree support), `bash` ≥ 4 (or 3.2 — wrappers
-  are macOS-compatible)
-- `envsubst` (gettext) — required for prompt rendering. macOS: `brew install
-  gettext && brew link --force gettext`. Debian: `apt-get install gettext-base`.
+- `jq`, `tmux`, `git` ≥ 2.30 (worktree support), `bash` ≥ 4 (or 3.2 —
+  wrappers are macOS-compatible)
+- `envsubst` (gettext) — required for prompt rendering. macOS: `brew
+  install gettext && brew link --force gettext`. Debian: `apt-get install
+  gettext-base`.
 
 ## Tests
 
-Bats suite covering render-prompt, triage-conflict, and the eligibility
-predicates. CI runs them on push to main and on PR.
+Bats suite covering `render-prompt`, `triage-conflict`, and the
+eligibility predicates. CI runs them on push to main and on PR.
 
 ```bash
 bats tests/                     # macOS: brew install bats-core
@@ -96,5 +96,5 @@ bats tests/                     # macOS: brew install bats-core
 
 ## Status
 
-Early. Single-rig tested. Multi-rig untested. No `sietch update` to
+Early. Single-repo tested. Multi-repo untested. No `st sync` yet to
 auto-pull framework changes — you `git pull` this repo manually.

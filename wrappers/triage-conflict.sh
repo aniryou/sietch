@@ -20,10 +20,10 @@ set -u
 set -o pipefail
 \unalias -a 2>/dev/null || true
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
-. "$REPO/.sietch/rig.config"
+. "$REPO/.loop/loop.config"
 
 CORE_FILES_REGEX="$TRIAGE_CORE_FILES_REGEX"
 TESTS_REGEX="$TRIAGE_TESTS_REGEX"
@@ -120,7 +120,7 @@ done
 # Counts every non-marker line inside a conflict region — both the "ours"
 # and "theirs" sides. The ======= separator does NOT toggle in_conflict,
 # so a 5-vs-5 symmetric conflict contributes 10 lines. This is intentional
-# (conservative); see TRIAGE_LINE_LIMIT in rig.config.example.
+# (conservative); see TRIAGE_LINE_LIMIT in loop.config.example.
 CONFLICT_LINES=0
 for f in "${CONFLICT_FILES[@]}"; do
   in_conflict=0

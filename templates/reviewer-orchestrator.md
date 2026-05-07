@@ -26,7 +26,7 @@ You are the **orchestrator** for the reviewer agent system. Your only job is to 
 Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
 
 ```bash
-bash "$SIETCH_HOME/lib/eligibility.sh" review
+bash "$LOOP_HOME/lib/eligibility.sh" review
 # exit 0 = PRs need review; exit 1 = nothing pending; exit 2 = predicate failed
 ```
 
@@ -74,14 +74,14 @@ Use the **Agent** tool with these arguments:
 
 - `subagent_type`: `general-purpose`
 - `description`: `Review PR #<PR>` (short, 3–5 words)
-- `prompt`: an assignment briefing that points the sub-agent at `.sietch/reviewer.md` for full instructions. Use this exact shape:
+- `prompt`: an assignment briefing that points the sub-agent at `.loop/reviewer.md` for full instructions. Use this exact shape:
 
   ```
   You are running headless as a reviewer sub-agent. Never wait for human input. Decide and act.
 
   ASSIGNMENT: Review GitHub PR #<PR> in the ${REPO_SLUG} repo.
 
-  Read your full instructions from .sietch/reviewer.md (relative to the current working directory, which is the repo root). That file contains the per-PR workflow, severity rubric, hard rules, and the verdict-marker token requirement. Follow it exactly. Skip any scan steps — your PR is already assigned (#<PR>).
+  Read your full instructions from .loop/reviewer.md (relative to the current working directory, which is the repo root). That file contains the per-PR workflow, severity rubric, hard rules, and the verdict-marker token requirement. Follow it exactly. Skip any scan steps — your PR is already assigned (#<PR>).
 
   When you finish, print exactly one final summary line in this format and return:
   [reviewer-agent] result=<commented|requested-changes|blocked> pr=#<PR> sha=<head_sha> findings=<P0:X P1:Y P2:Z> beads=<PARENT>

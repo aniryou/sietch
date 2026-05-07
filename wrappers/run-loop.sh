@@ -29,11 +29,11 @@
 set -u
 \unalias -a 2>/dev/null || true
 
-: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the sietch CLI}"
-: "${SIETCH_HOME:?SIETCH_HOME must be set; invoke via the sietch CLI}"
+: "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
+: "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
-. "$REPO/.sietch/rig.config"
+. "$REPO/.loop/loop.config"
 
 SESSION=agent-loop
 
@@ -94,7 +94,7 @@ loop_dev_mode1() {
   while true; do
     echo "[$(ts)] [dev-${id}] starting Mode 1 cycle"
     ec=0
-    "$SIETCH_HOME/wrappers/run-developer.sh" || ec=$?
+    "$LOOP_HOME/wrappers/run-developer.sh" || ec=$?
     case "$ec" in
       0)  echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
           empty_streak=0
@@ -117,7 +117,7 @@ loop_reviewer() {
   while true; do
     echo "[$(ts)] [reviewer] starting orchestrator cycle"
     ec=0
-    "$SIETCH_HOME/wrappers/run-reviewer.sh" || ec=$?
+    "$LOOP_HOME/wrappers/run-reviewer.sh" || ec=$?
     case "$ec" in
       0)  echo "[$(ts)] [reviewer] cycle done (exit 0)"
           empty_streak=0
@@ -174,7 +174,7 @@ loop_dispatcher_followup() {
         if mkdir "$lock" 2>/dev/null; then
           echo "$$" > "$lock/pid"
           echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (review=${latest_review} dev=${latest_devcomment})"
-          ( "$SIETCH_HOME/wrappers/run-developer.sh" follow-up "$pr" > /dev/null 2>&1 ) &
+          ( "$LOOP_HOME/wrappers/run-developer.sh" follow-up "$pr" > /dev/null 2>&1 ) &
           local child=$!
           echo "$child" > "$lock/pid"
         fi
@@ -215,7 +215,7 @@ loop_dispatcher_conflicts() {
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" > "$lock/pid"
         echo "[$(ts)] [dispatch:conflicts] dispatching resolve-conflicts for PR #${pr}"
-        ( "$SIETCH_HOME/wrappers/run-developer.sh" resolve-conflicts "$pr" > /dev/null 2>&1 ) &
+        ( "$LOOP_HOME/wrappers/run-developer.sh" resolve-conflicts "$pr" > /dev/null 2>&1 ) &
         local child=$!
         echo "$child" > "$lock/pid"
         dispatched=$((dispatched + 1))
@@ -328,7 +328,7 @@ done
 [ "$POLL_INTERVAL" -ge 10 ] || { echo "--poll-interval must be >= 10 (gh rate limits)" >&2; exit 2; }
 [[ "$MAX_RUNTIME" =~ ^[0-9]+$ ]] || { echo "--max-runtime must be numeric" >&2; exit 2; }
 
-SCRIPT="$SIETCH_HOME/wrappers/run-loop.sh"
+SCRIPT="$LOOP_HOME/wrappers/run-loop.sh"
 
 require_tmux() {
   command -v tmux >/dev/null || {
