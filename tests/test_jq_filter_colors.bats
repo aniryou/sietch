@@ -36,63 +36,99 @@ run_jq_filter() {
 # Per-event-type colorization (NO_COLOR unset)
 # ---------------------------------------------------------------------------
 
-@test "[init] event wraps tag in dim-grey ANSI and preserves payload" {
+@test "[init] event wraps the entire line in dim-grey ANSI and preserves payload" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"system","subtype":"init","model":"sonnet-4-6","tools":["Bash","Read"],"cwd":"/tmp/x"}')
-  [[ "$out" == *"${ESC}[2;37m[init]${ESC}[0m"* ]]
+  # Whole line is colorized: tag color opens, only one reset, at end-of-line.
+  [[ "$out" == "${ESC}[2;37m[init] "* ]]
+  [[ "$out" == *"${ESC}[0m" ]]
   [[ "$out" == *"model=sonnet-4-6"* ]]
   [[ "$out" == *"tools=2"* ]]
   [[ "$out" == *"cwd=/tmp/x"* ]]
+  # No mid-line reset between tag and payload.
+  [[ "$out" != *"[init]${ESC}[0m"* ]]
 }
 
-@test "[text] event tag is yellow and narration content survives" {
+@test "[text] event whole line is yellow with payload colored too" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}')
-  [[ "$out" == *"${ESC}[33m[text]${ESC}[0m hello world"* ]]
+  # Exact form: tag+payload wrapped in a single yellow span.
+  [ "$out" = "${ESC}[33m[text] hello world${ESC}[0m" ]
 }
 
-@test "[tool] event tag is cyan and includes tool name + args" {
+@test "[tool] event whole line is cyan including tool name + args" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}')
-  [[ "$out" == *"${ESC}[36m[tool]${ESC}[0m Bash"* ]]
+  [[ "$out" == "${ESC}[36m[tool] Bash"* ]]
+  [[ "$out" == *"${ESC}[0m" ]]
   [[ "$out" == *"command"*"ls -la"* ]]
+  # Payload "command":"ls -la" must NOT be preceded by a reset.
+  [[ "$out" != *"${ESC}[0m"*"command"* ]]
 }
 
-@test "[result] event tag is dim-grey and tool output survives" {
+@test "[result] event whole line is dim-grey including tool output" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"line1\nline2"}]}]}}')
-  [[ "$out" == *"${ESC}[2;37m[result]${ESC}[0m"* ]]
   # gsub turns \n into ' ⏎ '
-  [[ "$out" == *"line1 ⏎ line2"* ]]
+  [ "$out" = "${ESC}[2;37m[result] line1 ⏎ line2${ESC}[0m" ]
 }
 
-@test "[done] success tag is green" {
+@test "[done] success whole line is green" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"result","subtype":"success","duration_ms":42,"num_turns":3,"total_cost_usd":0.12}')
-  [[ "$out" == *"${ESC}[32m[done]${ESC}[0m success"* ]]
-  [[ "$out" == *"duration=42ms"* ]]
-  [[ "$out" == *"turns=3"* ]]
-  [[ "$out" == *"cost=\$0.12"* ]]
+  [ "$out" = "${ESC}[32m[done] success duration=42ms turns=3 cost=\$0.12${ESC}[0m" ]
 }
 
-@test "[done] error_max_turns tag is red" {
+@test "[done] error_max_turns whole line is red" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"result","subtype":"error_max_turns","duration_ms":99,"num_turns":1,"total_cost_usd":0}')
-  [[ "$out" == *"${ESC}[31m[done]${ESC}[0m error_max_turns"* ]]
+  [[ "$out" == "${ESC}[31m[done] error_max_turns"* ]]
+  [[ "$out" == *"${ESC}[0m" ]]
+  # No mid-line reset between [done] and trailing reset.
+  [[ "$out" != *"[done]${ESC}[0m"* ]]
 }
 
-@test "[done] non-success subtypes (e.g. error_during_execution) also get red" {
+@test "[done] non-success subtypes (e.g. error_during_execution) also get red full line" {
   local out
   out=$(run_jq_filter unset \
     '{"type":"result","subtype":"error_during_execution","duration_ms":1,"num_turns":1,"total_cost_usd":0}')
-  [[ "$out" == *"${ESC}[31m[done]${ESC}[0m"* ]]
-  [[ "$out" != *"${ESC}[32m[done]"* ]]
+  [[ "$out" == "${ESC}[31m[done] error_during_execution"* ]]
+  [[ "$out" == *"${ESC}[0m" ]]
+  [[ "$out" != *"${ESC}[32m"* ]]
+}
+
+@test "every colored event line has exactly one ANSI reset, at end-of-line" {
+  # Catches accidental mid-line resets — invariant for whole-line coloring.
+  local fixture out
+  fixture=$(printf '%s\n' \
+    '{"type":"system","subtype":"init","model":"x","tools":[],"cwd":"/"}' \
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"narration here"}]}}' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}' \
+    '{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"out"}]}]}}' \
+    '{"type":"result","subtype":"success","duration_ms":1,"num_turns":1,"total_cost_usd":0}' \
+    '{"type":"result","subtype":"error_x","duration_ms":1,"num_turns":1,"total_cost_usd":0}')
+  out=$(run_jq_filter unset "$fixture")
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # Count occurrences of ESC[0m in the line.
+    local resets
+    resets=$(printf '%s' "$line" | grep -oE $'\e\\[0m' | wc -l | tr -d ' ')
+    if [ "$resets" -ne 1 ]; then
+      echo "expected exactly 1 reset, got $resets, in: $(printf '%s' "$line" | cat -v)"
+      return 1
+    fi
+    # Reset must be at end-of-line.
+    if [[ "$line" != *$'\e[0m' ]]; then
+      echo "expected line to end with reset, got: $(printf '%s' "$line" | cat -v)"
+      return 1
+    fi
+  done <<< "$out"
 }
 
 # ---------------------------------------------------------------------------

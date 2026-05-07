@@ -5,12 +5,15 @@
 # panes use identical event tags and ANSI colors. Output: defines $JQ_FILTER
 # in the sourcing shell.
 #
-# Color mapping (only the [tag] is colorized; payload stays default):
+# Color mapping (the entire line is colorized — tag color spans tag + payload):
 #   [init]    dim grey   — boilerplate context (model, tool count, cwd)
 #   [text]    yellow     — agent narration
 #   [tool]    cyan       — action being taken
 #   [result]  dim grey   — voluminous tool output, deprioritized
 #   [done]    green/red  — green on subtype=="success", red on any error_*
+# A single ANSI reset is emitted at end-of-line so payloads aren't lost in a
+# busy pane; this defeats the point of a 6-char tag in front of 200 chars of
+# payload. NO_COLOR strips all escapes (see below).
 #
 # NO_COLOR opt-out: per https://no-color.org/, if NO_COLOR is set (regardless
 # of value, including empty string), the filter emits no ANSI escapes — the
@@ -33,29 +36,30 @@ fi
 # shellcheck disable=SC2034   # consumed by sourcing wrapper
 JQ_FILTER="$(cat <<JQEOF
   if .type == "system" and .subtype == "init" then
-    "${_C_INIT}[init]${_C_RST} model=\(.model) tools=\(.tools | length) cwd=\(.cwd)"
+    "${_C_INIT}[init] model=\(.model) tools=\(.tools | length) cwd=\(.cwd)${_C_RST}"
   elif .type == "assistant" then
     (.message.content // [])[] | (
       if .type == "text" then
-        "${_C_TEXT}[text]${_C_RST} " + ((.text // "") | gsub("\n"; " ⏎ ") | .[0:400])
+        "${_C_TEXT}[text] " + ((.text // "") | gsub("\n"; " ⏎ ") | .[0:400]) + "${_C_RST}"
       elif .type == "tool_use" then
-        "${_C_TOOL}[tool]${_C_RST} " + .name + " " + ((.input // {}) | tostring | .[0:300])
+        "${_C_TOOL}[tool] " + .name + " " + ((.input // {}) | tostring | .[0:300]) + "${_C_RST}"
       else empty end
     )
   elif .type == "user" then
     (.message.content // [])[] | (
       if .type == "tool_result" then
-        "${_C_RESULT}[result]${_C_RST} " + (
+        "${_C_RESULT}[result] " + (
           if (.content | type) == "array" then
             (.content[0].text // "" | gsub("\n"; " ⏎ ") | .[0:400])
           else (.content // "" | tostring | .[0:400]) end
-        )
+        ) + "${_C_RST}"
       else empty end
     )
   elif .type == "result" then
     (if .subtype == "success" then "${_C_OK}" else "${_C_ERR}" end)
-      + "[done]${_C_RST} " + .subtype
+      + "[done] " + .subtype
       + " duration=\(.duration_ms)ms turns=\(.num_turns) cost=\$\(.total_cost_usd // 0)"
+      + "${_C_RST}"
   else empty end
 JQEOF
 )"
