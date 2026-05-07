@@ -62,13 +62,12 @@ require_repo_root() {
 cmd_init() {
   local dest="$PWD/.loop"
   local config="$dest/loop.config"
-  if [ -f "$config" ]; then
-    echo "[st init] $config already exists. Edit it directly." >&2
-    return 1
-  fi
-  mkdir -p "$dest"
-  cp "$LOOP_HOME/templates/loop.config.example" "$config"
-  cat >"$dest/README.md" <<EOF
+  local wrote_config=0
+
+  if [ ! -f "$config" ]; then
+    mkdir -p "$dest"
+    cp "$LOOP_HOME/templates/loop.config.example" "$config"
+    cat >"$dest/README.md" <<EOF
 # Loop — multi-agent dev-loop config for this repo
 
 This directory carries the per-repo configuration for the [Loop](https://github.com/aniryou/loop)
@@ -90,8 +89,60 @@ From anywhere inside this repo:
     st loop start   # run the full multi-agent fleet in tmux
     st help         # full command list
 EOF
-  echo "[st init] created $config"
-  echo "[st init] edit it to set REPO_OWNER, REPO_NAME, etc."
+    echo "[st init] created $config"
+    wrote_config=1
+  else
+    echo "[st init] $config already exists; preserving."
+  fi
+
+  cmd_init_claude_md_block
+
+  if [ "$wrote_config" -eq 1 ]; then
+    echo "[st init] edit $config to set REPO_OWNER, REPO_NAME, etc."
+  fi
+}
+
+# Write a marker-bracketed LOOP INTEGRATION block into $PWD/CLAUDE.md.
+# Idempotent: if a block already exists (any hash), leaves the file alone —
+# refreshing stale blocks is the future `st sync` job, not `st init`.
+cmd_init_claude_md_block() {
+  local claude_md="$PWD/CLAUDE.md"
+  local template="$LOOP_HOME/templates/claude-md-block.md"
+
+  if [ -f "$claude_md" ] && grep -qF '<!-- BEGIN LOOP INTEGRATION' "$claude_md"; then
+    echo "[st init] $claude_md already has a LOOP INTEGRATION block; leaving alone."
+    return 0
+  fi
+
+  if [ ! -f "$template" ]; then
+    echo "[st init] missing template: $template" >&2
+    return 1
+  fi
+
+  # LOOP_HOME is already exported by the trampoline at top of this file;
+  # only REPO_ROOT needs to be set per-invocation here.
+  local rendered
+  rendered=$(REPO_ROOT="$PWD" \
+    bash "$LOOP_HOME/runners/lib/render-prompt.sh" "$template") || {
+    echo "[st init] failed to render $template" >&2
+    return 1
+  }
+
+  local hash
+  hash=$(printf '%s' "$rendered" | shasum -a 256 | cut -c1-8)
+
+  local block
+  block=$(printf '<!-- BEGIN LOOP INTEGRATION v:1 hash:%s -->\n%s\n<!-- END LOOP INTEGRATION -->\n' \
+    "$hash" "$rendered")
+
+  if [ -f "$claude_md" ]; then
+    # Append, separated from prior content by a single blank line.
+    printf '\n%s' "$block" >>"$claude_md"
+    echo "[st init] appended LOOP INTEGRATION block to $claude_md"
+  else
+    printf '# %s\n\n%s' "$(basename "$PWD")" "$block" >"$claude_md"
+    echo "[st init] created $claude_md with LOOP INTEGRATION block"
+  fi
 }
 
 cmd_version() {
