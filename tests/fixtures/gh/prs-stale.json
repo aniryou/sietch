@@ -1,9 +1,11 @@
 [
   {
     "number": 201,
-    "headRefOid": "newcommit",
+    "commits": [
+      {"committedDate": "2026-05-07T12:00:00Z"}
+    ],
     "reviews": [
-      {"body": "[reviewer-agent: changes] please address findings.", "commit_id": "oldcommit"}
+      {"body": "[reviewer-agent: changes] please address findings.", "submittedAt": "2026-05-07T10:00:00Z"}
     ]
   }
 ]
