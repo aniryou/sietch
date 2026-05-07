@@ -57,6 +57,19 @@ cleanup_stale_dispatch_locks() {
   done
 }
 
+# Count surviving (live-PID) dispatch locks across BOTH dispatchers.
+# Callers must invoke cleanup_stale_dispatch_locks first so dead PIDs
+# don't inflate the count. Independent budget from DEV_INSTANCES (which
+# governs foreground tmux-pane workers); this caps background dispatches.
+count_active_dispatch_locks() {
+  [ -d "$DISPATCH_LOCK_DIR" ] || { echo 0; return 0; }
+  local count=0 lock
+  for lock in "$DISPATCH_LOCK_DIR"/*.lock; do
+    [ -d "$lock" ] && count=$((count + 1))
+  done
+  echo "$count"
+}
+
 # ---- per-role loops -----------------------------------------------------
 # These run inside a tmux pane via `--internal-role=<X>`. Their stdout is the
 # pane itself — no log redirection, the user sees them live. The wrappers
@@ -130,6 +143,14 @@ loop_dispatcher_followup() {
       local lock="${DISPATCH_LOCK_DIR}/pr-${pr}-followup.lock"
       [ -d "$lock" ] && continue
 
+      # Concurrency gate — don't fan out beyond the shared cap.
+      local active
+      active=$(count_active_dispatch_locks)
+      if [ "$active" -ge "$DISPATCH_MAX_CONCURRENT" ]; then
+        echo "[$(ts)] [dispatch:followup] at cap (${active}/${DISPATCH_MAX_CONCURRENT}); skipping remaining eligible PRs this cycle"
+        break
+      fi
+
       local data latest_review latest_devcomment
       data=$(gh pr view "$pr" --repo "$REPO_SLUG" --json reviews,comments 2>/dev/null) || continue
 
@@ -181,6 +202,14 @@ loop_dispatcher_conflicts() {
       [ -z "$pr" ] && continue
       local lock="${DISPATCH_LOCK_DIR}/pr-${pr}-conflicts.lock"
       [ -d "$lock" ] && continue
+
+      # Concurrency gate — don't fan out beyond the shared cap.
+      local active
+      active=$(count_active_dispatch_locks)
+      if [ "$active" -ge "$DISPATCH_MAX_CONCURRENT" ]; then
+        echo "[$(ts)] [dispatch:conflicts] at cap (${active}/${DISPATCH_MAX_CONCURRENT}); skipping remaining eligible PRs this cycle"
+        break
+      fi
 
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" > "$lock/pid"

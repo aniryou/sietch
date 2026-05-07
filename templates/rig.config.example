@@ -54,6 +54,14 @@ POLL_INTERVAL_DEFAULT=60      # seconds between scan cycles
 # on the first non-empty cycle.
 EMPTY_CYCLE_BACKOFF_CAP_SECONDS=300
 
+# Maximum number of background dev-agent runs the follow-up + conflicts
+# dispatchers may have in flight simultaneously, counted across BOTH
+# dispatchers (they share DISPATCH_LOCK_DIR). When at cap, the dispatcher
+# logs "at cap (N/N)" and skips remaining eligible PRs this cycle; they
+# re-enter the queue next cycle. Independent of DEV_INSTANCES_DEFAULT,
+# which controls the foreground tmux-pane workers.
+DISPATCH_MAX_CONCURRENT=3
+
 # ---------------------------------------------------------------------------
 # Per-mode caps
 # ---------------------------------------------------------------------------
