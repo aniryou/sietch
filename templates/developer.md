@@ -193,6 +193,8 @@ git -C "$REPO" worktree add -b "$BRANCH" "$WORKTREE" origin/main 2>/dev/null \
 cd "$WORKTREE"
 ```
 
+**All subsequent file reads, edits, and writes must use the worktree path** (`$WORKTREE/<relpath>`), not the canonical repo path under `$REPO`. The harness keys "have I read this?" by absolute path string, so a Read of the canonical-repo path does not satisfy a later Edit of the same logical file at the worktree path — the first edit per file errors with "File has not been read yet" and forces a redundant Read. This applies in Mode 2 (F3) and Mode 3 (R1) too, where `$WORKTREE` is recreated against the PR branch.
+
 The branch name is deterministic per issue so retries reuse the branch (and therefore the existing PR picks up new commits automatically).
 
 ### Step 2 — Implement unit tests FIRST (TDD)
