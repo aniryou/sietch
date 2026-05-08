@@ -290,7 +290,7 @@ Poll CI on the PR. Do not sleep blindly forever.
 gh pr checks <PR> --repo ${REPO_SLUG} --watch
 ```
 
-If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr checks <PR> --json state,conclusion` every ~60s, with a hard timeout (e.g., 30 minutes) before treating it as a failure.
+If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr checks <PR> --json state,bucket` every ~60s, with a hard timeout (e.g., 30 minutes) before treating it as a failure. (`gh pr checks` exposes `bucket` — `pass` / `fail` / `pending` / `skipping` / `cancel` — not the GH-API-style `conclusion` field that `pr view` / `pr status` use; requesting `conclusion` here would error with `Unknown JSON field`.)
 
 ### Step 7a — CI passed
 
