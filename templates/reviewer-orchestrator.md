@@ -97,6 +97,8 @@ The sub-agent's return value should contain a `[reviewer-agent] result=...` line
 [reviewer-orchestrator] result=sub-agent-failed pr=#<PR> reason=<short>
 ```
 
+**Note (GH#55):** when this `result=sub-agent-failed` line is emitted, the wrapper (`runners/run-reviewer.sh`) post-processes the log and posts a stub `[reviewer-agent: blocked]` review on `pr=#<PR>` so `eligibility_review_pending` does not re-fire the orchestrator + sub-agent on the same head SHA next cycle. If you ever change the failure-marker format above, update the wrapper's grep at the same time. The orchestrator's hard rule below forbids the orchestrator itself from posting that review, which is why the fallback lives in the wrapper.
+
 ### Step 6 — Exit
 
 Print exactly one line of orchestrator-level summary:

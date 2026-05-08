@@ -53,6 +53,7 @@ RAW="/tmp/reviewer-agent-${TS}.jsonl"
 PIPELINE_PID=""
 PIPELINE_PGID=""
 
+# shellcheck disable=SC2329 # invoked via `trap cleanup EXIT INT TERM` below
 cleanup() {
   local exit_code=$?
   echo "[wrapper] reviewer exited with code $exit_code; cleaning up..." >&2
@@ -103,3 +104,41 @@ PIPELINE_PGID=$(pipeline_capture_pgid "$PIPELINE_PID")
 set +m
 
 wait "$PIPELINE_PID"
+LLM_EXIT=$?
+
+# GH#55: when the orchestrator emits `result=sub-agent-failed pr=#N` and the
+# pipeline still exits 0 (the orchestrator's failure path is structured exit 0
+# — it ran to completion, the sub-agent didn't), no [reviewer-agent: ...]
+# review was posted on the PR. eligibility_review_pending would then re-fire
+# the orchestrator + sub-agent every cycle, both crash the same way, repeat.
+# Post a stub [reviewer-agent: blocked] review here so the predicate's
+# "review covers head" half fires next cycle and skips the PR until a new
+# commit lands.
+#
+# The orchestrator template's hard rule "Never call gh pr review" forces this
+# fix to live in the wrapper rather than the orchestrator itself; see
+# templates/reviewer-orchestrator.md (search for GH#55).
+#
+# Exit-0-scoped on purpose: a non-zero LLM exit (claude crash, max-turns, OOM,
+# API outage) is a wrapper-level failure that run-loop.sh already backs off
+# on. Inventing a verdict in that case would mask hard failures.
+if [ "$LLM_EXIT" -eq 0 ]; then
+  FAILED_PR=""
+  for src in "$LOG" "$RAW"; do
+    [ -f "$src" ] || continue
+    FAILED_PR=$(grep -oE '\[reviewer-orchestrator\] result=sub-agent-failed pr=#[0-9]+' "$src" 2>/dev/null \
+      | grep -oE '[0-9]+' \
+      | head -1)
+    [ -n "$FAILED_PR" ] && break
+  done
+  if [ -n "${FAILED_PR:-}" ]; then
+    echo "[wrapper] orchestrator reported sub-agent failure on PR #$FAILED_PR; posting stub [reviewer-agent: blocked] review" >&2
+    PAGER=cat GIT_PAGER=cat gh pr review "$FAILED_PR" \
+      --repo "$REPO_SLUG" \
+      --comment \
+      --body "🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure). The reviewer dispatcher will not re-fire on this head SHA. Please push a new commit or request a fresh review." \
+      >/dev/null 2>&1 || true
+  fi
+fi
+
+exit "$LLM_EXIT"
