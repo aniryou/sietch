@@ -61,6 +61,18 @@ setup() {
     | grep -qx '14'
 }
 
+@test "conflicts filter: drafted CONFLICTING dev-agent PR is excluded (Mode 3 abort regression guard)" {
+  # Precondition for GH#44 fix: when Mode 3 aborts and drafts the PR, the
+  # conflicts dispatcher must not re-fire the LLM on it. This guards the
+  # `isDraft == false` clause in _dispatch_conflicts_jq from regressing.
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent")
+  nums=$(jq -r "$filter" <<<'[{"number":1,"headRefName":"dev-agent/gh-1-x","mergeable":"CONFLICTING","isDraft":true}]')
+  [ -z "$nums" ]
+  nums=$(jq -r "$filter" <<<'[{"number":1,"headRefName":"dev-agent/gh-1-x","mergeable":"CONFLICTING","isDraft":false}]')
+  [ "$nums" = "1" ]
+}
+
 @test "conflicts filter: empty input emits nothing" {
   local filter nums
   filter=$(_dispatch_conflicts_jq "dev-agent")
@@ -110,4 +122,38 @@ setup() {
   grep -qF '_dispatch_followup_jq'  "$LOOP_ROOT/runners/run-loop.sh"
   grep -qF '_dispatch_conflicts_jq' "$LOOP_ROOT/runners/run-loop.sh"
   grep -qF '_dispatch_merge_jq'     "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+# ---------------------------------------------------------------------------
+# templates/developer.md: every Mode 3 abort path must draft the PR (GH#44).
+# Without this, a CONFLICTING + non-draft PR matches the conflicts dispatcher's
+# filter on every cycle and keeps re-firing the LLM until a human intervenes.
+# Mode 1 give-up (Step 7b-give-up) already drafts; Mode 3's three abort blocks
+# now must too.
+# ---------------------------------------------------------------------------
+
+@test "templates/developer.md: at least four 'gh pr ready --undo' calls (Mode 1 give-up + 3 Mode 3 aborts)" {
+  local count
+  count=$(grep -c 'gh pr ready --undo' "$LOOP_ROOT/templates/developer.md")
+  # 1 mention in safety-net prose, 1 in Mode 1 give-up shell block, 3 in Mode 3
+  # abort shell blocks. The guarantee we care about is "≥ 4" so future edits to
+  # the prose don't trip this; the lower bound covers all four shell-call sites.
+  [ "$count" -ge 4 ]
+}
+
+@test "templates/developer.md: each Mode 3 abort comment is followed by a draft call" {
+  # Source-of-truth: catch a future edit that copy-pastes a new abort block
+  # without the draft. Walk every '🤖 Mode 3 ... aborted' comment and check
+  # that 'gh pr ready --undo' appears within the next 30 lines.
+  local md="$LOOP_ROOT/templates/developer.md"
+  while IFS=: read -r lineno _; do
+    [ -z "$lineno" ] && continue
+    local end=$((lineno + 30))
+    local window
+    window=$(sed -n "${lineno},${end}p" "$md")
+    if ! grep -qF 'gh pr ready --undo' <<<"$window"; then
+      echo "Mode 3 abort comment at line $lineno is missing 'gh pr ready --undo' within 30 lines" >&2
+      return 1
+    fi
+  done < <(grep -nF '🤖 Mode 3 conflict resolution — aborted' "$md")
 }

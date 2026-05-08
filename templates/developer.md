@@ -593,6 +593,11 @@ Aborting and leaving the PR in its original conflict state. Please resolve manua
 EOF
 )"
 
+# Draft the PR so the conflicts dispatcher's `isDraft == false` filter
+# excludes it next cycle — otherwise the same tractable-but-ambiguous
+# conflict re-fires this LLM every loop until a human intervenes.
+gh pr ready --undo "$PR" --repo ${REPO_SLUG} || true
+
 bd update <PARENT> --status=blocked --notes="Mode 3 aborted: ambiguous conflict intent on PR #$PR"
 bd human <PARENT>
 ```
@@ -627,6 +632,10 @@ $(.venv/bin/python -m pytest -q 2>&1 | tail -30)
 Aborting locally — the remote branch is untouched. Please resolve manually.
 EOF
 )"
+
+# Draft the PR so the conflicts dispatcher's `isDraft == false` filter
+# excludes it next cycle — same rationale as the ambiguous-intent abort.
+gh pr ready --undo "$PR" --repo ${REPO_SLUG} || true
 
 bd update <PARENT> --status=blocked --notes="Mode 3 aborted: tests failed after resolution on PR #$PR"
 bd human <PARENT>
@@ -670,6 +679,12 @@ Local tests passed but CI failed after force-push. Reverted the remote branch to
 CI failure: <run-url>
 EOF
 )"
+
+# Draft the PR so the conflicts dispatcher's `isDraft == false` filter
+# excludes it next cycle — the remote was reverted to PRE_SHA so the PR is
+# back in its original conflict state, which would otherwise re-match the
+# dispatcher and re-fire this LLM.
+gh pr ready --undo "$PR" --repo ${REPO_SLUG} || true
 
 bd update <PARENT> --status=blocked --notes="Mode 3 aborted: CI failed after resolution on PR #$PR"
 bd human <PARENT>
