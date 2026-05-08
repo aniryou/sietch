@@ -80,3 +80,24 @@ setup() {
   sed -n "${start},$(( fetch_line - 1 ))p" "$DEV_TPL" \
     | grep -qiE 'stale|drift|sibling|mode 3|merger'
 }
+
+# --- Worktree-path-for-reads guidance (GH#70) -----------------------------
+
+@test "Mode 1 worktree section tells the agent to use the worktree path for reads/edits/writes" {
+  # GH#70: The harness keys "have I read this?" by absolute path string.
+  # If the agent explores via canonical repo paths and then edits worktree
+  # paths, the first edit per file errors with "File has not been read yet"
+  # and forces a redundant Read. The Mode 1 worktree block must explicitly
+  # tell the agent that all subsequent file ops use the worktree path.
+  m1_line=$(grep -nE '^git -C "\$REPO" worktree add -b "\$BRANCH" "\$WORKTREE" origin/main' "$DEV_TPL" \
+            | head -1 | cut -d: -f1)
+  [ -n "$m1_line" ]
+  # Find the next "### Step 2" heading after the Mode 1 worktree add.
+  step2_line=$(awk -v start="$m1_line" 'NR > start && /^### Step 2/ { print NR; exit }' "$DEV_TPL")
+  [ -n "$step2_line" ]
+  block=$(sed -n "${m1_line},${step2_line}p" "$DEV_TPL")
+  echo "$block" | grep -qiE 'worktree path' \
+    || { echo "Mode 1 worktree block missing 'worktree path' mention" >&2; false; }
+  echo "$block" | grep -qiE '\b(read|edit|write)' \
+    || { echo "Mode 1 worktree block missing reads/edits/writes mention" >&2; false; }
+}
