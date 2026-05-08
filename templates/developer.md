@@ -215,18 +215,27 @@ The branch name is deterministic per issue so retries reuse the branch (and ther
   Refs: beads <PARENT>
   ```
 
+  The `<short summary>` follows the same plain-English rules as the PR title in Step 5: ≤70 characters total (including the `Fix GH#<num>: ` prefix), no opaque insider acronyms (e.g. `TOCTOU`, `rc=2`, `dispatch:followup`), readable to someone scanning `git log`. If the issue title itself violates these rules (older issues filed before the plain-English rule landed), rewrite into plain English here — do not blindly copy the issue title into the commit subject.
 - Do **not** use `--no-verify`. If pre-commit modifies files (ruff auto-fix, EOF fixer, etc.), `git add` the changed files and commit again. If pre-commit fails for a reason you cannot fix (e.g., gitleaks flagging a real secret you accidentally added), abort the commit, remove the offending content, and retry.
 - Never bypass signing.
 
 ### Step 5 — Push and open the PR
 
+The PR title and body are read first by maintainers, contributors, and the user weeks later — write for that audience, not for someone debugging the change today.
+
+**PR title rules:** keep the `Fix GH#<num>:` traceability prefix, then a plain-English summary. ≤70 characters total. No opaque insider acronyms (e.g. `TOCTOU`, `rc=2`, `dispatch:followup`); common domain terms like `CI`, `PR`, `dispatcher`, `worktree`, `lock`, `rebase` are fine. Lead with the user-visible effect, not the internal mechanism. If the issue title itself violates these rules (older issues filed before the plain-English rule landed), rewrite into plain English in the PR title — do not blindly copy the issue title.
+
 ```bash
 git push -u origin "$BRANCH"
 gh pr create --repo ${REPO_SLUG} \
   --base main --head "$BRANCH" \
-  --title "Fix GH#<num>: <short summary>" \
+  --title "Fix GH#<num>: <plain-English summary>" \
   --body "$(cat <<'EOF'
-## Summary
+## TL;DR
+
+<1–2 sentences in plain English: what changed and why, written so a non-expert reader of the PR list can understand it. No file paths, no function names, no `file:line` citations — those live in `## Changes` below.>
+
+## Changes
 
 - <bullet list of what changed and why; cite acceptance criteria from the issue where relevant>
 - <prefer specific, concrete language: file paths, function names, line numbers — not "refactored X" or "improved Y">
