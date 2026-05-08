@@ -271,6 +271,18 @@ if [ "$MODE" = "resolve-conflicts" ]; then
   case "$TRIAGE_RC" in
     0)
       echo "$TRIAGE_OUTPUT"
+      # rc=0 splits into two sub-paths. `tractable no-conflict` (rebase
+      # succeeded — nothing to resolve) is a healthy PR; falling through
+      # to the Mode 3 LLM here is the GH#75 bug — every cycle the
+      # dispatcher hands us a CI-green dev-agent PR awaiting review,
+      # we'd burn ~$0.50–$2.00 of LLM tokens for nothing. Short-circuit
+      # to a successful no-op (parallel to the eligibility `result=no-work`
+      # cases). Do NOT draft the PR — it's healthy.
+      if grep -q 'reason=no-conflict' <<<"$TRIAGE_OUTPUT"; then
+        echo "[wrapper] triage reports no conflict — skipping LLM (PR already mergeable)."
+        echo "[wrapper] result=triage-no-conflict pr=#${TARGET_PR}"
+        exit 0
+      fi
       echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
       ;;
     1)
