@@ -1036,6 +1036,62 @@ _with_review_older_than_devcomment() {
 }
 
 # ---------------------------------------------------------------------------
+# GH#49: hard-failure marker recognition. When `claude` exits non-zero in
+# Mode 2 (max-turns, API outage, OOM) the LLM never reaches its graceful
+# `🤖 Developer agent — follow-up <complete|gave-up|no-action>` comment,
+# so the latest dev-comment timestamp doesn't advance past the review's
+# submittedAt. The dispatcher then re-fires the LLM every poll cycle.
+#
+# Fix: the wrapper posts a failure-marker comment after `wait` returns
+# non-zero. Because the marker body starts with "🤖 Developer agent"
+# (matches DEV_AGENT_COMMENT_PREFIX), the existing `startswith($prefix)`
+# filter in eligibility_followup_pr already picks it up — these tests pin
+# that contract.
+# ---------------------------------------------------------------------------
+
+# Inject a failure-marker comment with the production-shape body, postdating
+# the review (the post-hard-failure scenario the dispatcher would re-fire on
+# pre-fix).
+_with_failure_marker_after_review() {
+  jq '.comments = [{
+        "author": {"login": "claude"},
+        "authorAssociation": "OWNER",
+        "body": "🤖 Developer agent — follow-up failed mid-flow (exit=124). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review.",
+        "createdAt": "2026-05-07T13:00:00Z"
+      }]' \
+    "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json"
+}
+
+@test "followup filter: failure-marker comment supersedes review timestamp (re-fire blocked)" {
+  # Fixture review is at 2026-05-07T12:00:00Z; failure marker posted at 13:00.
+  # Predicate must see the dev-agent comment as newer → skip.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_failure_marker_after_review \
+        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'changes\tno' ]
+}
+
+@test "followup filter: fresh review after failure marker re-arms dispatch" {
+  # Failure marker at 13:00; a NEW reviewer-agent review at 14:00 supersedes
+  # it again. Predicate must dispatch — otherwise the gate becomes permanently
+  # sticky and human re-review never re-triggers Mode 2.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_failure_marker_after_review \
+        | jq '.reviews += [{
+              "author": {"login": "claude"},
+              "authorAssociation": "OWNER",
+              "body": "[reviewer-agent: changes] still need fixes",
+              "submittedAt": "2026-05-07T14:00:00Z"
+            }]' \
+        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  [ "$out" = $'changes\tyes' ]
+}
+
+# ---------------------------------------------------------------------------
 # eligibility_followup_pr (function-level): exercises the predicate
 # end-to-end via PATH-mocked gh, confirming exit-code semantics match
 # eligibility_dev_count / eligibility_review_pending (0=work, 1=skip, 2=fail).
@@ -1168,6 +1224,26 @@ STUB
     run bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup
   [ "$status" -eq 2 ]
   [ "$output" = "?" ]
+}
+
+@test "eligibility_followup_pr: failure-marker is the latest dev-comment → exit 1 (GH#49)" {
+  # End-to-end version of the "failure-marker supersedes review" filter test.
+  # Pre-fix the wrapper exited without posting any comment on hard failure,
+  # so latest_devcomment.createdAt stayed older than the review and the
+  # predicate kept dispatching the LLM every poll cycle. After the fix the
+  # wrapper posts the 🤖-prefixed failure marker, the predicate sees it as
+  # the latest dev-agent comment, and the next poll skips.
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/failure-marker-cli.json"
+  _with_failure_marker_after_review > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 1 ]
+  [ "$output" = "changes" ]
 }
 
 # ---------------------------------------------------------------------------
