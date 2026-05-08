@@ -101,3 +101,44 @@ section_body() {
   echo "$body" | grep -qE -- '--repo' \
     || { echo "Step 1 missing the '--repo' anti-pattern" >&2; false; }
 }
+
+# --- Template sweep: no in-template `gh … --repo …` examples -----------------
+#
+# The "trust inherited env" rule must not be contradicted by the template's
+# own `gh` example commands. Across Modes 1/2/3 the agent will mirror what
+# the template shows; if examples still pass `--repo …`, the agent re-emits
+# the prefix and blows the GH#80 acceptance criteria. The sweep at fix time
+# left exactly one `--repo …` reference: the anti-pattern call-out in the
+# Step 1 rule itself. Anything else is a regression.
+
+@test "templates/developer.md: only one --repo reference (the rule call-out)" {
+  count=$(grep -cE -- '--repo' "$DEV_TPL")
+  [ "$count" = "1" ] \
+    || { echo "Expected exactly 1 '--repo' reference (the Step 1 rule call-out); found $count. Run: grep -nE -- '--repo' templates/developer.md" >&2; false; }
+}
+
+@test "templates/developer.md: no gh examples pass --repo (would contradict the rule)" {
+  # Match `gh <subcommand> … --repo …` lines anywhere in the template.
+  # The Step 1 rule mentions `--repo` in narrative prose ("do not pass
+  # --repo …"), not as a `gh` invocation, so it doesn't match this pattern.
+  if grep -nE '^[[:space:]]*gh[[:space:]]+[a-z]+[^|]*--repo' "$DEV_TPL"; then
+    echo "Found in-template 'gh … --repo …' example(s) above. The rule at line ~202 says the agent should not pass --repo; examples must match." >&2
+    false
+  fi
+}
+
+# --- Template sweep: legitimate `cd "$WORKTREE"` only at worktree creation ---
+#
+# The CWD-persistence rule says exactly one cd per worktree creation. There
+# are three creation points: Mode 1 Step 1, Mode 2 F3, Mode 3 R1. Any extra
+# `cd "$WORKTREE"` line in the template is a redundant prefix — the same
+# pattern the agent would mirror.
+
+@test "templates/developer.md: at most 3 'cd \"\$WORKTREE\"' lines (one per mode worktree creation)" {
+  # Count lines that ARE the cd command (not narrative prose mentioning it).
+  # The narrative mentions it inside backticks (`cd "$WORKTREE"`) on the
+  # same line as other text; those don't match `^[[:space:]]*cd "...`.
+  count=$(grep -cE '^[[:space:]]*cd[[:space:]]+"\$WORKTREE"[[:space:]]*$' "$DEV_TPL")
+  [ "$count" -le 3 ] \
+    || { echo "Expected ≤ 3 standalone 'cd \"\$WORKTREE\"' lines (one per worktree creation: Mode 1 Step 1, Mode 2 F3, Mode 3 R1); found $count" >&2; false; }
+}
