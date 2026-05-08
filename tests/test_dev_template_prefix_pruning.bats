@@ -107,22 +107,30 @@ section_body() {
 # The "trust inherited env" rule must not be contradicted by the template's
 # own `gh` example commands. Across Modes 1/2/3 the agent will mirror what
 # the template shows; if examples still pass `--repo …`, the agent re-emits
-# the prefix and blows the GH#80 acceptance criteria. The sweep at fix time
-# left exactly one `--repo …` reference: the anti-pattern call-out in the
-# Step 1 rule itself. Anything else is a regression.
+# the prefix and blows the GH#80 acceptance criteria.
+#
+# Test 36 is the load-bearing assertion: no `gh … --repo` invocation
+# anywhere in the template. Test 35 is a thin sanity check that the rule
+# call-out still exists (≥ 1 narrative `--repo` mention); we deliberately
+# don't pin the count to exactly 1, because a future legitimate addition
+# (e.g., a bullet "the wrapper's own `gh ... --repo` calls in `runners/`")
+# is not a regression. Test 36 catches the only thing that actually harms
+# agent runs.
 
-@test "templates/developer.md: only one --repo reference (the rule call-out)" {
+@test "templates/developer.md: rule call-out for --repo still present" {
   count=$(grep -cE -- '--repo' "$DEV_TPL")
-  [ "$count" = "1" ] \
-    || { echo "Expected exactly 1 '--repo' reference (the Step 1 rule call-out); found $count. Run: grep -nE -- '--repo' templates/developer.md" >&2; false; }
+  [ "$count" -ge 1 ] \
+    || { echo "Expected ≥ 1 '--repo' mention (the Step 1 rule call-out); found $count" >&2; false; }
 }
 
 @test "templates/developer.md: no gh examples pass --repo (would contradict the rule)" {
-  # Match `gh <subcommand> … --repo …` lines anywhere in the template.
-  # The Step 1 rule mentions `--repo` in narrative prose ("do not pass
-  # --repo …"), not as a `gh` invocation, so it doesn't match this pattern.
-  if grep -nE '^[[:space:]]*gh[[:space:]]+[a-z]+[^|]*--repo' "$DEV_TPL"; then
-    echo "Found in-template 'gh … --repo …' example(s) above. The rule at line ~202 says the agent should not pass --repo; examples must match." >&2
+  # Match `gh <subcommand> … --repo …` invocations anywhere in the template,
+  # whether at line-start or inside a `$(...)` command substitution. The
+  # Step 1 rule mentions `--repo` in narrative prose with `gh` wrapped in
+  # backticks (`gh\``), so the `gh[[:space:]]+[a-z]+` segment doesn't match
+  # the rule call-out itself.
+  if grep -nE 'gh[[:space:]]+[a-z]+[^|]*--repo' "$DEV_TPL"; then
+    echo "Found in-template 'gh … --repo …' example(s) above. The rule at line ~210 says the agent should not pass --repo; examples must match." >&2
     false
   fi
 }
