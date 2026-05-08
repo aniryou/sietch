@@ -56,6 +56,7 @@ Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
 - Set `ISSUE_NUM=$DEV_AGENT_TARGET_ISSUE` and proceed straight to "Mode 1: Per-issue Workflow" Step 0 (parent beads issue).
 - Do **not** re-run the eligibility predicate. Do **not** re-attempt the lock — you already own it. Do **not** scan for other candidates.
+- **Trust wrapper-set state — do not re-verify.** The wrapper has already printed `[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding` before invoking you (`runners/run-developer.sh`). Do **not** `echo $DEV_AGENT_TARGET_ISSUE` / `echo $DEV_AGENT_RUN_ID` to confirm the env vars. Do **not** `ls "$LOCK_DIR/..."` or `cat "$LOCK_DIR/.../run_id"` to confirm the lock. The kickoff message and these instructions are authoritative — verifying them again is pure waste. Proceed straight to `gh issue view`.
 - Read the issue body via `gh issue view "$ISSUE_NUM" --repo ${REPO_SLUG} --json title,body,labels` to capture severity and acceptance criteria.
 
 The unset-env steps below are the fallback path for direct `claude -p` invocations (no wrapper).
@@ -313,7 +314,7 @@ If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr ch
 
 When all required checks are green:
 
-1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. `Edit` `/tmp/pr-body-<num>.md` (the same file Step 5 wrote), then `gh pr edit "$PR" --repo ${REPO_SLUG} --body-file /tmp/pr-body-<num>.md`. Never `--body "$NEW_BODY"` with the body inlined — same context-bloat reason as Step 5. Do not change section structure or invent new sections — keep the format identical to Step 5's template.
+1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. `Edit` `/tmp/pr-body-<num>.md` (the same file Step 5 wrote), then `gh pr edit "$PR" --repo ${REPO_SLUG} --body-file /tmp/pr-body-<num>.md`. Never `--body "$NEW_BODY"` with the body inlined — same context-bloat reason as Step 5. Do not change section structure or invent new sections — keep the format identical to Step 5's template. **Never re-fetch the body via `gh pr view ... --json body` to "verify" between edits — `cat` the local file (Step 5 wrote it; nothing has changed it since except your own `Edit`). Never invoke `gh pr edit ... --body-file` more than once per Step 7a cycle.**
 2. Lift the PR back to ready-for-review if any prior failure path had drafted it. Defensive in Mode 1 (a fresh PR opened in Step 5 is normally not draft), but the symmetry removes a class of "the agent forgot to flip it back" failures. Skip on `CONFLICTING` (original conflict still present — drafting is correct) and `UNKNOWN` (GitHub still recomputing — leave alone rather than race):
    ```bash
    DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
