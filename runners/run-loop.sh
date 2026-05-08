@@ -64,6 +64,14 @@ ENABLE_MERGER=0
 ts() { date -Iseconds 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z"; }
 
 cleanup_stale_dispatch_locks() {
+  # Heal a missing parent dir before doing anything else (GH#86). The
+  # session-teardown rmdir at line ~621 can race with a panes-still-alive
+  # state, leaving the parent gone while a dispatcher pane keeps cycling;
+  # without this, every subsequent `mkdir "$lock"` in the dispatcher loops
+  # silently fails (parent doesn't exist) and no per-PR follow-up is ever
+  # dispatched. The early-return below stays as a fallback in case the
+  # mkdir itself fails (e.g. permissions).
+  mkdir -p "$DISPATCH_LOCK_DIR" 2>/dev/null
   [ -d "$DISPATCH_LOCK_DIR" ] || return 0
   # Glob only own-prefix locks (GH#74). When DISPATCH_LOCK_DIR is shared
   # across misconfigured repos, the previous `*.lock` glob would gc
@@ -225,6 +233,12 @@ loop_dispatcher_followup() {
         ("$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
         local child=$!
         echo "$child" >"$lock/pid"
+      elif [ ! -d "$lock" ]; then
+        # mkdir failed AND the lock dir doesn't exist — i.e. the failure
+        # was NOT the legitimate EEXIST skip (parent missing, permissions,
+        # etc.). Make it loud so the next failure mode after GH#86 is not
+        # another silent fall-through.
+        echo "[$(ts)] [dispatch:followup] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -337,6 +351,12 @@ loop_dispatcher_conflicts() {
         local child=$!
         echo "$child" >"$lock/pid"
         dispatched=$((dispatched + 1))
+      elif [ ! -d "$lock" ]; then
+        # mkdir failed AND the lock dir doesn't exist — i.e. the failure
+        # was NOT the legitimate EEXIST skip (parent missing, permissions,
+        # etc.). Make it loud so the next failure mode after GH#86 is not
+        # another silent fall-through.
+        echo "[$(ts)] [dispatch:conflicts] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \

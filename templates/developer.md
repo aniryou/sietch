@@ -315,13 +315,22 @@ If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr ch
 When all required checks are green:
 
 1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. `Edit` `/tmp/pr-body-<num>.md` (the same file Step 5 wrote), then `gh pr edit "$PR" --repo ${REPO_SLUG} --body-file /tmp/pr-body-<num>.md`. Never `--body "$NEW_BODY"` with the body inlined — same context-bloat reason as Step 5. Do not change section structure or invent new sections — keep the format identical to Step 5's template. **Never re-fetch the body via `gh pr view ... --json body` to "verify" between edits — `cat` the local file (Step 5 wrote it; nothing has changed it since except your own `Edit`). Never invoke `gh pr edit ... --body-file` more than once per Step 7a cycle.**
-2. Merge is **not** your responsibility — leave that to the user, unless the user has explicitly enabled auto-merge for the repo. Do **not** force-merge.
-3. **Do NOT close the GitHub issue.** GitHub auto-closes it when the PR is merged (the PR body includes `Closes #<num>` from Step 5), and auto-adds a linking comment at that time. Closing now would mark the issue resolved before the work has actually shipped — the PR could still be abandoned, reverted, or have a P0 finding from review.
-4. Close the parent beads issue and any still-open child issues. Beads is internal tracking; closing on CI-green is acceptable since you can manually reopen with `bd update --status=open` if the PR is later abandoned:
+2. Lift the PR back to ready-for-review if any prior failure path had drafted it. Defensive in Mode 1 (a fresh PR opened in Step 5 is normally not draft), but the symmetry removes a class of "the agent forgot to flip it back" failures. Skip on `CONFLICTING` (original conflict still present — drafting is correct) and `UNKNOWN` (GitHub still recomputing — leave alone rather than race):
+   ```bash
+   DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
+   DRAFT=$(echo "$DRAFT_MERGEABLE" | cut -f1)
+   MERGEABLE=$(echo "$DRAFT_MERGEABLE" | cut -f2)
+   if [ "$DRAFT" = "true" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
+     gh pr ready "$PR" --repo ${REPO_SLUG} || true
+   fi
+   ```
+3. Merge is **not** your responsibility — leave that to the user, unless the user has explicitly enabled auto-merge for the repo. Do **not** force-merge.
+4. **Do NOT close the GitHub issue.** GitHub auto-closes it when the PR is merged (the PR body includes `Closes #<num>` from Step 5), and auto-adds a linking comment at that time. Closing now would mark the issue resolved before the work has actually shipped — the PR could still be abandoned, reverted, or have a P0 finding from review.
+5. Close the parent beads issue and any still-open child issues. Beads is internal tracking; closing on CI-green is acceptable since you can manually reopen with `bd update --status=open` if the PR is later abandoned:
    ```bash
    bd close <PARENT> <child1> <child2> ... --reason="GH#<num> resolved by PR #<PR>"
    ```
-5. Remove the worktree **and** the local branch (the remote ref on `origin/$BRANCH` stays — the PR needs it). Best-effort each step; do not abort on failure:
+6. Remove the worktree **and** the local branch (the remote ref on `origin/$BRANCH` stays — the PR needs it). Best-effort each step; do not abort on failure:
    ```bash
    REPO=$REPO_ROOT
    cd "$REPO"
@@ -330,7 +339,7 @@ When all required checks are green:
    git -C "$REPO" worktree prune
    git -C "$REPO" branch -D "$BRANCH" || true
    ```
-6. `bd dolt push` (best-effort), print a final summary line, and **exit**. Single-pass mode — do not pick another issue.
+7. `bd dolt push` (best-effort), print a final summary line, and **exit**. Single-pass mode — do not pick another issue.
 
 ### Step 7b — CI failed → retry
 
@@ -546,9 +555,20 @@ EOF
 
 If you had no declines, omit the "Declined" section. If you had no fixes (somehow you addressed everything via decline), that's a strong signal you misread the review — re-check before posting.
 
-### Step F8 — Cleanup + exit
+### Step F8 — Lift draft state, cleanup, exit
 
-Run the same Mandatory pre-exit cleanup block as Mode 1 (success removes worktree + local branch; remote ref stays for the PR). Print:
+Lift the PR back to ready-for-review if a prior failure path (most commonly the wrapper's triage-untractable draft from `runners/run-developer.sh:321`) had drafted it. This is the gap that left PR #81 stuck after a clean follow-up cycle. Skip on `CONFLICTING` (the original conflict is still present — drafting is correct) and `UNKNOWN` (GitHub is mid-recompute — leave alone rather than race):
+
+```bash
+DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
+DRAFT=$(echo "$DRAFT_MERGEABLE" | cut -f1)
+MERGEABLE=$(echo "$DRAFT_MERGEABLE" | cut -f2)
+if [ "$DRAFT" = "true" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
+  gh pr ready "$PR" --repo ${REPO_SLUG} || true
+fi
+```
+
+Then run the same Mandatory pre-exit cleanup block as Mode 1 (success removes worktree + local branch; remote ref stays for the PR). Print:
 
 `[developer-agent] result=follow-up-complete pr=#<N> cycle=<n> beads=<PARENT> commits=<count>`
 
@@ -757,9 +777,20 @@ EOF
 
 This comment is critical — both the human and the reviewer agent need it to understand what the dev agent decided.
 
-### Step R10 — Cleanup + exit
+### Step R10 — Lift draft state, cleanup, exit
 
-Same Mandatory pre-exit cleanup as Mode 1 (success removes worktree + local branch). Print:
+Lift the PR back to ready-for-review if a prior failure path had drafted it. Mode 3 itself only runs after triage said tractable (so the wrapper didn't draft on this cycle), but a follow-up Mode 3 on a previously-drafted PR has the same gap, so the symmetry matters. Skip on `CONFLICTING` (original conflict still present — drafting is correct) and `UNKNOWN` (GitHub is mid-recompute — leave alone rather than race):
+
+```bash
+DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
+DRAFT=$(echo "$DRAFT_MERGEABLE" | cut -f1)
+MERGEABLE=$(echo "$DRAFT_MERGEABLE" | cut -f2)
+if [ "$DRAFT" = "true" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
+  gh pr ready "$PR" --repo ${REPO_SLUG} || true
+fi
+```
+
+Then run the same Mandatory pre-exit cleanup as Mode 1 (success removes worktree + local branch). Print:
 
 `[developer-agent] result=conflict-resolved pr=#<N> beads=<PARENT> conflicts=<count> pre_sha=<short> new_sha=<short>`
 
