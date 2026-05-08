@@ -133,6 +133,11 @@ case "$1 $2" in
     echo '[{"number":9992,"assignees":[],"labels":[{"name":"severity:medium"}]}]'
     exit 0
     ;;
+  "pr list")
+    # GH#65: predicate now also queries open PRs to skip already-claimed issues.
+    echo '[]'
+    exit 0
+    ;;
 esac
 exit 1
 STUB
@@ -410,6 +415,243 @@ JSON
     bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
   [ "$status" -eq 1 ]
   [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_dev_count / dev-candidates: open dev-agent PR filter (GH#65)
+# Issues that already have an open `${BRANCH_PREFIX}/gh-N-...` PR must be
+# skipped — otherwise the wrapper happily mkdir-locks a redundant claim and
+# the LLM (which skips its own discovery when DEV_AGENT_TARGET_ISSUE is set)
+# trips the safety net every cycle, burning tokens. Same silent-zero family
+# as #28 / #58. The filter mirrors the deterministic branch shape from the
+# dev-agent template's Step 1 (`dev-agent/gh-<num>-<slug>`).
+# ---------------------------------------------------------------------------
+
+# Helper: like _make_gh_dev_stub but also serves a `pr list` response. The
+# 3rd arg is a path to a JSON file shaped like `[{"number":N,"headRefName":"…"}]`.
+_make_gh_dev_stub_with_prs() {
+  local high="$1"
+  local med="$2"
+  local prs="$3"
+  local tmpbin="$BATS_TEST_TMPDIR/bin-dev-prs"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+sub="\$1 \$2"
+label=""
+while [ \$# -gt 0 ]; do
+  if [ "\$1" = "--label" ]; then
+    label="\$2"; shift 2
+  else
+    shift
+  fi
+done
+case "\$sub" in
+  "issue list")
+    case "\$label" in
+      severity:high)   cat '$high' ;;
+      severity:medium) cat '$med' ;;
+      *) echo '[]' ;;
+    esac
+    ;;
+  "pr list")
+    cat '$prs'
+    ;;
+  *) echo '[]' ;;
+esac
+exit 0
+STUB
+  chmod +x "$tmpbin/gh"
+  echo "$tmpbin"
+}
+
+@test "dev-candidates: filters out issues with open dev-agent PR (GH#65)" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-pr"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  # PR list: an open dev-agent PR for issue 102. Issues 101 and 103 stay eligible.
+  local prs="$BATS_TEST_TMPDIR/dev-prs.json"
+  cat > "$prs" <<'JSON'
+[
+  {"number":99,"headRefName":"dev-agent/gh-102-something"}
+]
+JSON
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub_with_prs \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json" \
+    "$prs")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "101 103" ]
+}
+
+@test "dev-candidates: every candidate has open dev-agent PR → empty output, exit 1 (GH#65)" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-allpr"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local prs="$BATS_TEST_TMPDIR/all-pr.json"
+  cat > "$prs" <<'JSON'
+[
+  {"number":9,"headRefName":"dev-agent/gh-101-foo"},
+  {"number":10,"headRefName":"dev-agent/gh-102-bar"},
+  {"number":11,"headRefName":"dev-agent/gh-103-baz"}
+]
+JSON
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub_with_prs \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json" \
+    "$prs")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "dev-candidates: non-dev-agent PR head refs are ignored (GH#65)" {
+  # Head refs that don't match BRANCH_PREFIX/gh-N-* must not cause spurious
+  # filtering. Otherwise an unrelated `feature/...` PR would silently shadow
+  # an eligible issue. Also: a dev-agent PR for an issue number not in our
+  # candidate set (e.g. dev-agent/gh-999-mismatch) is harmless — we filter by
+  # intersection with our candidate set, not by union.
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-feat"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local prs="$BATS_TEST_TMPDIR/feature-prs.json"
+  cat > "$prs" <<'JSON'
+[
+  {"number":9,"headRefName":"feature/unrelated"},
+  {"number":10,"headRefName":"fix/something"},
+  {"number":11,"headRefName":"dev-agent/gh-999-mismatch"}
+]
+JSON
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub_with_prs \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json" \
+    "$prs")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "101 102 103" ]
+}
+
+@test "dev-count: filters out issues with open dev-agent PR (GH#65)" {
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-count-pr"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local prs="$BATS_TEST_TMPDIR/count-pr.json"
+  cat > "$prs" <<'JSON'
+[
+  {"number":9,"headRefName":"dev-agent/gh-101-foo"},
+  {"number":10,"headRefName":"dev-agent/gh-102-bar"}
+]
+JSON
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub_with_prs \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
+    "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json" \
+    "$prs")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev
+  [ "$status" -eq 0 ]
+  # 101 + 102 each have open dev-agent PRs → only 103 remains.
+  [ "$output" = "1" ]
+}
+
+@test "dev-count: gh pr list failure exits 2, prints '?' (GH#65)" {
+  # The predicate cannot proceed without knowing the open-PR set — a transient
+  # gh failure must surface as rc=2 (operator visibility), not silently fall
+  # back to "no PRs to filter".
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin-pr-fail-count"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "issue list") cat '$LOOP_ROOT/tests/fixtures/gh/issues-high.json'; exit 0 ;;
+  "pr list") exit 1 ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+@test "dev-candidates: gh pr list failure exits 2, prints '?' (GH#65)" {
+  local repo
+  repo=$(make_repo)
+  local tmpbin="$BATS_TEST_TMPDIR/bin-pr-fail-cands"
+  mkdir -p "$tmpbin"
+  cat > "$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "issue list") cat '$LOOP_ROOT/tests/fixtures/gh/issues-high.json'; exit 0 ;;
+  "pr list") exit 1 ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmpbin/gh"
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 2 ]
+  [ "$output" = "?" ]
+}
+
+# Pure-jq test: the regex extraction itself parses BRANCH_PREFIX/gh-N-* head
+# refs and rejects anything else. Mirrors the production jq one-liner.
+@test "dev-candidates: open-PR head-ref extraction (pure-jq, GH#65)" {
+  local nums
+  nums=$(jq -r --arg prefix "dev-agent" '
+    .[] | (.headRefName // "")
+        | select(test("^" + $prefix + "/gh-[0-9]+-"))
+        | match("^" + $prefix + "/gh-([0-9]+)-").captures[0].string
+  ' <<'JSON'
+[
+  {"number":1,"headRefName":"dev-agent/gh-101-foo"},
+  {"number":2,"headRefName":"dev-agent/gh-202-bar-baz"},
+  {"number":3,"headRefName":"feature/unrelated"},
+  {"number":4,"headRefName":"dev-agent/no-number-prefix"},
+  {"number":5,"headRefName":"dev-agent/gh-303-x"}
+]
+JSON
+)
+  [ "$(printf '%s' "$nums" | tr '\n' ' ')" = "101 202 303" ]
+}
+
+# Source-of-truth: regression guard — both predicates must consume `gh pr list`
+# and reference BRANCH_PREFIX, so a future refactor can't silently drop the
+# filter and reopen the redundant-claim window.
+@test "eligibility_dev_count: filters open dev-agent PRs via gh pr list (GH#65)" {
+  awk '/^eligibility_dev_count\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'gh pr list' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'BRANCH_PREFIX' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_dev_candidates: filters open dev-agent PRs via gh pr list (GH#65)" {
+  awk '/^eligibility_dev_candidates\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'gh pr list' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'BRANCH_PREFIX' "$BATS_TEST_TMPDIR/fn.sh"
 }
 
 # ---------------------------------------------------------------------------

@@ -308,6 +308,11 @@ case "$1 $2" in
     echo '[{"number":777,"assignees":[],"labels":[{"name":"severity:high"},{"name":"dev-failed:1"}]}]'
     exit 0
     ;;
+  "pr list")
+    # GH#65: predicate now also queries open PRs to skip already-claimed issues.
+    echo '[]'
+    exit 0
+    ;;
 esac
 exit 1
 STUB

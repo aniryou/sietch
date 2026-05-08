@@ -51,7 +51,8 @@ set -o pipefail
 
 # ---------------------------------------------------------------------------
 # Mode 1 dev-agent: open severity:high|medium issues with no assignee, no
-# ${BLOCKED_HUMAN_LABEL} label, AND no live filesystem lock under $LOCK_DIR.
+# ${BLOCKED_HUMAN_LABEL} label, no live filesystem lock under $LOCK_DIR, AND
+# no open `${BRANCH_PREFIX}/gh-N-...` PR (GH#65).
 #
 # The label filter (GH#28) drops issues the safety-net flow has flagged as
 # permanently ineligible until a human acts. Without it, every poll cycle
@@ -67,13 +68,22 @@ set -o pipefail
 # Stale-lock cleanup remains the agent's responsibility (STALE_LOCK_HOURS).
 # False negatives (gh hit but lock present) still skip real work for one
 # cycle, but the next cycle picks them up once the lock is released.
+#
+# The open-PR filter (GH#65) skips issues whose deterministic dev-agent branch
+# (`${BRANCH_PREFIX}/gh-<num>-<slug>`, see template Step 1) is already the head
+# of an open PR. Without it the wrapper happily mkdir-locks a redundant claim
+# under DEV_AGENT_TARGET_ISSUE, the LLM (which skips its own discovery in that
+# mode) trips the safety net every cycle, and we burn tokens per cycle on work
+# that is by definition already in flight. The agent prompt's Step 2 has
+# always said "Skip issues that already have a linked open PR", but the
+# wrapper-driven path bypasses that filter — fixing it here closes the gap.
 # ---------------------------------------------------------------------------
 eligibility_dev_count() {
   # Use the REST list endpoint (--label) instead of --search: the search index
   # silently drops freshly-created issues (minutes of lag) and issues hidden by
   # GitHub's automated content filter (e.g. duplicate titles, code-dense bodies
   # on new repos). REST list reflects current state immediately.
-  local label raw nums_all nums n filtered
+  local label raw nums_all nums n filtered pr_json open_pr_issues
   nums_all=""
   for label in "$SEVERITY_LABEL_HIGH" "$SEVERITY_LABEL_MEDIUM"; do
     if ! raw=$(
@@ -95,9 +105,36 @@ eligibility_dev_count() {
     nums_all+="${raw}"$'\n'
   done
   nums=$(printf '%s' "$nums_all" | sort -u | grep . || true)
+
+  # GH#65: build the set of issue numbers that already have an open dev-agent
+  # PR. Skip the network call when there are no candidates to filter.
+  open_pr_issues=""
+  if [ -n "$nums" ]; then
+    if ! pr_json=$(
+      PAGER=cat GIT_PAGER=cat gh pr list \
+        --repo "$REPO_SLUG" --state open \
+        --json number,headRefName \
+        --limit 100 2>/dev/null
+    ); then
+      echo "?"
+      return 2
+    fi
+    open_pr_issues=$(
+      printf '%s' "$pr_json" \
+        | jq -r --arg prefix "$BRANCH_PREFIX" '
+            .[] | (.headRefName // "")
+                | select(test("^" + $prefix + "/gh-[0-9]+-"))
+                | match("^" + $prefix + "/gh-([0-9]+)-").captures[0].string
+          ' 2>/dev/null
+    )
+  fi
+
   filtered=0
   for n in $nums; do
     [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    if [ -n "$open_pr_issues" ] && printf '%s\n' "$open_pr_issues" | grep -qx "$n"; then
+      continue
+    fi
     filtered=$((filtered + 1))
   done
   echo "$filtered"
@@ -116,18 +153,24 @@ eligibility_dev_count() {
 # LLM did its own discovery + lock — the TOCTOU window between count and
 # lock cost ~$0.20-$0.50 per losing parallel agent under DEV_INSTANCES>1.
 #
+# Filter set must stay in lockstep with eligibility_dev_count: assignees == [],
+# no BLOCKED_HUMAN_LABEL (GH#28), no live lock under $LOCK_DIR, AND no open
+# `${BRANCH_PREFIX}/gh-N-...` PR (GH#65). Any divergence reopens a silent-zero
+# token-leak window — both predicates feed the same wrapper preflight.
+#
 # Output and exit-code shape mirrors eligibility_dev_count:
 #   stdout: candidate numbers, one per line (no trailing blank), or `?` on
 #           predicate failure
 #   exit:   0 = at least one candidate, 1 = none, 2 = gh/jq failure
 # ---------------------------------------------------------------------------
 eligibility_dev_candidates() {
-  local raw_h raw_m all filtered_lines n filtered_count
-  # Filter set must mirror eligibility_dev_count exactly: assignees == []
-  # AND no BLOCKED_HUMAN_LABEL. The label filter is GH#28 — without it the
-  # wrapper happily mkdir-locks a blocked issue and the LLM (which skips its
-  # own discovery when DEV_AGENT_TARGET_ISSUE is set) re-trips the safety net,
-  # reopening the rediscovery loop GH#28 closed.
+  local raw_h raw_m all filtered_lines n filtered_count pr_json open_pr_issues
+  # Filter set must mirror eligibility_dev_count exactly: assignees == [],
+  # no BLOCKED_HUMAN_LABEL (GH#28), AND no open dev-agent PR (GH#65). Without
+  # any one of these, the wrapper happily mkdir-locks an ineligible issue and
+  # the LLM (which skips its own discovery when DEV_AGENT_TARGET_ISSUE is set)
+  # either re-trips the safety net or thrashes on a redundant claim — both
+  # silent-zero token leaks.
   if ! raw_h=$(
     PAGER=cat GIT_PAGER=cat gh issue list \
       --repo "$REPO_SLUG" --state open \
@@ -164,10 +207,37 @@ eligibility_dev_candidates() {
   # !seen[$0]++ keeps the first occurrence and drops later duplicates,
   # so an issue tagged both severities surfaces in its high-side slot.
   all=$(printf '%s\n%s\n' "$raw_h" "$raw_m" | awk 'NF && !seen[$0]++')
+
+  # GH#65: build the set of issue numbers that already have an open dev-agent
+  # PR. Skip the network call when there are no candidates to filter.
+  open_pr_issues=""
+  if [ -n "$all" ]; then
+    if ! pr_json=$(
+      PAGER=cat GIT_PAGER=cat gh pr list \
+        --repo "$REPO_SLUG" --state open \
+        --json number,headRefName \
+        --limit 100 2>/dev/null
+    ); then
+      echo "?"
+      return 2
+    fi
+    open_pr_issues=$(
+      printf '%s' "$pr_json" \
+        | jq -r --arg prefix "$BRANCH_PREFIX" '
+            .[] | (.headRefName // "")
+                | select(test("^" + $prefix + "/gh-[0-9]+-"))
+                | match("^" + $prefix + "/gh-([0-9]+)-").captures[0].string
+          ' 2>/dev/null
+    )
+  fi
+
   filtered_count=0
   filtered_lines=""
   for n in $all; do
     [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    if [ -n "$open_pr_issues" ] && printf '%s\n' "$open_pr_issues" | grep -qx "$n"; then
+      continue
+    fi
     filtered_lines+="$n"$'\n'
     filtered_count=$((filtered_count + 1))
   done
