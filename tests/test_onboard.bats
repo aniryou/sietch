@@ -290,8 +290,12 @@ YAML
 # auto-create the missing ones.
 # ---------------------------------------------------------------------------
 
+# Canonical label set provisioned by `st init` (templates/labels.json):
+# 7 base labels (severity, type) + 3 dev-failed:N retry-counter labels (GH#56).
+_CANONICAL_LABELS="severity:high,severity:medium,severity:low,bug,enhancement,testing,documentation,dev-failed:1,dev-failed:2,dev-failed:3"
+
 @test "check_labels: passes without creating when all canonical labels exist" {
-  _install_gh_stub "severity:high,severity:medium,severity:low,bug,enhancement,testing,documentation"
+  _install_gh_stub "$_CANONICAL_LABELS"
   run bash "$ONBOARD_LIB" check_labels
   [ "$status" -eq 0 ]
   [ ! -s "$LABELS_CREATED_LOG" ]
@@ -301,32 +305,35 @@ YAML
   _install_gh_stub "severity:high,severity:medium"
   run bash "$ONBOARD_LIB" check_labels
   [ "$status" -eq 0 ]
-  # Canonical set is 7 labels; existing fixture had 2 → expect 5 creations.
-  [ "$(wc -l < "$LABELS_CREATED_LOG" | tr -d ' ')" -eq 5 ]
+  # Canonical set is 10 labels; existing fixture had 2 → expect 8 creations.
+  [ "$(wc -l < "$LABELS_CREATED_LOG" | tr -d ' ')" -eq 8 ]
   grep -qFx 'testing' "$LABELS_CREATED_LOG"
   grep -qFx 'documentation' "$LABELS_CREATED_LOG"
   grep -qFx 'severity:low' "$LABELS_CREATED_LOG"
+  grep -qFx 'dev-failed:1' "$LABELS_CREATED_LOG"
+  grep -qFx 'dev-failed:3' "$LABELS_CREATED_LOG"
 }
 
 @test "check_labels: creates all when none exist" {
   _install_gh_stub ""
   run bash "$ONBOARD_LIB" check_labels
   [ "$status" -eq 0 ]
-  [ "$(wc -l < "$LABELS_CREATED_LOG" | tr -d ' ')" -eq 7 ]
+  [ "$(wc -l < "$LABELS_CREATED_LOG" | tr -d ' ')" -eq 10 ]
 }
 
 # ---------------------------------------------------------------------------
 # templates/labels.json — schema sanity
 # ---------------------------------------------------------------------------
 
-@test "templates/labels.json: parses as JSON and is the canonical 7-label set" {
+@test "templates/labels.json: parses as JSON and is the canonical 10-label set" {
   local file="$LOOP_ROOT/templates/labels.json"
   [ -f "$file" ]
-  jq -e 'type == "array" and length == 7' "$file" >/dev/null
+  jq -e 'type == "array" and length == 10' "$file" >/dev/null
   jq -e '
     [.[].name] as $names |
     ($names | contains(["severity:high","severity:medium","severity:low",
-                        "bug","enhancement","testing","documentation"]))
+                        "bug","enhancement","testing","documentation",
+                        "dev-failed:1","dev-failed:2","dev-failed:3"]))
   ' "$file" >/dev/null
   jq -e '.[] | (.name|type) == "string" and (.color|type) == "string"' \
     "$file" >/dev/null
@@ -338,7 +345,7 @@ YAML
 
 @test "onboard run: exits 0 when all checks pass" {
   _setup_passing_repo
-  _install_gh_stub "severity:high,severity:medium,severity:low,bug,enhancement,testing,documentation"
+  _install_gh_stub "$_CANONICAL_LABELS"
   run bash "$ONBOARD_LIB" run
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF '✓'
@@ -347,7 +354,7 @@ YAML
 @test "onboard run: exits 1 when one check fails" {
   _setup_passing_repo
   rm -rf "$REPO/.beads"
-  _install_gh_stub "severity:high,severity:medium,severity:low,bug,enhancement,testing,documentation"
+  _install_gh_stub "$_CANONICAL_LABELS"
   run bash "$ONBOARD_LIB" run
   [ "$status" -eq 1 ]
   echo "$output" | grep -qF '✗'
@@ -359,7 +366,7 @@ YAML
 
 @test "bin/st onboard: works from a sub-directory of the repo" {
   _setup_passing_repo
-  _install_gh_stub "severity:high,severity:medium,severity:low,bug,enhancement,testing,documentation"
+  _install_gh_stub "$_CANONICAL_LABELS"
   mkdir -p "$REPO/sub/dir"
   cd "$REPO/sub/dir"
   run "$LOOP_ROOT/bin/st" onboard
@@ -369,7 +376,7 @@ YAML
 
 @test "bin/st onboard: returns 1 when prerequisites are missing" {
   # Don't set up the passing repo — many checks will fail.
-  _install_gh_stub "severity:high,severity:medium,severity:low,bug,enhancement,testing,documentation"
+  _install_gh_stub "$_CANONICAL_LABELS"
   cd "$REPO"
   run "$LOOP_ROOT/bin/st" onboard
   [ "$status" -eq 1 ]

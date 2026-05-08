@@ -33,5 +33,20 @@
     "name": "documentation",
     "color": "0075ca",
     "description": "Improvements or additions to documentation"
+  },
+  {
+    "name": "dev-failed:1",
+    "color": "fef2c0",
+    "description": "Mode 1 dev-agent has hard-failed once on this issue (wrapper-managed retry counter, GH#56)"
+  },
+  {
+    "name": "dev-failed:2",
+    "color": "fbca04",
+    "description": "Mode 1 dev-agent has hard-failed twice on this issue (wrapper-managed retry counter, GH#56)"
+  },
+  {
+    "name": "dev-failed:3",
+    "color": "d73a4a",
+    "description": "Mode 1 dev-agent has hard-failed 3+ times; escalated via blocked:human (GH#56)"
   }
 ]

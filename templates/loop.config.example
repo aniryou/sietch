@@ -108,6 +108,15 @@ DEV_FOLLOWUP_CYCLE_LIMIT=3
 REVIEWER_BASH_CALL_BUDGET=25
 STALE_LOCK_HOURS=6
 
+# Consecutive Mode 1 hard-failures (LLM exit non-zero before reaching the
+# in-prompt safety-net check) on the same issue before the wrapper escalates
+# by adding ${BLOCKED_HUMAN_LABEL} and posting an escalation comment naming
+# the wrapper log path. The wrapper tracks the streak via dev-failed:N
+# labels on the GH issue itself; a successful run clears them. Default 3 —
+# tighten to 2 if you want faster human escalation, loosen to 5+ for repos
+# where transient gh / claude API blips are common. (GH#56)
+DEV_HARD_FAILURE_RETRY_LIMIT=3
+
 # ---------------------------------------------------------------------------
 # Project-specific test command (used in Mode 3 post-rebase verification)
 # ---------------------------------------------------------------------------

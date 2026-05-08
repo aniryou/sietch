@@ -330,6 +330,93 @@ set +m
 wait "$PIPELINE_PID"
 LLM_EXIT=$?
 
+# GH#56 — Mode 1 hard-failure retry counter (wrapper-side).
+#
+# A deterministic-fail issue (max-turns reproducibly hit before reaching the
+# in-prompt safety-net check, bash error inside a tool call, missing test
+# dep that crashes pytest reproducibly) used to get re-claimed every poll
+# cycle and burn ~$1-3 per spawn until a human intervened. The blocked:human
+# label GH#28 added only fires from inside the LLM — failures that crash
+# before the safety-net check leave the issue unlabeled and re-eligible.
+#
+# Mirror the Mode 2/Mode 3 wrapper-side fallback shape: track consecutive
+# hard failures via dev-failed:N labels on the GH issue, and after
+# DEV_HARD_FAILURE_RETRY_LIMIT (default 3) escalate by adding blocked:human
+# + posting a comment naming the wrapper log path. A successful Mode 1
+# cycle clears any dev-failed:N labels so a transient failure followed by
+# two successes doesn't leave a stale counter.
+#
+# Mode-scoped to "default" (Mode 1): Modes 2/3 already have their own
+# PR-scoped hard-failure handling (GH#48/#49); this is issue-scoped and
+# would be confused with the PR fallbacks if it leaked. Gated on
+# DEV_AGENT_TARGET_ISSUE because the eligibility short-circuit paths exit
+# before this block — we only get here when the wrapper actually owns an
+# issue lock and spawned the LLM.
+if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
+  _retry_blocked_label="${BLOCKED_HUMAN_LABEL:-blocked:human}"
+  _retry_limit="${DEV_HARD_FAILURE_RETRY_LIMIT:-3}"
+  if [ "$LLM_EXIT" -ne 0 ]; then
+    # Read existing labels and find the highest dev-failed:N (0 if none).
+    # The default-on-failure (echo 0 / [] fallback) keeps a flaky gh from
+    # blocking the wrapper exit — worst case we miss a counter increment
+    # this cycle and the label converges next cycle.
+    _retry_labels_json=$(
+      PAGER=cat GIT_PAGER=cat gh issue view "$DEV_AGENT_TARGET_ISSUE" \
+        --repo "$REPO_SLUG" --json labels 2>/dev/null \
+        || echo '{"labels":[]}'
+    )
+    _retry_current=$(
+      echo "$_retry_labels_json" \
+        | jq -r '[.labels[].name | select(startswith("dev-failed:")) | sub("dev-failed:";"") | tonumber] | max // 0' \
+          2>/dev/null \
+        || echo 0
+    )
+    _retry_next=$((_retry_current + 1))
+    if [ "$_retry_current" -gt 0 ]; then
+      PAGER=cat GIT_PAGER=cat gh issue edit "$DEV_AGENT_TARGET_ISSUE" \
+        --repo "$REPO_SLUG" --remove-label "dev-failed:${_retry_current}" \
+        >/dev/null 2>&1 || true
+    fi
+    PAGER=cat GIT_PAGER=cat gh issue edit "$DEV_AGENT_TARGET_ISSUE" \
+      --repo "$REPO_SLUG" --add-label "dev-failed:${_retry_next}" \
+      >/dev/null 2>&1 || true
+    if [ "$_retry_next" -ge "$_retry_limit" ]; then
+      PAGER=cat GIT_PAGER=cat gh issue edit "$DEV_AGENT_TARGET_ISSUE" \
+        --repo "$REPO_SLUG" --add-label "$_retry_blocked_label" \
+        >/dev/null 2>&1 || true
+      _retry_body="🤖 Dev-agent hard-failed ${_retry_next} consecutive times (last exit=${LLM_EXIT}). Labeling \`${_retry_blocked_label}\` so the eligibility predicate skips this issue. Investigate the wrapper logs at \`${LOG}\`."
+      PAGER=cat GIT_PAGER=cat gh issue comment "$DEV_AGENT_TARGET_ISSUE" \
+        --repo "$REPO_SLUG" --body "$_retry_body" \
+        >/dev/null 2>&1 || true
+      unset _retry_body
+    fi
+    unset _retry_labels_json _retry_current _retry_next
+  else
+    # Success path — clear any dev-failed:N labels so a transient failure
+    # followed by two successes doesn't leave the issue with a stale
+    # dev-failed:1. Single comma-joined --remove-label call covers any
+    # number of stale labels in one gh roundtrip.
+    _retry_labels_json=$(
+      PAGER=cat GIT_PAGER=cat gh issue view "$DEV_AGENT_TARGET_ISSUE" \
+        --repo "$REPO_SLUG" --json labels 2>/dev/null \
+        || echo '{"labels":[]}'
+    )
+    _retry_existing=$(
+      echo "$_retry_labels_json" \
+        | jq -r '[.labels[].name | select(startswith("dev-failed:"))] | join(",")' \
+          2>/dev/null \
+        || echo ""
+    )
+    if [ -n "$_retry_existing" ]; then
+      PAGER=cat GIT_PAGER=cat gh issue edit "$DEV_AGENT_TARGET_ISSUE" \
+        --repo "$REPO_SLUG" --remove-label "$_retry_existing" \
+        >/dev/null 2>&1 || true
+    fi
+    unset _retry_labels_json _retry_existing
+  fi
+  unset _retry_blocked_label _retry_limit
+fi
+
 # GH#48 — Mode 3 hard-failure fallback. The prompt's three graceful Mode 3
 # abort blocks (templates/developer.md: ambiguous-intent, post-resolution
 # test failure, post-force-push CI failure) each draft the PR themselves so
