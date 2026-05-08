@@ -208,13 +208,14 @@ The branch name is deterministic per issue so retries reuse the branch (and ther
 - Commit with a message of the form:
 
   ```
-  Fix GH#<num>: <short summary>
+  Fix GH#<num>: <plain-English summary>
 
   <1–2 sentence why>
 
   Refs: beads <PARENT>
   ```
 
+  The `<plain-English summary>` follows the same rules as PR/issue titles: ≤70 characters total (including the `Fix GH#<num>: ` prefix), no opaque acronyms or internal jargon, leads with the user-visible effect rather than the internal mechanism. If the GitHub issue itself has a jargon-y title (older issues filed before the plain-English rule landed), rewrite the summary here — don't blindly mirror the issue title.
 - Do **not** use `--no-verify`. If pre-commit modifies files (ruff auto-fix, EOF fixer, etc.), `git add` the changed files and commit again. If pre-commit fails for a reason you cannot fix (e.g., gitleaks flagging a real secret you accidentally added), abort the commit, remove the offending content, and retry.
 - Never bypass signing.
 
@@ -224,9 +225,13 @@ The branch name is deterministic per issue so retries reuse the branch (and ther
 git push -u origin "$BRANCH"
 gh pr create --repo ${REPO_SLUG} \
   --base main --head "$BRANCH" \
-  --title "Fix GH#<num>: <short summary>" \
+  --title "Fix GH#<num>: <plain-English summary>" \
   --body "$(cat <<'EOF'
-## Summary
+## TL;DR
+
+<1–2 sentences in plain English: what changed and why, written so a maintainer scanning the PR list — or a contributor unfamiliar with this codebase — can understand the change at a glance. No file paths, no function names, no internal jargon — those live in `## Changes`.>
+
+## Changes
 
 - <bullet list of what changed and why; cite acceptance criteria from the issue where relevant>
 - <prefer specific, concrete language: file paths, function names, line numbers — not "refactored X" or "improved Y">
@@ -261,7 +266,9 @@ EOF
 
 Record the PR number as `$PR`.
 
-The body above is the **complete, final** PR description — it already includes the parent/child beads IDs and the commit SHA(s) from Step 4. Step 7a does **not** rewrite this body; it only flips the unchecked CI checkbox once CI is green and appends any retry commits to `## Commits`. Do not change the section structure or add ad-hoc sections.
+The PR title keeps the `Fix GH#<num>:` prefix for traceability, but the `<plain-English summary>` after it follows the same readability rules as issue titles: ≤70 characters total, no opaque acronyms (`TOCTOU`, `rc=2`, `dispatch:followup`), no internal jargon, and leads with the user-visible effect rather than the internal mechanism. If the GitHub issue title itself violates these rules (older issue, or filed before this guidance landed), **rewrite** the summary here in plain English — do not blindly mirror the issue title.
+
+The body above is the **complete, final** PR description — it opens with `## TL;DR` (1–2 plain-English sentences), followed by `## Changes` (the file-level detail), and already includes the parent/child beads IDs and the commit SHA(s) from Step 4. Step 7a does **not** rewrite this body; it only flips the unchecked CI checkbox under `## Test plan` once CI is green and appends any retry commits to `## Commits`. Do not change the section structure (`## TL;DR`, `## Changes`, `## Linked Issues`, `## Commits`, `## Test plan`, `## Out of scope`) or add ad-hoc sections.
 
 ### Step 6 — Wait for CI
 
@@ -277,7 +284,7 @@ If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr ch
 
 When all required checks are green:
 
-1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. Use `gh pr edit "$PR" --body "$NEW_BODY"`. Do not change section structure or invent new sections — keep the format identical to Step 5's template.
+1. Edit the PR body to flip the CI checkbox green (the unchecked `- [ ] CI green: lint, test, docker` line lives under `## Test plan` — that section's name is unchanged) and (if there were CI-retry commits in Step 7b) append them to `## Commits`. Use `gh pr edit "$PR" --body "$NEW_BODY"`. Do not change section structure or invent new sections — keep the format identical to Step 5's template (`## TL;DR`, `## Changes`, `## Linked Issues`, `## Commits`, `## Test plan`, `## Out of scope`).
 2. Merge is **not** your responsibility — leave that to the user, unless the user has explicitly enabled auto-merge for the repo. Do **not** force-merge.
 3. **Do NOT close the GitHub issue.** GitHub auto-closes it when the PR is merged (the PR body includes `Closes #<num>` from Step 5), and auto-adds a linking comment at that time. Closing now would mark the issue resolved before the work has actually shipped — the PR could still be abandoned, reverted, or have a P0 finding from review.
 4. Close the parent beads issue and any still-open child issues. Beads is internal tracking; closing on CI-green is acceptable since you can manually reopen with `bd update --status=open` if the PR is later abandoned:

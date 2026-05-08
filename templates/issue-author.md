@@ -78,6 +78,10 @@ You can use the **AskUserQuestion** tool for structured multi-choice questions w
 The dev-agent expects this structure. Don't deviate without reason:
 
 ```markdown
+## TL;DR
+
+<1–2 sentences in plain English: what's wrong or missing, and why it matters. No file paths, no jargon, no acronyms — those live in `## Problem` and below. A reader unfamiliar with the codebase should understand the issue from this section alone.>
+
 ## Problem
 
 <2-4 sentences explaining what's wrong or missing AND why it matters. For severity:high, include the impact rationale up front. Quantify when possible ("every CFP run silently records D-correct questions as wrong").>
@@ -131,11 +135,18 @@ End-to-end:
 - Backticks for filenames, function names, labels, and code snippets.
 - Don't write more than the dev-agent needs. A 30-line issue with concrete citations is better than a 100-line issue with prose.
 
+**Title style:**
+- Plain English. A maintainer scanning the issues list — or a contributor unfamiliar with the codebase — should understand the title at a glance.
+- ≤70 characters.
+- No opaque acronyms or internal jargon (e.g., `TOCTOU`, `rc=2`, `dispatch:followup`, `mkdir-EEXIST`). Common domain terms are fine: `CI`, `PR`, `dispatcher`, `worktree`, `pre-commit`, `ruff`.
+- Lead with the user-visible effect or the change, not the internal mechanism. Bad: *"dispatch:followup wastes tokens after [reviewer-agent: clean] — no verdict-aware gate"*. Good: *"Stop reviewer agent re-running on already-clean PRs"*.
+- If the user's raw description is jargon-heavy, **rewrite** the title for plain English in the draft and surface the rewrite explicitly in Step 8.
+
 ### Step 8 — Show the draft
 
-Output the full issue body inside a markdown code block, plus the proposed title and labels. Then ask:
+Output the full issue body inside a markdown code block, plus the proposed title and labels. If you rewrote the user's raw description into a plain-English title (per the **Title style** rules), call that out — show both the rewritten title and the original phrasing it came from, so the user can confirm or push back. Then ask:
 
-> Here's the draft. Confirm to create, or tell me what to change.
+> Here's the draft. Does the title read well in plain English to someone unfamiliar with this codebase, and does the TL;DR convey the issue without jargon? Confirm to create, or tell me what to change.
 
 If the user requests changes: revise, show again. Repeat until they say "create it" (or equivalent).
 
@@ -177,6 +188,21 @@ When in doubt about structure, look at:
 - **#11** (Wire pytest into CI) — small, scoped, with explicit dependency on #10.
 
 These represent the issue quality bar.
+
+### Title and TL;DR examples
+
+When the raw description is jargon-heavy, rewrite. Examples:
+
+- **Bad:** `wrapper preflight ↔ LLM gate TOCTOU: parallel dev-agents lose lock race after wrapper says 'proceeding', burning ~$0.20-$0.50 per loser`
+  **Good:** `Prevent parallel dev-agents from racing on the same issue and burning tokens`
+
+- **Bad:** `dispatch:followup wastes tokens after [reviewer-agent: clean] — no verdict-aware gate`
+  **Good:** `Stop reviewer agent re-running on already-clean PRs`
+
+- **Bad:** `Fix GH#27: skip + back off on predicate rc=2 (stop "proceed to be safe" token leak)`
+  **Good:** `Skip and back off when an eligibility check fails transiently`
+
+The TL;DR section then expands the title into 1–2 sentences of plain English, still without filenames or acronyms — those belong in `## Problem` below.
 
 ## When you're done
 
