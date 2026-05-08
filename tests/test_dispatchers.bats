@@ -43,22 +43,53 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# conflict dispatcher: dev-agent/* PRs that are CONFLICTING and not draft
+# conflict dispatcher: dev-agent/* PRs that are not draft. Mergeable state is
+# NOT consulted — `gh pr list` returns "UNKNOWN" for any PR whose mergeability
+# hasn't been individually probed since the base branch moved, so filtering on
+# mergeable=="CONFLICTING" silently drops actually-conflicting PRs (GH#58).
+# Triage's authoritative `git rebase` short-circuits on no-conflict cheaply.
 # ---------------------------------------------------------------------------
 
-@test "conflicts filter: keeps only non-draft CONFLICTING dev-agent PRs" {
+@test "conflicts filter: keeps non-draft dev-agent PRs regardless of mergeable state" {
   local filter nums
   filter=$(_dispatch_conflicts_jq "dev-agent")
   nums=$(jq -r "$filter" < "$LOOP_ROOT/tests/fixtures/gh/prs-dispatch.json" | tr '\n' ' ')
-  # Fixture: only 13 is dev-agent/* AND non-draft AND CONFLICTING.
-  [ "$nums" = "13 " ]
+  # Fixture: 11 (MERGEABLE, ok), 12 (draft → out), 13 (CONFLICTING, ok),
+  # 14 (draft → out), 15/16 (non-dev-agent → out). Expect 11, 13. Mergeable
+  # state is ignored — triage's rebase decides.
+  [ "$nums" = "11 13 " ]
 }
 
-@test "conflicts filter: drops drafts even when conflicting" {
-  local filter
+@test "conflicts filter: keeps PR whose mergeable is UNKNOWN (GH#58 regression guard)" {
+  # gh pr list returns mergeable=UNKNOWN for any PR whose mergeability hasn't
+  # been individually probed since the base branch moved. The pre-GH#58 filter
+  # silently dropped these, so the entire Mode-3 conflict-resolve pipeline
+  # never fired on real PRs. Guard against re-introduction of that filter.
+  local filter nums
   filter=$(_dispatch_conflicts_jq "dev-agent")
-  ! jq -e "$filter" < "$LOOP_ROOT/tests/fixtures/gh/prs-dispatch.json" 2>/dev/null \
-    | grep -qx '14'
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"dev-agent/gh-99-x","mergeable":"UNKNOWN","isDraft":false}]')
+  [ "$nums" = "99" ]
+}
+
+@test "conflicts filter: keeps PR whose mergeable is CONFLICTING (preserved)" {
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent")
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"dev-agent/gh-99-x","mergeable":"CONFLICTING","isDraft":false}]')
+  [ "$nums" = "99" ]
+}
+
+@test "conflicts filter: drops draft PR even when conflicting" {
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent")
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"dev-agent/gh-99-x","mergeable":"CONFLICTING","isDraft":true}]')
+  [ -z "$nums" ]
+}
+
+@test "conflicts filter: drops PR whose branch lacks the prefix" {
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent")
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"feature/x","mergeable":"CONFLICTING","isDraft":false}]')
+  [ -z "$nums" ]
 }
 
 @test "conflicts filter: drafted CONFLICTING dev-agent PR is excluded (Mode 3 abort regression guard)" {

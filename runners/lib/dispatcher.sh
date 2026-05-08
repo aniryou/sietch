@@ -22,11 +22,17 @@ _dispatch_followup_jq() {
   printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | .number' "$1"
 }
 
-# jq filter: emit .number for each open, non-draft dev-agent PR whose
-# mergeable state is CONFLICTING.
+# jq filter: emit .number for each open, non-draft dev-agent PR — same
+# candidate scan as the follow-up filter. Mergeable state is intentionally
+# NOT consulted here: `gh pr list` returns "UNKNOWN" for any PR whose
+# mergeability hasn't been individually probed since the base branch moved,
+# so a `select(.mergeable == "CONFLICTING")` clause silently drops actually-
+# conflicting PRs (GH#58). Triage's authoritative `git rebase` in
+# run-conflict-triage.sh short-circuits on no-conflict cheaply, so passing
+# clean PRs through is fine.
 # Argument: branch prefix (without trailing slash).
 _dispatch_conflicts_jq() {
-  printf '.[] | select(.headRefName | startswith("%s/")) | select(.mergeable == "CONFLICTING") | select(.isDraft == false) | .number' "$1"
+  printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | .number' "$1"
 }
 
 # jq filter: emit .number for each open, non-draft dev-agent PR.

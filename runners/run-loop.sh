@@ -298,7 +298,7 @@ loop_dispatcher_conflicts() {
     # shellcheck disable=SC1091
     . "$LOOP_HOME/runners/lib/dispatcher.sh" || echo "[$(ts)] [dispatch:conflicts] WARN: failed to re-source lib/dispatcher.sh; using cached helpers"
     cleanup_stale_dispatch_locks
-    echo "[$(ts)] [dispatch:conflicts] scanning for CONFLICTING dev-agent PRs..."
+    echo "[$(ts)] [dispatch:conflicts] scanning open dev-agent PRs..."
     dispatched=0
 
     while IFS= read -r pr; do
@@ -324,7 +324,7 @@ loop_dispatcher_conflicts() {
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
-        --json number,headRefName,mergeable,isDraft \
+        --json number,headRefName,isDraft \
         --jq "$(_dispatch_conflicts_jq "$BRANCH_PREFIX")" \
         2>/dev/null
     )
