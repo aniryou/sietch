@@ -49,6 +49,11 @@ set -o pipefail
 : "${MERGER_MERGE_METHOD:=squash}"
 : "${MERGER_DELETE_BRANCH:=1}"
 
+# Default for older loop.config files predating GH#74 (multi-repo support).
+# Sanitize REPO_NAME so a `.`-bearing name (e.g. lodash.debounce) still
+# yields a filesystem-safe prefix.
+: "${LOCK_NAME_PREFIX:=$(printf '%s' "${REPO_NAME:-}" | tr -c 'A-Za-z0-9_-' '-')-}"
+
 # ---------------------------------------------------------------------------
 # Mode 1 dev-agent: open severity:high|medium issues with no assignee, no
 # ${BLOCKED_HUMAN_LABEL} label, no live filesystem lock under $LOCK_DIR, AND
@@ -131,7 +136,7 @@ eligibility_dev_count() {
 
   filtered=0
   for n in $nums; do
-    [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    [ -d "${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock" ] && continue
     if [ -n "$open_pr_issues" ] && printf '%s\n' "$open_pr_issues" | grep -qx "$n"; then
       continue
     fi
@@ -148,8 +153,9 @@ eligibility_dev_count() {
 #
 # This is what run-developer.sh consumes to acquire the lock BEFORE spawning
 # the LLM (GH#31). The wrapper iterates the printed numbers and tries
-# `mkdir "$LOCK_DIR/gh-N.lock"` on each; the first successful mkdir is the
-# wrapper's claim. Without this list, the wrapper had only a count and the
+# `mkdir "$LOCK_DIR/${LOCK_NAME_PREFIX}gh-N.lock"` on each; the first
+# successful mkdir is the wrapper's claim (GH#74 added the prefix as a
+# defence-in-depth multi-repo guard). Without this list, the wrapper had only a count and the
 # LLM did its own discovery + lock — the TOCTOU window between count and
 # lock cost ~$0.20-$0.50 per losing parallel agent under DEV_INSTANCES>1.
 #
@@ -234,7 +240,7 @@ eligibility_dev_candidates() {
   filtered_count=0
   filtered_lines=""
   for n in $all; do
-    [ -d "${LOCK_DIR}/gh-${n}.lock" ] && continue
+    [ -d "${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock" ] && continue
     if [ -n "$open_pr_issues" ] && printf '%s\n' "$open_pr_issues" | grep -qx "$n"; then
       continue
     fi

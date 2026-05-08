@@ -147,7 +147,30 @@ bats tests/                     # macOS: brew install bats-core
                                 # Debian: apt-get install bats
 ```
 
+## Multi-repo
+
+Two onboarded repos can run their own `st loop start` fleets on the
+same machine without collisions:
+
+- The tmux session name is per-repo (`agent-loop-<owner>-<name>`), so
+  `tmux ls` lists each fleet under its own target. `st loop status` /
+  `attach` / `stop` resolve the session for the current `$PWD`.
+- The default `WORKTREE_BASE` interpolates `${REPO_OWNER}-${REPO_NAME}`,
+  so `st init`'d repos get distinct lock and worktree paths out of the
+  box (`/tmp/dev-agent/<owner>-<name>/...`).
+- Lock filenames carry a `LOCK_NAME_PREFIX` (defaults to `${REPO_NAME}-`)
+  as defence-in-depth: even if two repos are deliberately pointed at a
+  shared `WORKTREE_BASE`, claim/dispatch locks remain disambiguated by
+  filename.
+- `st onboard` runs `check_worktree_base_unique`, which drops a
+  `.loop-owner` marker the first time a repo claims a `WORKTREE_BASE`
+  and fails loudly if another repo later tries to share it.
+
+Concretely, run `st loop start` in repo A, then in repo B (separate
+shells); `tmux ls` shows two distinct sessions and `st loop stop` in
+either repo only tears down that repo's fleet.
+
 ## Status
 
-Early. Single-repo tested. Multi-repo untested. No `st sync` yet to
-auto-pull framework changes — you `git pull` this repo manually.
+Early. No `st sync` yet to auto-pull framework changes — you `git pull`
+this repo manually.

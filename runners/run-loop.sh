@@ -40,8 +40,18 @@ REPO="$REPO_ROOT"
 . "$LOOP_HOME/runners/lib/jitter.sh"
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/eligibility.sh"
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/repo_id.sh"
 
-SESSION=agent-loop
+# Default for older loop.config files predating GH#74. Sanitize via the
+# same helper as the SESSION derivation so the prefix stays filesystem-safe
+# even if the user's repo name carries a `.`.
+: "${LOCK_NAME_PREFIX:=$(loop_sanitize_id "${REPO_NAME:-}")-}"
+
+# Per-repo tmux session — two `st loop start` fleets in different repos
+# can coexist (GH#74). Old hardcoded `agent-loop` collided on the second
+# `tmux new-session` and refused to start.
+SESSION="$(loop_session_name)"
 
 DEV_INSTANCES="$DEV_INSTANCES_DEFAULT"
 POLL_INTERVAL="$POLL_INTERVAL_DEFAULT"
@@ -55,7 +65,11 @@ ts() { date -Iseconds 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z"; }
 
 cleanup_stale_dispatch_locks() {
   [ -d "$DISPATCH_LOCK_DIR" ] || return 0
-  for lock in "$DISPATCH_LOCK_DIR"/*.lock; do
+  # Glob only own-prefix locks (GH#74). When DISPATCH_LOCK_DIR is shared
+  # across misconfigured repos, the previous `*.lock` glob would gc
+  # another repo's live locks if their PID happened to be dead on this
+  # machine.
+  for lock in "$DISPATCH_LOCK_DIR"/"${LOCK_NAME_PREFIX}"*.lock; do
     [ -d "$lock" ] || continue
     local pid
     pid=$(cat "$lock/pid" 2>/dev/null || echo "")
@@ -65,17 +79,19 @@ cleanup_stale_dispatch_locks() {
   done
 }
 
-# Count surviving (live-PID) dispatch locks across BOTH dispatchers.
-# Callers must invoke cleanup_stale_dispatch_locks first so dead PIDs
-# don't inflate the count. Independent budget from DEV_INSTANCES (which
+# Count surviving (live-PID) dispatch locks for THIS repo only. Callers
+# must invoke cleanup_stale_dispatch_locks first so dead PIDs don't
+# inflate the count. Independent budget from DEV_INSTANCES (which
 # governs foreground tmux-pane workers); this caps background dispatches.
+# The LOCK_NAME_PREFIX glob (GH#74) keeps the count repo-local even when
+# DISPATCH_LOCK_DIR is shared with another repo by misconfiguration.
 count_active_dispatch_locks() {
   [ -d "$DISPATCH_LOCK_DIR" ] || {
     echo 0
     return 0
   }
   local count=0 lock
-  for lock in "$DISPATCH_LOCK_DIR"/*.lock; do
+  for lock in "$DISPATCH_LOCK_DIR"/"${LOCK_NAME_PREFIX}"*.lock; do
     [ -d "$lock" ] && count=$((count + 1))
   done
   echo "$count"
@@ -180,7 +196,7 @@ loop_dispatcher_followup() {
 
     while IFS= read -r pr; do
       [ -z "$pr" ] && continue
-      local lock="${DISPATCH_LOCK_DIR}/pr-${pr}-followup.lock"
+      local lock="${DISPATCH_LOCK_DIR}/${LOCK_NAME_PREFIX}pr-${pr}-followup.lock"
       [ -d "$lock" ] && continue
 
       # Concurrency gate — don't fan out beyond the shared cap.
@@ -303,7 +319,7 @@ loop_dispatcher_conflicts() {
 
     while IFS= read -r pr; do
       [ -z "$pr" ] && continue
-      local lock="${DISPATCH_LOCK_DIR}/pr-${pr}-conflicts.lock"
+      local lock="${DISPATCH_LOCK_DIR}/${LOCK_NAME_PREFIX}pr-${pr}-conflicts.lock"
       [ -d "$lock" ] && continue
 
       # Concurrency gate — don't fan out beyond the shared cap.
@@ -593,7 +609,17 @@ stop_session() {
   else
     echo "Session '$SESSION' is not running."
   fi
-  rm -rf "$DISPATCH_LOCK_DIR" 2>/dev/null
+  # Only remove THIS repo's dispatch locks (GH#74). When DISPATCH_LOCK_DIR
+  # is per-repo (the post-#74 default) the prefix glob still matches every
+  # lock in there; when it's misconfigured to a shared base, we leave the
+  # other repo's live locks alone.
+  if [ -d "$DISPATCH_LOCK_DIR" ]; then
+    for lock in "$DISPATCH_LOCK_DIR"/"${LOCK_NAME_PREFIX}"*.lock; do
+      [ -d "$lock" ] && rm -rf "$lock"
+    done
+    # If the dir is now empty, prune it to avoid stale-empty-dir clutter.
+    rmdir "$DISPATCH_LOCK_DIR" 2>/dev/null || true
+  fi
 }
 
 attach_session() {
@@ -608,6 +634,11 @@ attach_session() {
 
 show_status() {
   require_tmux
+  # Always print the repo identity alongside the session — with multi-repo
+  # fleets (GH#74) the same machine can host several `agent-loop-*`
+  # sessions, and `st loop status` should make it obvious which repo's
+  # fleet is being inspected.
+  echo "Repo: $REPO_SLUG  (worktree base: $WORKTREE_BASE)"
   if tmux has-session -t "$SESSION" 2>/dev/null; then
     echo "Session '$SESSION': RUNNING"
     echo
