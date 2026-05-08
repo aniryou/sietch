@@ -204,6 +204,10 @@ cd "$WORKTREE"
 
 **All subsequent file reads, edits, and writes must use the worktree path** (`$WORKTREE/<relpath>`), not the canonical repo path under `$REPO`. The harness keys "have I read this?" by absolute path string, so a Read of the canonical-repo path does not satisfy a later Edit of the same logical file at the worktree path — the first edit per file errors with "File has not been read yet" and forces a redundant Read. This applies in Mode 2 (F3) and Mode 3 (R1) too, where `$WORKTREE` is recreated against the PR branch.
 
+**`cd "$WORKTREE"` once and stay there.** The Claude Code Bash tool persists working directory across calls. Do not re-prepend `cd "$WORKTREE" && …` to later commands — the `cd` above is sticky. If a single shell pipeline genuinely needs to set CWD (rare — usually only `$()` subshells in unusual configs), `cd "$WORKTREE"` once at the top of that one command. Never nest a `cd "$WORKTREE"` inside `$(...)`.
+
+**Trust the inherited env.** The wrapper invokes `claude` with `PAGER=cat GIT_PAGER=cat` already set, and exports `GH_REPO="$REPO_SLUG"`. Both are inherited by every Bash subprocess. Do not re-prepend `PAGER=cat GIT_PAGER=cat ` to `gh`/`git` commands, and do not pass `--repo aniryou/loop` to `gh` — `gh` reads `GH_REPO` natively as the implicit repo. (The wrapper's own pre-/post-LLM `gh` calls still pass `--repo` for explicitness; that's wrapper code, not yours.)
+
 The branch name is deterministic per issue so retries reuse the branch (and therefore the existing PR picks up new commits automatically).
 
 ### Step 2 — Implement unit tests FIRST (TDD)
