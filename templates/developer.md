@@ -212,6 +212,7 @@ The branch name is deterministic per issue so retries reuse the branch (and ther
 - Do not refactor unrelated code. Do not add features beyond what the issue describes.
 - Follow conventions in the existing code (the project favors small, focused modules).
 - Re-run the full test suite. All tests — yours and pre-existing — must pass before moving on.
+- **Save test output once; do not re-run the test suite to re-aggregate.** Pipe each invocation through `tee` to a temp file (e.g. `pytest -q 2>&1 | tee /tmp/test-out.txt` or `bats tests/ 2>&1 | tee /tmp/test-out.txt`). To inspect failures, count passes, or examine specific cases, **`grep`/`cat` the saved file** — never re-invoke the test runner just to slice the same output differently. Re-invoke the runner **only when** (a) you've edited code since the last run, or (b) you genuinely need a different invocation (`-k pattern`, `--verbose`, a narrower test selection) — in which case `tee` to a fresh file. **Never chain two or more full-suite runs inside a single `Bash` tool call.** Each redundant `bats tests/` or `pytest` invocation costs ~2–4K tokens and several minutes; the saved file is free to re-read.
 - If you cannot make the tests pass after a reasonable effort, document why in the beads child issue and proceed to give-up handling (see below) rather than masking failures.
 
 ### Step 4 — Commit (pre-commit must pass)
@@ -229,6 +230,7 @@ The branch name is deterministic per issue so retries reuse the branch (and ther
 
   The `<short summary>` follows the same plain-English rules as the PR title in Step 5: ≤70 characters total (including the `Fix GH#<num>: ` prefix), no opaque insider acronyms (e.g. `TOCTOU`, `rc=2`, `dispatch:followup`), readable to someone scanning `git log`. If the issue title itself violates these rules (older issues filed before the plain-English rule landed), rewrite into plain English here — do not blindly copy the issue title into the commit subject.
 - Do **not** use `--no-verify`. If pre-commit modifies files (ruff auto-fix, EOF fixer, etc.), `git add` the changed files and commit again. If pre-commit fails for a reason you cannot fix (e.g., gitleaks flagging a real secret you accidentally added), abort the commit, remove the offending content, and retry.
+- **Save pre-commit output once; do not re-run to re-aggregate.** When pre-commit fails (either as a hook on `git commit` or when invoked directly via `pre-commit run --all-files`), pipe the run through `tee` to a temp file (e.g. `pre-commit run --all-files 2>&1 | tee /tmp/pre-commit-out.txt`) and identify the offending hook/file by `grep`/`cat` against the saved file — never re-invoke pre-commit just to inspect the same failure differently. Re-invoke only after you've edited the offending file. **Never chain two or more pre-commit runs in a single `Bash` tool call.**
 - Never bypass signing.
 
 ### Step 5 — Push and open the PR
@@ -477,6 +479,7 @@ If the reviewer flagged "test mirage" findings (P0): take them seriously. Don't 
 
 Same TDD discipline as Mode 1:
 - Run the full test suite locally. All tests must pass.
+- **Save test output once; do not re-run to re-aggregate.** Pipe through `tee` to a temp file (e.g. `pytest -q 2>&1 | tee /tmp/test-out.txt`) and inspect failures by `grep`/`cat` against the saved file. Re-invoke the runner only when you've edited code since the last run, or when you genuinely need a different invocation — never to slice the same output differently. **Never chain two or more full-suite runs in a single `Bash` tool call.**
 - Pre-commit must pass with **no** `--no-verify`.
 - Stage explicit files, never `git add -A`.
 
@@ -631,8 +634,10 @@ After all conflicts are resolved (and BEFORE `git rebase --continue`):
 
 ```bash
 cd "$WORKTREE"
-.venv/bin/python -m pytest -q   # or `pytest -q` if available; whatever the project uses
+.venv/bin/python -m pytest -q 2>&1 | tee /tmp/test-out.txt   # or `pytest -q` if available; whatever the project uses
 ```
+
+**Save test output once; do not re-run to re-aggregate.** The `tee` above saves the full run to `/tmp/test-out.txt`. To inspect failures, count passes, or pull a tail, **`grep`/`cat` the saved file** — never re-invoke `pytest` just to slice the same output differently. Re-invoke only when (a) you've edited code since the last run, or (b) you genuinely need a different invocation (`-k pattern`, `--verbose`) — in which case `tee` to a fresh file. **Never chain two or more full-suite runs in a single `Bash` tool call.** This rule also applies to the pre-resolution sanity check below.
 
 If tests pass: continue to R6.
 
