@@ -252,19 +252,33 @@ if [ "$MODE" = "default" ]; then
   unset CANDIDATES EL_RC
 fi
 
-# Mode 3 only: run the triage gate BEFORE invoking the LLM. If triage says
-# untractable, the wrapper itself escalates via gh and exits — no LLM call.
+# Mode 3 only: run the triage gate BEFORE invoking the LLM. The triage script's
+# exit codes are trichotomous (see runners/run-conflict-triage.sh:17):
+#   0 = tractable           → invoke LLM
+#   1 = untractable          → draft PR + post auto-resolution-declined comment
+#   2 = misuse / setup error → exit 2 only; do NOT draft, dispatch:conflicts
+#                              will re-test next cycle once the transient
+#                              gh/git outage clears.
+# Pre-fix (GH#57): bash `if`-zero/nonzero conflated rc=1 and rc=2, so a
+# transient `gh pr view` outage permanently drafted the PR with a misleading
+# "auto-resolution declined" comment. Same architectural shape as the rc=2
+# leak GH#27 fixed for eligibility predicates — transient infra failures must
+# not commit to permanent PR-state mutations.
 if [ "$MODE" = "resolve-conflicts" ]; then
   echo "[wrapper] running triage for PR #$TARGET_PR..."
-  if TRIAGE_OUTPUT=$("$LOOP_HOME/runners/run-conflict-triage.sh" "$TARGET_PR" 2>&1); then
-    echo "$TRIAGE_OUTPUT"
-    echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
-  else
-    echo "$TRIAGE_OUTPUT" >&2
-    REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
-    echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
-    PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
-      cat <<EOF
+  TRIAGE_OUTPUT=$("$LOOP_HOME/runners/run-conflict-triage.sh" "$TARGET_PR" 2>&1)
+  TRIAGE_RC=$?
+  case "$TRIAGE_RC" in
+    0)
+      echo "$TRIAGE_OUTPUT"
+      echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
+      ;;
+    1)
+      echo "$TRIAGE_OUTPUT" >&2
+      REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
+      echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
+      PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
+        cat <<EOF
 🤖 Conflict triage — auto-resolution declined.
 
 **Reason:** \`${REASON}\`
@@ -273,11 +287,22 @@ The triage rules deemed these merge conflicts not safe for autonomous resolution
 
 For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
 EOF
-    )" >/dev/null 2>&1 || true
-    PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
-    echo "[wrapper] result=triage-untractable pr=#${TARGET_PR} reason=${REASON}"
-    exit 1
-  fi
+      )" >/dev/null 2>&1 || true
+      PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+      echo "[wrapper] result=triage-untractable pr=#${TARGET_PR} reason=${REASON}"
+      exit 1
+      ;;
+    *)
+      # rc=2 (or any unexpected non-{0,1}) — transient setup failure: gh outage,
+      # git fetch failed, worktree creation failed. Don't draft, don't comment;
+      # dispatch:conflicts will re-test next cycle. Mirror the eligibility
+      # predicate rc=2 policy from GH#27.
+      echo "$TRIAGE_OUTPUT" >&2
+      echo "[wrapper] triage failed (rc=$TRIAGE_RC); transient setup error, skipping LLM and not drafting. Will retry next dispatcher cycle." >&2
+      echo "[wrapper] result=triage-failed pr=#${TARGET_PR} rc=${TRIAGE_RC}"
+      exit 2
+      ;;
+  esac
 fi
 
 # jq filter: turn each stream-json event into one human-readable line.

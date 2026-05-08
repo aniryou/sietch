@@ -15,6 +15,14 @@
 #
 # Usage: st triage <PR#>
 # Exit:  0 = tractable, 1 = untractable, 2 = misuse / setup error.
+#
+# Contract: the wrapper at runners/run-developer.sh branches on this exit code
+# with an explicit three-way `case` (rc=0 → invoke LLM, rc=1 → draft PR + post
+# auto-resolution-declined comment, rc=2 → exit only / no PR-state mutation).
+# Conflating rc=1 and rc=2 into a single "untractable" arm regresses GH#57:
+# transient gh/git outages permanently draft the PR with a misleading
+# explanation. If you change the exit codes here, update the wrapper's case
+# arms in lockstep.
 
 set -u
 set -o pipefail
