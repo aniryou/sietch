@@ -3,6 +3,18 @@
 A multi-agent dev loop for Claude Code, built on top of
 [beads](https://github.com/steveyegge/beads).
 
+## Why "loop"?
+
+Agentic engineering, as framed in Steve Yegge and Gene Kim's
+*Vibe Coding*, runs on three loops. The **inner loop** — write, run,
+debug a well-defined feature — is now fully automated by the dev
+agent. The **outer loop** — product direction and prioritization —
+stays a human responsibility. In between sits the **middle loop**:
+define ↔ implement ↔ test ↔ review, the back-and-forth between a
+junior and a senior engineer. That's what this framework automates,
+targeting ~95% of cases and leaving the genuinely complex ~5% to
+humans. Hence the name.
+
 ## What it does
 
 Given a GitHub repo with open issues labeled by severity, Loop runs four
