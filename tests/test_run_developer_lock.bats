@@ -76,7 +76,7 @@ STUB
   # mortem inspection of LOCK_DIR can't see it after the wrapper exits.
   cat > "$bin/claude" <<STUB
 #!/usr/bin/env bash
-echo "called pid=\$\$ target=\${DEV_AGENT_TARGET_ISSUE:-<unset>} run=\${DEV_AGENT_RUN_ID:-<unset>}" \\
+echo "called pid=\$\$ target=\${DEV_AGENT_TARGET_ISSUE:-<unset>} run=\${DEV_AGENT_RUN_ID:-<unset>} worktree=\${WORKTREE:-<unset>}" \\
   >> '$state/claude-calls'
 LOCK_FILE='$work/locks/test-repo-gh-'"\${DEV_AGENT_TARGET_ISSUE:-?}"'.lock/run_id'
 if [ -f "\$LOCK_FILE" ]; then
@@ -232,4 +232,28 @@ _run_wrapper() {
     0:2|2:0) : ;;
     *) printf 'unexpected (rc1, rc2) = (%s, %s)\n' "$rc1" "$rc2" >&2; return 1 ;;
   esac
+}
+
+@test "wrapper: exports WORKTREE=\${WORKTREE_BASE}/gh-\${DEV_AGENT_TARGET_ISSUE} for claude (GH#82)" {
+  # GH#82: the wrapper now precomputes the per-issue worktree path and
+  # exports it so the developer-agent template can use $WORKTREE everywhere
+  # instead of re-typing the literal /tmp/dev-agent/.../gh-N/... path 60+
+  # times per run. Saves ~680 chars per Mode 1 cycle.
+  local empty="$BATS_TEST_TMPDIR/empty.json"
+  echo '[]' > "$empty"
+  local high="$BATS_TEST_TMPDIR/single.json"
+  echo '[{"number":101,"assignees":[]}]' > "$high"
+  local root
+  root=$(_setup_env "$high" "$empty")
+
+  local rc=0
+  _run_wrapper "$root" || rc=$?
+
+  [ "$rc" -eq 0 ]
+  [ -f "$root/state/claude-calls" ]
+  # _setup_env sets WORKTREE_BASE to "$root/work" via the awk override of
+  # loop.config. With the wrapper picking issue 101, the exported value
+  # must be exactly "$root/work/gh-101".
+  grep -qF "worktree=$root/work/gh-101" "$root/state/claude-calls" \
+    || { echo "WORKTREE not exported: $(cat "$root/state/claude-calls")" >&2; false; }
 }

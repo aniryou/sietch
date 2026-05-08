@@ -244,6 +244,13 @@ if [ "$MODE" = "default" ]; then
         exit 2
       fi
       export DEV_AGENT_TARGET_ISSUE
+      # GH#82: export the per-issue worktree path so the developer-agent
+      # template can use $WORKTREE/<relpath> everywhere instead of re-typing
+      # the literal /tmp/dev-agent/.../gh-N/... 60+ times per Mode 1 cycle.
+      # WORKTREE_BASE comes from .loop/loop.config (sourced near line 62).
+      # Only Mode 1 sets DEV_AGENT_TARGET_ISSUE; Modes 2/3 derive ISSUE_NUM
+      # from the PR body, so they set $WORKTREE themselves in F3/R1.
+      export WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"
       echo "[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding"
       ;;
     1)
