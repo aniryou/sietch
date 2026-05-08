@@ -449,4 +449,25 @@ EOF
   PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
 fi
 
+# GH#49: hard-failure marker for Mode 2 (follow-up). When `claude` exits
+# non-zero (--max-turns hit, API outage, OOM, …) the LLM never reaches its
+# graceful exit comment ("🤖 Developer agent — follow-up complete|gave-up|
+# no-action"), so eligibility_followup_pr's verdict-aware gate sees the
+# review as still newer than the latest dev-comment and re-fires the LLM
+# every poll cycle on the same stuck PR (~$12-60/hr).
+#
+# Fix: post a stub failure marker from the wrapper. The body MUST start with
+# the DEV_AGENT_COMMENT_PREFIX ("🤖 Developer agent") so the predicate's
+# existing `startswith($prefix)` filter recognizes it as a dev-comment and
+# advances $latest_devcomment.createdAt past the review's submittedAt.
+#
+# Mode-1 hard failures don't need this — there's no PR yet, so there's
+# nothing for the dispatcher to re-fire on. Mode 3 hard failures are
+# already handled by the resolve-conflicts block above (GH#48) plus the
+# LLM's `gh pr ready --undo` paths (GH#44), which the conflicts dispatcher's
+# `isDraft == false` filter then excludes.
+if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
+  PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle." >/dev/null 2>&1 || true
+fi
+
 exit "$LLM_EXIT"
