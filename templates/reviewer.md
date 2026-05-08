@@ -54,7 +54,9 @@ bd create --title="Review PR #<num>: <title>" \
 bd create --title="PR#<num> step 1: gather context (diff, issue, CI)" --type=task --priority=2
 bd create --title="PR#<num> step 2: analyze for findings" --type=task --priority=2
 bd create --title="PR#<num> step 3: post review" --type=task --priority=2
-# add bd dep add for each child → $PARENT
+# Wire each child as a blocker of $PARENT so closing children unblocks the
+# parent. `bd dep add <blocked-id> <blocker-id>` — $PARENT goes first.
+bd dep add $PARENT <child>
 ```
 
 Mark each child `--claim` and `--status=in_progress` as you start, close as you finish.

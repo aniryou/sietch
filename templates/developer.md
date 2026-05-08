@@ -152,7 +152,7 @@ bd create \
 
 Capture the returned beads ID as `$PARENT`.
 
-Then create child issues for each step below (steps 1–6) and add `bd dep add <child> $PARENT` so the parent depends on each child being closed. Use parallel `bd create` calls where possible.
+Then create child issues for each step below (steps 1–6) and add `bd dep add $PARENT <child>` so the parent depends on each child being closed. (`bd dep add <blocked-id> <blocker-id>` — listing `$PARENT` first marks the parent blocked-by each child, the intended direction; the reversed form makes children blocked-by the parent and forces every step `bd close` to use `--force`.) Use parallel `bd create` calls where possible.
 
 ```bash
 bd create --title="GH#<num> step 1: create git worktree" --type=task --priority=<P> ...
