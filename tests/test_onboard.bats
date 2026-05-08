@@ -267,6 +267,43 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# check_worktree_base_unique — multi-repo collision guard (GH#74)
+#
+# Drops a .loop-owner marker inside WORKTREE_BASE on first run, naming this
+# repo. Subsequent runs from the same repo see their own marker and pass;
+# runs from a different repo pointed at the same WORKTREE_BASE see another
+# owner's marker and fail with a clear message.
+# ---------------------------------------------------------------------------
+
+@test "check_worktree_base_unique: passes on first run and drops owner marker" {
+  local base="$BATS_TEST_TMPDIR/wb-uniq"
+  printf '\nWORKTREE_BASE="%s"\n' "$base" >> "$REPO/.loop/loop.config"
+  run bash "$ONBOARD_LIB" check_worktree_base_unique
+  [ "$status" -eq 0 ]
+  [ -f "$base/.loop-owner" ]
+  grep -qFx 'test-owner/test-repo' "$base/.loop-owner"
+}
+
+@test "check_worktree_base_unique: passes on re-run from the same repo" {
+  local base="$BATS_TEST_TMPDIR/wb-uniq"
+  printf '\nWORKTREE_BASE="%s"\n' "$base" >> "$REPO/.loop/loop.config"
+  bash "$ONBOARD_LIB" check_worktree_base_unique  # first run: drops marker
+  run bash "$ONBOARD_LIB" check_worktree_base_unique  # second run: idempotent
+  [ "$status" -eq 0 ]
+}
+
+@test "check_worktree_base_unique: fails when another repo already owns the base" {
+  local base="$BATS_TEST_TMPDIR/wb-uniq"
+  printf '\nWORKTREE_BASE="%s"\n' "$base" >> "$REPO/.loop/loop.config"
+  mkdir -p "$base"
+  echo "other-org/other-repo" > "$base/.loop-owner"
+  run bash "$ONBOARD_LIB" check_worktree_base_unique
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qF '✗'
+  echo "$output" | grep -qF 'other-org/other-repo'
+}
+
+# ---------------------------------------------------------------------------
 # check_gh_auth
 # ---------------------------------------------------------------------------
 

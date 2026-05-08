@@ -61,6 +61,11 @@ REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
 
+# Default for older loop.config files predating GH#74. Sanitize via the
+# same rule used in lib/repo_id.sh so REPO_NAMEs containing `.` produce a
+# clean prefix even if the user hasn't re-rendered loop.config.example.
+: "${LOCK_NAME_PREFIX:=$(printf '%s' "${REPO_NAME:-}" | tr -c 'A-Za-z0-9_-' '-')-}"
+
 # Mode 1 only — preflight: skip the LLM if there are no eligible issues.
 # Modes 2/3 already arrive with a specific PR number and don't scan.
 # Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
@@ -160,10 +165,12 @@ cleanup() {
   git -C "$REPO" worktree prune 2>/dev/null || true
 
   # Release any per-issue locks owned by THIS wrapper run (DEV_AGENT_RUN_ID match).
-  # Locks are filesystem dirs at $LOCK_DIR/gh-<num>.lock; the agent
-  # writes our run id into <lock>/run_id when it acquires the lock.
+  # Locks are filesystem dirs at $LOCK_DIR/${LOCK_NAME_PREFIX}gh-<num>.lock;
+  # the wrapper writes this run's id into <lock>/run_id when it acquires
+  # the lock. Glob is repo-prefixed (GH#74) so a shared LOCK_DIR doesn't
+  # cause us to accidentally inspect another repo's lock dirs.
   if [ -d "$LOCK_DIR" ]; then
-    for lock in "$LOCK_DIR"/gh-*.lock; do
+    for lock in "$LOCK_DIR"/"${LOCK_NAME_PREFIX}"gh-*.lock; do
       [ -d "$lock" ] || continue
       if [ "$(cat "$lock/run_id" 2>/dev/null)" = "$DEV_AGENT_RUN_ID" ]; then
         echo "[wrapper] releasing lock $lock" >&2
@@ -217,9 +224,13 @@ if [ "$MODE" = "default" ]; then
       mkdir -p "$LOCK_DIR"
       DEV_AGENT_TARGET_ISSUE=""
       for _cand in $CANDIDATES; do
-        if mkdir "$LOCK_DIR/gh-${_cand}.lock" 2>/dev/null; then
-          echo "$DEV_AGENT_RUN_ID" >"$LOCK_DIR/gh-${_cand}.lock/run_id"
-          date -Iseconds >"$LOCK_DIR/gh-${_cand}.lock/started"
+        # Lock filename carries LOCK_NAME_PREFIX (GH#74) so two repos
+        # pointed at a shared LOCK_DIR don't false-positive on the same
+        # issue number. Default behaviour with per-repo WORKTREE_BASE is
+        # unchanged (the prefix just adds belt-and-suspenders).
+        if mkdir "$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock" 2>/dev/null; then
+          echo "$DEV_AGENT_RUN_ID" >"$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock/run_id"
+          date -Iseconds >"$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock/started"
           DEV_AGENT_TARGET_ISSUE="$_cand"
           break
         fi

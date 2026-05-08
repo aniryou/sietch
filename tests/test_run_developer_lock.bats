@@ -6,11 +6,12 @@
 # wrappers and one candidate, all N spawned `claude` and N-1 lost the lock
 # race after burning ~$0.20-$0.50 each (TOCTOU between count and mkdir).
 #
-# The fix moves `mkdir "$LOCK_DIR/gh-N.lock"` into the wrapper itself, before
-# `claude` is invoked. These tests exercise the wrapper end-to-end via PATH-
-# mocked `gh` and `claude` to confirm exactly one wrapper spawns the LLM
-# under contention, and that the wrapper pre-fills `DEV_AGENT_TARGET_ISSUE`
-# so the LLM skips the rediscovery flow.
+# The fix moves `mkdir "$LOCK_DIR/${LOCK_NAME_PREFIX}gh-N.lock"` into the
+# wrapper itself, before `claude` is invoked. These tests exercise the
+# wrapper end-to-end via PATH-mocked `gh` and `claude` to confirm exactly
+# one wrapper spawns the LLM under contention, and that the wrapper pre-
+# fills `DEV_AGENT_TARGET_ISSUE` so the LLM skips the rediscovery flow.
+# (LOCK_NAME_PREFIX added in GH#74 — defaults to "${REPO_NAME}-".)
 
 load 'helpers'
 
@@ -77,7 +78,7 @@ STUB
 #!/usr/bin/env bash
 echo "called pid=\$\$ target=\${DEV_AGENT_TARGET_ISSUE:-<unset>} run=\${DEV_AGENT_RUN_ID:-<unset>}" \\
   >> '$state/claude-calls'
-LOCK_FILE='$work/locks/gh-'"\${DEV_AGENT_TARGET_ISSUE:-?}"'.lock/run_id'
+LOCK_FILE='$work/locks/test-repo-gh-'"\${DEV_AGENT_TARGET_ISSUE:-?}"'.lock/run_id'
 if [ -f "\$LOCK_FILE" ]; then
   cp "\$LOCK_FILE" '$state/lock-run-id'
 fi
@@ -136,12 +137,13 @@ _run_wrapper() {
 }
 
 @test "wrapper: writes run_id into the acquired lock dir before invoking claude" {
-  # The lock contract: while claude is running, $LOCK_DIR/gh-N.lock/run_id
-  # contains the wrapper's DEV_AGENT_RUN_ID. The trap releases the lock on
-  # exit, so this test relies on the claude stub snapshotting the file
-  # mid-run. Without this evidence, the wrapper could "claim" issues without
-  # actually marking ownership and lock-release on exit would be unable to
-  # tell whose lock to release.
+  # The lock contract: while claude is running,
+  # $LOCK_DIR/${LOCK_NAME_PREFIX}gh-N.lock/run_id contains the wrapper's
+  # DEV_AGENT_RUN_ID. The trap releases the lock on exit, so this test
+  # relies on the claude stub snapshotting the file mid-run. Without this
+  # evidence, the wrapper could "claim" issues without actually marking
+  # ownership and lock-release on exit would be unable to tell whose lock
+  # to release.
   local empty="$BATS_TEST_TMPDIR/empty.json"
   echo '[]' > "$empty"
   local high="$BATS_TEST_TMPDIR/single.json"
@@ -153,7 +155,8 @@ _run_wrapper() {
   _run_wrapper "$root" || rc=$?
   [ "$rc" -eq 0 ]
 
-  # The claude stub copies /work/locks/gh-101.lock/run_id to state/lock-run-id
+  # The claude stub copies /work/locks/test-repo-gh-101.lock/run_id (per
+  # GH#74 LOCK_NAME_PREFIX, default "${REPO_NAME}-") to state/lock-run-id
   # BEFORE the wrapper's trap fires.
   [ -f "$root/state/lock-run-id" ]
   local stamped run_id_in_call
@@ -177,8 +180,9 @@ _run_wrapper() {
   local root
   root=$(_setup_env "$high" "$empty")
 
-  mkdir -p "$root/work/locks/gh-101.lock"
-  echo "other-run" > "$root/work/locks/gh-101.lock/run_id"
+  # GH#74: lock filename carries LOCK_NAME_PREFIX (default "${REPO_NAME}-").
+  mkdir -p "$root/work/locks/test-repo-gh-101.lock"
+  echo "other-run" > "$root/work/locks/test-repo-gh-101.lock/run_id"
 
   local rc=0
   _run_wrapper "$root" || rc=$?
@@ -187,8 +191,8 @@ _run_wrapper() {
   [ ! -e "$root/state/claude-calls" ]
   # The other run's lock untouched — the wrapper must not release a lock it
   # didn't acquire.
-  [ -d "$root/work/locks/gh-101.lock" ]
-  [ "$(cat "$root/work/locks/gh-101.lock/run_id")" = "other-run" ]
+  [ -d "$root/work/locks/test-repo-gh-101.lock" ]
+  [ "$(cat "$root/work/locks/test-repo-gh-101.lock/run_id")" = "other-run" ]
 }
 
 @test "wrapper: two parallel invocations on a single candidate → claude called exactly once" {

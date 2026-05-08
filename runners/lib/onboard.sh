@@ -261,6 +261,59 @@ check_worktree_base() {
 }
 
 # ---------------------------------------------------------------------------
+# check_worktree_base_unique — multi-repo collision guard (GH#74)
+#
+# Two `st loop start` fleets pointed at the same WORKTREE_BASE collide on
+# claim/dispatch lock filenames (issue/PR numbers are scoped to a repo,
+# but the locks are filesystem objects). The post-#74 default config
+# scopes WORKTREE_BASE per-repo so this is collision-free out of the
+# box, but a user who deliberately sets a shared base — or onboards two
+# repos with the same REPO_NAME — needs a loud, early failure rather
+# than a silent cross-repo lock mixup at runtime.
+#
+# Mechanism: drop a `.loop-owner` marker inside WORKTREE_BASE on first
+# successful run, naming this repo's REPO_SLUG. Subsequent runs from
+# the same repo see a matching marker and pass; runs from a different
+# repo see another owner's marker and fail with a copy-pasteable fix.
+# ---------------------------------------------------------------------------
+check_worktree_base_unique() {
+  local base="${WORKTREE_BASE:-/tmp/dev-agent}"
+  local marker="$base/.loop-owner"
+  local me="${REPO_SLUG:-}"
+  _v "inspecting marker $marker"
+
+  if [ -z "$me" ]; then
+    _fail check_worktree_base_unique "REPO_SLUG is unset (loop.config missing or malformed)" \
+      "fix .loop/loop.config first, then re-run"
+    return 1
+  fi
+
+  if [ -f "$marker" ]; then
+    local owner
+    owner=$(head -n1 "$marker" 2>/dev/null | tr -d '[:space:]')
+    if [ "$owner" = "$me" ]; then
+      _pass check_worktree_base_unique
+      return 0
+    fi
+    _fail check_worktree_base_unique "WORKTREE_BASE ($base) is already claimed by $owner" \
+      "set WORKTREE_BASE to a unique path in .loop/loop.config (default: /tmp/dev-agent/${REPO_OWNER:-OWNER}-${REPO_NAME:-REPO})"
+    return 1
+  fi
+
+  if ! mkdir -p "$base" 2>/dev/null; then
+    _fail check_worktree_base_unique "cannot create WORKTREE_BASE ($base)" \
+      "set WORKTREE_BASE in .loop/loop.config to a writable path"
+    return 1
+  fi
+  if ! printf '%s\n' "$me" > "$marker" 2>/dev/null; then
+    _fail check_worktree_base_unique "cannot write owner marker $marker" \
+      "verify $base is writable"
+    return 1
+  fi
+  _pass check_worktree_base_unique
+}
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 ONBOARD_CHECKS=(
@@ -273,6 +326,7 @@ ONBOARD_CHECKS=(
   check_workflows
   check_test_dir
   check_worktree_base
+  check_worktree_base_unique
 )
 
 onboard_run() {
@@ -312,6 +366,7 @@ Available checks:
   check_loop_config         check_beads             check_gh_auth
   check_labels              check_pre_commit_config check_pre_commit_hook
   check_workflows           check_test_dir          check_worktree_base
+  check_worktree_base_unique
 
 Flags:
   -v               Verbose: print the path each check inspected.

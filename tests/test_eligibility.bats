@@ -292,7 +292,9 @@ STUB
   local repo
   repo=$(make_repo)
   local lock_dir="$BATS_TEST_TMPDIR/some-locks"
-  mkdir -p "$lock_dir/gh-101.lock"
+  # GH#74: lock filenames now carry LOCK_NAME_PREFIX (defaults to
+  # "${REPO_NAME}-"); test-repo's prefix is "test-repo-".
+  mkdir -p "$lock_dir/test-repo-gh-101.lock"
   echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local tmpbin
   tmpbin=$(_make_gh_dev_stub \
@@ -310,7 +312,10 @@ STUB
   local repo
   repo=$(make_repo)
   local lock_dir="$BATS_TEST_TMPDIR/all-locks"
-  mkdir -p "$lock_dir/gh-101.lock" "$lock_dir/gh-102.lock" "$lock_dir/gh-103.lock"
+  # GH#74: prefixed filenames per LOCK_NAME_PREFIX (REPO_NAME="test-repo").
+  mkdir -p "$lock_dir/test-repo-gh-101.lock" \
+           "$lock_dir/test-repo-gh-102.lock" \
+           "$lock_dir/test-repo-gh-103.lock"
   echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local tmpbin
   tmpbin=$(_make_gh_dev_stub \
@@ -1560,13 +1565,15 @@ STUB
   grep -qE 'eligibility\.sh.* dev-candidates' "$LOOP_ROOT/runners/run-developer.sh"
 }
 
-@test "run-developer.sh: preflight does mkdir on \$LOCK_DIR/gh-*.lock" {
-  grep -qE 'mkdir[^|;&]*"\$LOCK_DIR/gh-' "$LOOP_ROOT/runners/run-developer.sh"
+@test "run-developer.sh: preflight does mkdir on \$LOCK_DIR/\${LOCK_NAME_PREFIX}gh-*.lock" {
+  # Lock filenames carry LOCK_NAME_PREFIX (GH#74) so two repos pointed at
+  # a shared LOCK_DIR don't false-positive on the same issue number.
+  grep -qE 'mkdir[^|;&]*"\$LOCK_DIR/(\$\{LOCK_NAME_PREFIX\})?gh-' "$LOOP_ROOT/runners/run-developer.sh"
 }
 
-@test "run-developer.sh: lock acquisition (mkdir LOCK_DIR/gh-) precedes claude invocation" {
+@test "run-developer.sh: lock acquisition (mkdir LOCK_DIR/.../gh-) precedes claude invocation" {
   local mkdir_line claude_line
-  mkdir_line=$(grep -nE 'mkdir[^|;&]*"\$LOCK_DIR/gh-' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  mkdir_line=$(grep -nE 'mkdir[^|;&]*"\$LOCK_DIR/(\$\{LOCK_NAME_PREFIX\})?gh-' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
   claude_line=$(grep -n '^[[:space:]]*claude -p' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
   [ -n "$mkdir_line" ]
   [ -n "$claude_line" ]
@@ -1582,7 +1589,7 @@ STUB
   # reopens the leak window.
   local trap_line mkdir_line
   trap_line=$(grep -nE '^trap cleanup' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
-  mkdir_line=$(grep -nE 'mkdir[^|;&]*"\$LOCK_DIR/gh-' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
+  mkdir_line=$(grep -nE 'mkdir[^|;&]*"\$LOCK_DIR/(\$\{LOCK_NAME_PREFIX\})?gh-' "$LOOP_ROOT/runners/run-developer.sh" | head -1 | cut -d: -f1)
   [ -n "$trap_line" ]
   [ -n "$mkdir_line" ]
   [ "$trap_line" -lt "$mkdir_line" ]

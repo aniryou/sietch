@@ -52,7 +52,7 @@ If an issue has no severity label, skip it.
 
 Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
-**Wrapper pre-lock shortcut.** If `DEV_AGENT_TARGET_ISSUE` is set in your environment, the wrapper has already filtered eligibility AND acquired the filesystem lock for that issue (it `mkdir`'d `${LOCK_DIR}/gh-${DEV_AGENT_TARGET_ISSUE}.lock` and stamped your `DEV_AGENT_RUN_ID` into its `run_id` file). Skip steps 0–3 below entirely:
+**Wrapper pre-lock shortcut.** If `DEV_AGENT_TARGET_ISSUE` is set in your environment, the wrapper has already filtered eligibility AND acquired the filesystem lock for that issue (it `mkdir`'d `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${DEV_AGENT_TARGET_ISSUE}.lock` and stamped your `DEV_AGENT_RUN_ID` into its `run_id` file). The `${LOCK_NAME_PREFIX}` segment (default `${REPO_NAME}-`) keeps locks repo-disambiguated when multiple repos share a `WORKTREE_BASE`. Skip steps 0–3 below entirely:
 
 - Set `ISSUE_NUM=$DEV_AGENT_TARGET_ISSUE` and proceed straight to "Mode 1: Per-issue Workflow" Step 0 (parent beads issue).
 - Do **not** re-run the eligibility predicate. Do **not** re-attempt the lock — you already own it. Do **not** scan for other candidates.
@@ -88,7 +88,7 @@ The unset-env steps below are the fallback path for direct `claude -p` invocatio
 
 The user may run two or more developer-agent processes in parallel. Both run as the same GitHub identity (the user's `gh` token), so **`gh issue edit --add-assignee "@me"` is NOT a working lock** — `--add-assignee` is idempotent for the same user, so both racing agents would believe they won.
 
-**When `DEV_AGENT_TARGET_ISSUE` is set, the wrapper already won the race** (the wrapper does the `mkdir` before invoking you, so by the time you start, you own the lock). Skip the lock-acquisition snippet below — it's the unwrapped-fallback path. Just proceed with the issue, and trust that `${LOCK_DIR}/gh-${DEV_AGENT_TARGET_ISSUE}.lock` exists and contains your `run_id`.
+**When `DEV_AGENT_TARGET_ISSUE` is set, the wrapper already won the race** (the wrapper does the `mkdir` before invoking you, so by the time you start, you own the lock). Skip the lock-acquisition snippet below — it's the unwrapped-fallback path. Just proceed with the issue, and trust that `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${DEV_AGENT_TARGET_ISSUE}.lock` exists and contains your `run_id`.
 
 Use a **filesystem lock** as the atomic primitive. `mkdir` is atomic — exactly one caller succeeds; everyone else gets `EEXIST`.
 
@@ -97,7 +97,9 @@ Use a **filesystem lock** as the atomic primitive. `mkdir` is atomic — exactly
 ISSUE_NUM=<chosen>
 LOCK_DIR=${WORKTREE_BASE}/locks
 mkdir -p "$LOCK_DIR"
-LOCK="$LOCK_DIR/gh-${ISSUE_NUM}.lock"
+# LOCK_NAME_PREFIX defaults to "${REPO_NAME}-" so two repos sharing a
+# WORKTREE_BASE don't collide on the same issue number.
+LOCK="$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${ISSUE_NUM}.lock"
 
 if mkdir "$LOCK" 2>/dev/null; then
   # Won the lock. Record who we are so the wrapper trap can release on exit.

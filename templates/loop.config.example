@@ -19,10 +19,24 @@ DEFAULT_BRANCH="main"
 # eligible PRs in the reviewer orchestrator and the dispatcher loops.
 BRANCH_PREFIX="dev-agent"
 
-# Per-issue worktrees live under WORKTREE_BASE. Must NOT be inside the repo.
-WORKTREE_BASE="/tmp/dev-agent"
+# Per-issue worktrees live under WORKTREE_BASE. Must NOT be inside the repo,
+# and must be UNIQUE per onboarded repo on this machine — two repos sharing
+# a base would collide on issue/PR numbers (e.g. issue #5 in repo A vs. #5
+# in repo B). The default below interpolates ${REPO_OWNER}/${REPO_NAME} so
+# `st init` defaults are already collision-free; override it only if you
+# deliberately want a shared base, and then take care to keep distinct
+# LOCK_NAME_PREFIX values below as defence-in-depth.
+WORKTREE_BASE="/tmp/dev-agent/${REPO_OWNER}-${REPO_NAME}"
 LOCK_DIR="${WORKTREE_BASE}/locks"
 DISPATCH_LOCK_DIR="${WORKTREE_BASE}/dispatched"
+
+# Defence-in-depth prefix for lock filenames inside LOCK_DIR and
+# DISPATCH_LOCK_DIR. Even when WORKTREE_BASE is misconfigured to a path
+# already used by another repo, locks stay disambiguated per repo because
+# this prefix appears in every claim/dispatch lock filename. Default
+# derivation strips `.` (GitHub permits dots in repo names) so a repo
+# called `lodash.debounce` produces a clean `lodash-debounce-` prefix.
+LOCK_NAME_PREFIX="${REPO_NAME//./-}-"
 
 # ---------------------------------------------------------------------------
 # Label scheme
