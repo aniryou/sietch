@@ -78,6 +78,10 @@ You can use the **AskUserQuestion** tool for structured multi-choice questions w
 The dev-agent expects this structure. Don't deviate without reason:
 
 ```markdown
+## TL;DR
+
+<1–2 sentences in plain English: what's wrong or missing, and why it matters. Written so a maintainer skimming the issues list — or the user a month later — can understand the work without insider context. No file paths, no insider acronyms; those live in `## Problem` and below.>
+
 ## Problem
 
 <2-4 sentences explaining what's wrong or missing AND why it matters. For severity:high, include the impact rationale up front. Quantify when possible ("every CFP run silently records D-correct questions as wrong").>
@@ -131,13 +135,22 @@ End-to-end:
 - Backticks for filenames, function names, labels, and code snippets.
 - Don't write more than the dev-agent needs. A 30-line issue with concrete citations is better than a 100-line issue with prose.
 
+**Title style** (the issue list is read by maintainers, contributors, and the user months later — write for that audience, not for someone debugging the change today):
+
+- Plain English. The title must be readable by someone unfamiliar with the codebase.
+- ≤70 characters. If you can't compress without losing meaning, the issue probably needs to be split.
+- No opaque insider acronyms or jargon (e.g. `TOCTOU`, `rc=2`, `dispatch:followup`, `thunder herd`). Common domain terms are fine: `CI`, `PR`, `dispatcher`, `worktree`, `lock`, `rebase`.
+- Lead with the user-visible effect or the change, not the internal mechanism. Bad: *"dispatch:followup wastes tokens after [reviewer-agent: clean] — no verdict-aware gate"*. Good: *"Stop reviewer agent looping on already-clean PRs"*.
+
+**TL;DR style:** 1–2 sentences in plain English at the top of the body, mirroring the same audience rule as the title. The TL;DR is what a reader sees first — file paths and `file:line` citations belong in `## Problem`, not here.
+
 ### Step 8 — Show the draft
 
-Output the full issue body inside a markdown code block, plus the proposed title and labels. Then ask:
+Output the full issue body inside a markdown code block, plus the proposed title and labels. Show the title on its own line above the body so it's easy to evaluate. Then ask:
 
-> Here's the draft. Confirm to create, or tell me what to change.
+> Here's the draft. Does the title read well in plain English (≤70 chars, no insider acronyms)? Confirm to create, or tell me what to change.
 
-If the user requests changes: revise, show again. Repeat until they say "create it" (or equivalent).
+If the user's raw description is jargon-heavy, do **not** copy it into the title — rewrite into plain English first and surface the rewrite in the preview so the user can compare. If the user requests changes: revise, show again. Repeat until they say "create it" (or equivalent).
 
 ### Step 9 — Create the issue
 
@@ -177,6 +190,27 @@ When in doubt about structure, look at:
 - **#11** (Wire pytest into CI) — small, scoped, with explicit dependency on #10.
 
 These represent the issue quality bar.
+
+### Title and TL;DR examples
+
+Past issues that landed before the plain-English rule make good before/after pairs. The "before" titles are real (issues #27, #29, #31, #44); they are precise but require deep insider context. The "after" titles compress to the user-visible effect.
+
+- **Before:** *"wrapper rc=2 policy 'proceed to be safe' leaks tokens on any transient predicate failure; should skip + back off"* (#27)
+  **After:** *"Skip and back off when the eligibility check fails transiently"*
+  **TL;DR:** *The wrapper currently spends tokens running the agent even when its eligibility check failed. We should treat a failed check as "no work" and back off, the same way we do when there's genuinely nothing to do.*
+
+- **Before:** *"dev-agent backoff sleep has no jitter — N parallel panes converge to a thunder herd, losing N-1 lock races per cycle"* (#29)
+  **After:** *"Add jitter to dev-agent retry sleep so parallel runs don't collide"*
+  **TL;DR:** *When several dev-agent panes wake up together, they all retry at the same instant and fight over the same lock. Adding a small random delay spreads the wake-ups and lets each pane make progress.*
+
+- **Before:** *"dispatch:conflicts re-fires LLM every cycle on a Mode-3-aborted PR — abort paths don't draft, no progress-aware gate"* (#44)
+  **After:** *"Stop re-running conflict resolution on PRs that already gave up"*
+  **TL;DR:** *Once the conflict resolver has aborted a PR, the dispatcher keeps invoking it on every cycle and burns tokens for no progress. The dispatcher should remember the abort and skip until the PR moves.*
+
+What to take from these:
+- The "after" title names a user-visible behavior change, not the mechanism.
+- The TL;DR explains the symptom and the fix in plain language; mechanisms (`rc=2`, `dispatch:conflicts`, lock-race details) live in `## Problem` and `## Current behavior`.
+- It is fine for the same TL;DR to point at a `severity:high` issue and a `severity:low` issue — severity is set by the rubric (Step 4), not the title.
 
 ## When you're done
 
