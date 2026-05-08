@@ -57,7 +57,7 @@ Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 - Set `ISSUE_NUM=$DEV_AGENT_TARGET_ISSUE` and proceed straight to "Mode 1: Per-issue Workflow" Step 0 (parent beads issue).
 - Do **not** re-run the eligibility predicate. Do **not** re-attempt the lock — you already own it. Do **not** scan for other candidates.
 - **Trust wrapper-set state — do not re-verify.** The wrapper has already printed `[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding` before invoking you (`runners/run-developer.sh`). Do **not** `echo $DEV_AGENT_TARGET_ISSUE` / `echo $DEV_AGENT_RUN_ID` to confirm the env vars. Do **not** `ls "$LOCK_DIR/..."` or `cat "$LOCK_DIR/.../run_id"` to confirm the lock. The kickoff message and these instructions are authoritative — verifying them again is pure waste. Proceed straight to `gh issue view`.
-- Read the issue body via `gh issue view "$ISSUE_NUM" --repo ${REPO_SLUG} --json title,body,labels` to capture severity and acceptance criteria.
+- Read the issue body via `gh issue view "$ISSUE_NUM" --json title,body,labels` to capture severity and acceptance criteria.
 
 The unset-env steps below are the fallback path for direct `claude -p` invocations (no wrapper).
 
@@ -72,9 +72,9 @@ The unset-env steps below are the fallback path for direct `claude -p` invocatio
 
 1. **Full scan** (only reached if the gate found candidates) — run both queries once:
    ```bash
-   gh issue list --repo ${REPO_SLUG} --state open \
+   gh issue list --state open \
      --label "${SEVERITY_LABEL_HIGH}" --json number,title,assignees --limit 50
-   gh issue list --repo ${REPO_SLUG} --state open \
+   gh issue list --state open \
      --label "${SEVERITY_LABEL_MEDIUM}" --json number,title,assignees --limit 50
    ```
    Per the `--json` field-discipline rule above, `labels` is dropped (the `--label` filter already guarantees it) and `url` is dropped (derivable as `https://github.com/${REPO_SLUG}/issues/<num>`).
@@ -123,7 +123,7 @@ fi
 After acquiring the lock, you may also `gh issue edit <num> --add-assignee "@me"` for **human visibility** (so a human looking at the issue board sees it's claimed) — but treat it as cosmetic, not as the lock.
 
 ```bash
-gh issue edit "$ISSUE_NUM" --repo ${REPO_SLUG} --add-assignee "@me"
+gh issue edit "$ISSUE_NUM" --add-assignee "@me"
 bd remember "developer-agent claimed GitHub issue #${ISSUE_NUM} at $(date -Iseconds) (run=${DEV_AGENT_RUN_ID:-unknown})"
 ```
 
@@ -204,6 +204,10 @@ cd "$WORKTREE"
 ```
 
 **All subsequent file reads, edits, and writes must use the worktree path** (`$WORKTREE/<relpath>`), not the canonical repo path under `$REPO`. The harness keys "have I read this?" by absolute path string, so a Read of the canonical-repo path does not satisfy a later Edit of the same logical file at the worktree path — the first edit per file errors with "File has not been read yet" and forces a redundant Read. This applies in Mode 2 (F3) and Mode 3 (R1) too, where `$WORKTREE` is recreated against the PR branch.
+
+**`cd "$WORKTREE"` once and stay there.** The Claude Code Bash tool persists working directory across calls. Do not re-prepend `cd "$WORKTREE" && …` to later commands — the `cd` above is sticky. If a single shell pipeline genuinely needs to set CWD (rare — usually only `$()` subshells in unusual configs), `cd "$WORKTREE"` once at the top of that one command. Never nest a `cd "$WORKTREE"` inside `$(...)`. **This rule applies to Mode 2 (F3) and Mode 3 (R1) too** — there is exactly one legitimate `cd "$WORKTREE"` per worktree creation; everything after that is sticky.
+
+**Trust the inherited env.** The wrapper invokes `claude` with `PAGER=cat GIT_PAGER=cat` already set, and exports `GH_REPO="$REPO_SLUG"`. Both are inherited by every Bash subprocess. Do not re-prepend `PAGER=cat GIT_PAGER=cat ` to `gh`/`git` commands, and do not pass `--repo ${REPO_SLUG}` to `gh` — `gh` reads `GH_REPO` natively as the implicit repo. **This rule applies across all modes** (Mode 1, Mode 2 follow-up, Mode 3 conflict resolution) — wherever you invoke `gh`. The example `gh` invocations later in this template have therefore been written without `--repo`; if you find yourself adding it, that's the anti-pattern. (The wrapper's own pre-/post-LLM `gh` calls in `run-developer.sh` still pass `--repo` for explicitness; that's wrapper code, not yours.)
 
 The branch name is deterministic per issue so retries reuse the branch (and therefore the existing PR picks up new commits automatically).
 
@@ -292,7 +296,7 @@ Then push and open the PR pointing at the file:
 ```bash
 git push -u origin "$BRANCH"
 # /tmp/pr-body-<num>.md was written above (Write tool / cat-into-file).
-gh pr create --repo ${REPO_SLUG} \
+gh pr create \
   --base main --head "$BRANCH" \
   --title "Fix GH#<num>: <plain-English summary>" \
   --body-file /tmp/pr-body-<num>.md
@@ -305,7 +309,7 @@ Record the PR number as `$PR`.
 Poll CI on the PR. Do not sleep blindly forever.
 
 ```bash
-gh pr checks <PR> --repo ${REPO_SLUG} --watch
+gh pr checks <PR> --watch
 ```
 
 If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr checks <PR> --json state,bucket` every ~60s, with a hard timeout (e.g., 30 minutes) before treating it as a failure. (`gh pr checks` exposes `bucket` — `pass` / `fail` / `pending` / `skipping` / `cancel` — not the GH-API-style `conclusion` field that `pr view` / `pr status` use; requesting `conclusion` here would error with `Unknown JSON field`.)
@@ -314,14 +318,14 @@ If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr ch
 
 When all required checks are green:
 
-1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. `Edit` `/tmp/pr-body-<num>.md` (the same file Step 5 wrote), then `gh pr edit "$PR" --repo ${REPO_SLUG} --body-file /tmp/pr-body-<num>.md`. Never `--body "$NEW_BODY"` with the body inlined — same context-bloat reason as Step 5. Do not change section structure or invent new sections — keep the format identical to Step 5's template. **Never re-fetch the body via `gh pr view ... --json body` to "verify" between edits — `cat` the local file (Step 5 wrote it; nothing has changed it since except your own `Edit`). Never invoke `gh pr edit ... --body-file` more than once per Step 7a cycle.**
+1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. `Edit` `/tmp/pr-body-<num>.md` (the same file Step 5 wrote), then `gh pr edit "$PR" --body-file /tmp/pr-body-<num>.md`. Never `--body "$NEW_BODY"` with the body inlined — same context-bloat reason as Step 5. Do not change section structure or invent new sections — keep the format identical to Step 5's template. **Never re-fetch the body via `gh pr view ... --json body` to "verify" between edits — `cat` the local file (Step 5 wrote it; nothing has changed it since except your own `Edit`). Never invoke `gh pr edit ... --body-file` more than once per Step 7a cycle.**
 2. Lift the PR back to ready-for-review if any prior failure path had drafted it. Defensive in Mode 1 (a fresh PR opened in Step 5 is normally not draft), but the symmetry removes a class of "the agent forgot to flip it back" failures. Skip on `CONFLICTING` (original conflict still present — drafting is correct) and `UNKNOWN` (GitHub still recomputing — leave alone rather than race):
    ```bash
-   DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
+   DRAFT_MERGEABLE=$(gh pr view "$PR" --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
    DRAFT=$(echo "$DRAFT_MERGEABLE" | cut -f1)
    MERGEABLE=$(echo "$DRAFT_MERGEABLE" | cut -f2)
    if [ "$DRAFT" = "true" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
-     gh pr ready "$PR" --repo ${REPO_SLUG} || true
+     gh pr ready "$PR" || true
    fi
    ```
 3. Merge is **not** your responsibility — leave that to the user, unless the user has explicitly enabled auto-merge for the repo. Do **not** force-merge.
@@ -347,7 +351,7 @@ Increment the attempt counter. If `attempts < ${DEV_CI_RETRY_ATTEMPTS}`:
 
 1. Read the failed CI logs:
    ```bash
-   gh run view --repo ${REPO_SLUG} --log-failed <run-id>
+   gh run view --log-failed <run-id>
    ```
 2. Diagnose the root cause. Update the beads parent with `bd update <PARENT> --notes="attempt <n> failed: <root cause>"`.
 3. Re-open / re-claim child step 2 (tests) and/or step 3 (impl) and go back to **Step 2**. Reuse the same branch and worktree — do **not** create a new one. Each retry adds a new commit on the branch (the existing PR will pick it up automatically).
@@ -364,7 +368,7 @@ Stop trying. Then:
    - Mark the PR as draft (`gh pr ready --undo <PR>`) so it is clearly not mergeable.
 
    ```bash
-   gh pr comment <PR> --repo ${REPO_SLUG} --body "$(cat <<'EOF'
+   gh pr comment <PR> --body "$(cat <<'EOF'
    ${DEV_AGENT_COMMENT_PREFIX} giving up after ${DEV_CI_RETRY_ATTEMPTS} CI attempts.
 
    ## Attempts
@@ -379,7 +383,7 @@ Stop trying. Then:
    - <specific files / tests to investigate>
    EOF
    )"
-   gh pr ready --undo <PR> --repo ${REPO_SLUG}
+   gh pr ready --undo <PR>
    ```
 
 2. Add a comment on the GitHub issue pointing to the PR and noting the give-up status. Do **not** close the issue.
@@ -402,10 +406,10 @@ REPO=$REPO_ROOT
 # PR body — only field needed in F0/F1 (Closes #N, Beads: <id> live here).
 # Per the `--json` field-discipline rule: don't preemptively pull title /
 # headRefName / headRefOid / isDraft / url. F3 fetches headRefName on demand.
-gh pr view "$PR" --repo ${REPO_SLUG} --json body
+gh pr view "$PR" --json body
 
 # Latest review (reviewer agent's most recent)
-gh pr view "$PR" --repo ${REPO_SLUG} --json reviews -q '.reviews[-1]'
+gh pr view "$PR" --json reviews -q '.reviews[-1]'
 ```
 
 Extract from the PR body:
@@ -433,7 +437,7 @@ CYCLES=$(bd memories "developer-agent follow-up:PR#$PR" 2>/dev/null | grep -c "d
 If `CYCLES >= ${DEV_FOLLOWUP_CYCLE_LIMIT}`: **give up.** Post a follow-up comment listing the ${DEV_FOLLOWUP_CYCLE_LIMIT} cycle attempts and the unresolved findings, mark the parent beads issue blocked, flag for human. Then exit.
 
 ```bash
-gh pr comment "$PR" --repo ${REPO_SLUG} --body "$(cat <<'EOF'
+gh pr comment "$PR" --body "$(cat <<'EOF'
 ${DEV_AGENT_COMMENT_PREFIX} — giving up on follow-up after ${DEV_FOLLOWUP_CYCLE_LIMIT} cycles.
 
 The reviewer agent and I have iterated ${DEV_FOLLOWUP_CYCLE_LIMIT} times without convergence on this PR. Flagging for human review.
@@ -469,7 +473,7 @@ The worktree path is deterministic per issue: `${WORKTREE_BASE}/gh-<issue#>`. It
 
 ```bash
 WORKTREE=${WORKTREE_BASE}/gh-<issue#>
-BRANCH=$(gh pr view "$PR" --repo ${REPO_SLUG} --json headRefName -q .headRefName)
+BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
 
 git -C "$REPO" fetch origin
 
@@ -526,7 +530,7 @@ EOF
 
 ```bash
 git push origin "$BRANCH"
-gh pr checks "$PR" --repo ${REPO_SLUG} --watch
+gh pr checks "$PR" --watch
 ```
 
 If CI fails: use the **same Step 7b retry semantics** as Mode 1 (5 attempts on the same branch, no new branch). If still failing after 5 attempts: same give-up handling — post a comment, mark the PR draft, flag bd human, exit. Do **not** count CI retries against the 3-cycle follow-up cap; they're orthogonal.
@@ -536,7 +540,7 @@ If CI fails: use the **same Step 7b retry semantics** as Mode 1 (5 attempts on t
 This comment signals the reviewer agent that there are new commits to re-review.
 
 ```bash
-gh pr comment "$PR" --repo ${REPO_SLUG} --body "$(cat <<'EOF'
+gh pr comment "$PR" --body "$(cat <<'EOF'
 ${DEV_AGENT_COMMENT_PREFIX} — follow-up cycle <n>
 
 ## Fixed
@@ -560,11 +564,11 @@ If you had no declines, omit the "Declined" section. If you had no fixes (someho
 Lift the PR back to ready-for-review if a prior failure path (most commonly the wrapper's triage-untractable draft from `runners/run-developer.sh:321`) had drafted it. This is the gap that left PR #81 stuck after a clean follow-up cycle. Skip on `CONFLICTING` (the original conflict is still present — drafting is correct) and `UNKNOWN` (GitHub is mid-recompute — leave alone rather than race):
 
 ```bash
-DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
+DRAFT_MERGEABLE=$(gh pr view "$PR" --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
 DRAFT=$(echo "$DRAFT_MERGEABLE" | cut -f1)
 MERGEABLE=$(echo "$DRAFT_MERGEABLE" | cut -f2)
 if [ "$DRAFT" = "true" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
-  gh pr ready "$PR" --repo ${REPO_SLUG} || true
+  gh pr ready "$PR" || true
 fi
 ```
 
@@ -593,7 +597,7 @@ Same path as Mode 1/2: `${WORKTREE_BASE}/gh-<ISSUE_NUM>`. Hard-reset to the PR's
 ```bash
 REPO=$REPO_ROOT
 WORKTREE=${WORKTREE_BASE}/gh-${ISSUE_NUM}
-BRANCH=$(gh pr view "$PR" --repo ${REPO_SLUG} --json headRefName -q .headRefName)
+BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
 
 git -C "$REPO" fetch origin
 
@@ -642,7 +646,7 @@ If you abort:
 ```bash
 git -C "$WORKTREE" rebase --abort
 
-gh pr comment "$PR" --repo ${REPO_SLUG} --body "$(cat <<'EOF'
+gh pr comment "$PR" --body "$(cat <<'EOF'
 🤖 Mode 3 conflict resolution — aborted (ambiguous intent).
 
 The triage script flagged these conflicts as mechanically tractable (≤ 10 lines, not in test/CI/core files), but on inspection the changes have overlapping intent that I can't safely auto-resolve. Specifically:
@@ -656,7 +660,7 @@ EOF
 # Draft the PR so the conflicts dispatcher's `isDraft == false` filter
 # excludes it next cycle — otherwise the same tractable-but-ambiguous
 # conflict re-fires this LLM every loop until a human intervenes.
-gh pr ready --undo "$PR" --repo ${REPO_SLUG} || true
+gh pr ready --undo "$PR" || true
 
 bd update <PARENT> --status=blocked --notes="Mode 3 aborted: ambiguous conflict intent on PR #$PR"
 bd human <PARENT>
@@ -669,7 +673,6 @@ Then exit with `result=conflict-aborted-ambiguous`.
 After all conflicts are resolved (and BEFORE `git rebase --continue`):
 
 ```bash
-cd "$WORKTREE"
 .venv/bin/python -m pytest -q 2>&1 | tee /tmp/test-out.txt   # or `pytest -q` if available; whatever the project uses
 ```
 
@@ -682,7 +685,7 @@ If tests fail: **auto-revert.** The remote hasn't been touched yet, so just abor
 ```bash
 git -C "$WORKTREE" rebase --abort
 
-gh pr comment "$PR" --repo ${REPO_SLUG} --body "$(cat <<EOF
+gh pr comment "$PR" --body "$(cat <<EOF
 🤖 Mode 3 conflict resolution — aborted (post-resolution test failure).
 
 I resolved the conflicts mechanically per triage rules, but the test suite failed against the resolved tree. This means either: (a) my resolution was semantically wrong, or (b) there's a real incompatibility between this PR and recent main that needs human judgment.
@@ -697,7 +700,7 @@ EOF
 
 # Draft the PR so the conflicts dispatcher's `isDraft == false` filter
 # excludes it next cycle — same rationale as the ambiguous-intent abort.
-gh pr ready --undo "$PR" --repo ${REPO_SLUG} || true
+gh pr ready --undo "$PR" || true
 
 bd update <PARENT> --status=blocked --notes="Mode 3 aborted: tests failed after resolution on PR #$PR"
 bd human <PARENT>
@@ -733,7 +736,7 @@ Same Step 7b retry semantics as Mode 1/2 (5 attempts).
 # Force the remote back to PRE_SHA. The lease here uses the current (failed) NEW_SHA.
 git -C "$WORKTREE" push --force-with-lease="${BRANCH}:${NEW_SHA}" origin "${PRE_SHA}:${BRANCH}"
 
-gh pr comment "$PR" --repo ${REPO_SLUG} --body "$(cat <<EOF
+gh pr comment "$PR" --body "$(cat <<EOF
 🤖 Mode 3 conflict resolution — aborted (CI failure post-resolution).
 
 Local tests passed but CI failed after force-push. Reverted the remote branch to its pre-resolution state ($PRE_SHA) so the PR is back to its original conflict — please resolve manually.
@@ -746,7 +749,7 @@ EOF
 # excludes it next cycle — the remote was reverted to PRE_SHA so the PR is
 # back in its original conflict state, which would otherwise re-match the
 # dispatcher and re-fire this LLM.
-gh pr ready --undo "$PR" --repo ${REPO_SLUG} || true
+gh pr ready --undo "$PR" || true
 
 bd update <PARENT> --status=blocked --notes="Mode 3 aborted: CI failed after resolution on PR #$PR"
 bd human <PARENT>
@@ -759,7 +762,7 @@ Then exit with `result=conflict-aborted-ci-failure`.
 If we got here, CI is green. Post one comment on the PR documenting exactly what was resolved:
 
 ```bash
-gh pr comment "$PR" --repo ${REPO_SLUG} --body "$(cat <<EOF
+gh pr comment "$PR" --body "$(cat <<EOF
 🤖 Mode 3 conflict resolution — complete.
 
 Rebased \`$BRANCH\` onto \`origin/main\`. Resolved $CONFLICT_COUNT mechanical conflict(s):
@@ -782,11 +785,11 @@ This comment is critical — both the human and the reviewer agent need it to un
 Lift the PR back to ready-for-review if a prior failure path had drafted it. Mode 3 itself only runs after triage said tractable (so the wrapper didn't draft on this cycle), but a follow-up Mode 3 on a previously-drafted PR has the same gap, so the symmetry matters. Skip on `CONFLICTING` (original conflict still present — drafting is correct) and `UNKNOWN` (GitHub is mid-recompute — leave alone rather than race):
 
 ```bash
-DRAFT_MERGEABLE=$(gh pr view "$PR" --repo ${REPO_SLUG} --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
+DRAFT_MERGEABLE=$(gh pr view "$PR" --json isDraft,mergeable -q '[.isDraft, .mergeable] | @tsv')
 DRAFT=$(echo "$DRAFT_MERGEABLE" | cut -f1)
 MERGEABLE=$(echo "$DRAFT_MERGEABLE" | cut -f2)
 if [ "$DRAFT" = "true" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
-  gh pr ready "$PR" --repo ${REPO_SLUG} || true
+  gh pr ready "$PR" || true
 fi
 ```
 
@@ -838,10 +841,10 @@ When you trip a safety-net rule, before exiting you MUST also tag the GitHub iss
 ```bash
 # Idempotent label create + apply. --force makes create a no-op if the label
 # already exists, so this is safe to run repeatedly.
-gh label create "${BLOCKED_HUMAN_LABEL}" --repo "${REPO_SLUG}" \
+gh label create "${BLOCKED_HUMAN_LABEL}" \
   --color d73a4a --description "Blocked on human action; dev-agent will skip" \
   --force >/dev/null 2>&1 || true
-gh issue edit <ISSUE_NUM> --repo "${REPO_SLUG}" --add-label "${BLOCKED_HUMAN_LABEL}"
+gh issue edit <ISSUE_NUM> --add-label "${BLOCKED_HUMAN_LABEL}"
 ```
 
 A human can `gh issue edit <N> --remove-label ${BLOCKED_HUMAN_LABEL}` once the

@@ -364,6 +364,11 @@ echo
 #      trap can kill claude+tee+jq with one `kill -- -<pgid>` syscall.
 # Without (1), `kill <wrapper-pid>` hangs the wrapper. Without (2), the
 # children survive the trap and re-parent to PID 1.
+#
+# GH#80: export GH_REPO so the agent's `gh` calls don't need `--repo …`.
+# Inherited by claude and every Bash subprocess the agent spawns. Cuts
+# ~70 chars of pure-boilerplate prefix from every gh tool call.
+export GH_REPO="$REPO_SLUG"
 set -m
 (
   PAGER=cat GIT_PAGER=cat \
