@@ -43,15 +43,22 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# conflict dispatcher: dev-agent/* PRs that are CONFLICTING and not draft
+# conflict dispatcher: dev-agent/* PRs that are not draft. Mergeable state
+# is intentionally NOT filtered here — `gh pr list`'s `mergeable` is
+# "UNKNOWN" until each PR is individually probed by `gh pr view`, so any
+# pre-filter on mergeable silently drops actually-conflicting PRs (see
+# GH#58). The authoritative conflict check is run-conflict-triage.sh's
+# `git rebase`, which short-circuits cheaply on no-conflict PRs.
 # ---------------------------------------------------------------------------
 
-@test "conflicts filter: keeps only non-draft CONFLICTING dev-agent PRs" {
+@test "conflicts filter: keeps non-draft dev-agent PRs regardless of mergeable" {
   local filter nums
   filter=$(_dispatch_conflicts_jq "dev-agent")
   nums=$(jq -r "$filter" < "$LOOP_ROOT/tests/fixtures/gh/prs-dispatch.json" | tr '\n' ' ')
-  # Fixture: only 13 is dev-agent/* AND non-draft AND CONFLICTING.
-  [ "$nums" = "13 " ]
+  # Same set as followup/merge filters — triage's rebase is the source of
+  # truth for whether a conflict exists. 11 (MERGEABLE), 13 (CONFLICTING)
+  # both pass; drafts (12, 14) and non-dev-agent (15, 16) are dropped.
+  [ "$nums" = "11 13 " ]
 }
 
 @test "conflicts filter: drops drafts even when conflicting" {
@@ -71,6 +78,28 @@ setup() {
   [ -z "$nums" ]
   nums=$(jq -r "$filter" <<<'[{"number":1,"headRefName":"dev-agent/gh-1-x","mergeable":"CONFLICTING","isDraft":false}]')
   [ "$nums" = "1" ]
+}
+
+@test "conflicts filter: emits PR with mergeable=UNKNOWN (GH#58 gh-list cache trap)" {
+  # `gh pr list --json mergeable` returns "UNKNOWN" for any PR whose
+  # mergeability hasn't been individually probed since main moved. Pre-fix,
+  # the filter's `select(.mergeable == "CONFLICTING")` clause dropped these
+  # silently — every actually-conflicting PR was filtered out before triage.
+  # Post-fix, the filter must emit them so `run-conflict-triage.sh`'s rebase
+  # can decide authoritatively.
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent")
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"dev-agent/foo","mergeable":"UNKNOWN","isDraft":false}]')
+  [ "$nums" = "99" ]
+  # CONFLICTING preserved.
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"dev-agent/foo","mergeable":"CONFLICTING","isDraft":false}]')
+  [ "$nums" = "99" ]
+  # Non-dev-agent prefix still excluded even when UNKNOWN.
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"feature/x","mergeable":"UNKNOWN","isDraft":false}]')
+  [ -z "$nums" ]
+  # Drafted UNKNOWN still excluded.
+  nums=$(jq -r "$filter" <<<'[{"number":99,"headRefName":"dev-agent/foo","mergeable":"UNKNOWN","isDraft":true}]')
+  [ -z "$nums" ]
 }
 
 @test "conflicts filter: empty input emits nothing" {
