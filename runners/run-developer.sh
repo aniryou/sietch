@@ -129,6 +129,7 @@ PRE_WORKTREES=$(git -C "$REPO" worktree list --porcelain | awk '/^worktree/ {pri
 PIPELINE_PID=""
 PIPELINE_PGID=""
 
+# shellcheck disable=SC2329 # invoked via `trap cleanup EXIT INT TERM` below
 cleanup() {
   local exit_code=$?
   echo "[wrapper] agent exited with code $exit_code; cleaning up..." >&2
@@ -327,3 +328,38 @@ PIPELINE_PGID=$(pipeline_capture_pgid "$PIPELINE_PID")
 set +m
 
 wait "$PIPELINE_PID"
+LLM_EXIT=$?
+
+# GH#48 — Mode 3 hard-failure fallback. The prompt's three graceful Mode 3
+# abort blocks (templates/developer.md: ambiguous-intent, post-resolution
+# test failure, post-force-push CI failure) each draft the PR themselves so
+# _dispatch_conflicts_jq's `isDraft == false` filter excludes it next cycle
+# (GH#44, fixed in PR #45). Hard failures — `--max-turns DEV_MAX_TURNS`
+# exceeded mid-resolution, claude API outage, OOM during pytest, bash crash
+# inside a tool call — never reach those abort blocks; the LLM exits
+# non-zero with the PR still mergeable=CONFLICTING + isDraft=false. Without
+# this fallback, dispatch:conflicts re-fires Mode 3 every cycle on the same
+# stuck PR (~$0.50-$2.00 per run), and the empty-cycle backoff in
+# run-loop.sh stays disarmed because each dispatch counts as `dispatched=1`
+# even when the LLM crashed. Mirror the abort-block fix at the wrapper
+# level so ungraceful aborts also draft. Precedent: the triage-untractable
+# wrapper-side draft above.
+if [ "$MODE" = "resolve-conflicts" ] && [ "$LLM_EXIT" -ne 0 ]; then
+  # Pre-build the comment body in a variable rather than `--body "$(cat <<EOF...)"`
+  # because bash's $(...) parser tokenizes the heredoc body up-front and trips
+  # on unbalanced apostrophes ("won't"). Using a plain heredoc-into-var is the
+  # well-known workaround. The body MUST start with the same '🤖 Mode 3
+  # conflict resolution — aborted' marker prefix the prompt's graceful aborts
+  # use, so log-scrapers / dashboards keyed on that prefix pick this up too.
+  HARD_FAIL_BODY=$(
+    cat <<EOF
+🤖 Mode 3 conflict resolution — aborted (agent run failed mid-flow, exit=${LLM_EXIT}).
+
+The dev-agent did not reach a graceful abort block (likely max-turns exceeded, claude API failure, or OOM kill). Drafting this PR so the conflicts dispatcher will not re-fire the LLM on the next cycle. Please resolve manually or re-attempt after investigation.
+EOF
+  )
+  PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$HARD_FAIL_BODY" >/dev/null 2>&1 || true
+  PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+fi
+
+exit "$LLM_EXIT"

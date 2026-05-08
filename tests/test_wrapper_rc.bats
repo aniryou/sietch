@@ -165,3 +165,188 @@ STUB
   ! grep -qF 'fall back to "assume work"' "$LOOP_ROOT/runners/lib/eligibility.sh"
   grep -qE 'rc=2.*skip|skip.*back.?off' "$LOOP_ROOT/runners/lib/eligibility.sh"
 }
+
+# ---------------------------------------------------------------------------
+# GH#48 — Mode 3 hard-failure (max-turns / claude crash / OOM / API outage):
+# the wrapper must draft the PR + post a fallback abort comment so
+# dispatch:conflicts doesn't re-fire the LLM every cycle on the same PR.
+#
+# The LLM's three Mode 3 graceful-abort blocks (templates/developer.md) all
+# call `gh pr ready --undo` themselves. Hard failures bypass those blocks
+# entirely (LLM never reaches them). Without a wrapper-side fallback the
+# PR stays mergeable=CONFLICTING + isDraft=false, dispatch:conflicts
+# re-fires Mode 3 next cycle, same probable failure, repeat —  same
+# failure shape PR #45 closed for graceful aborts but left open for
+# ungraceful ones.
+#
+# Precedent: the triage-untractable wrapper-side block at run-developer.sh
+# already drafts the PR + posts a comment without spawning the LLM. This
+# extends the same shape to the post-LLM hard-failure path.
+# ---------------------------------------------------------------------------
+
+# Build a fake LOOP_HOME with a stubbed run-conflict-triage.sh (so the wrapper
+# always reaches the LLM pipeline). Everything else is symlinked from the real
+# LOOP_ROOT so render-prompt.sh / pipeline_signal.sh / jq_filter.sh / the
+# developer.md template all resolve correctly under $LOOP_HOME.
+_make_mode3_loop_home() {
+  local fake="$BATS_TEST_TMPDIR/loop-home"
+  rm -rf "$fake"
+  mkdir -p "$fake/runners/lib" "$fake/templates"
+  for f in "$LOOP_ROOT"/runners/*.sh; do
+    [ -f "$f" ] || continue
+    ln -sf "$f" "$fake/runners/$(basename "$f")"
+  done
+  for f in "$LOOP_ROOT"/runners/lib/*; do
+    [ -e "$f" ] || continue
+    ln -sf "$f" "$fake/runners/lib/$(basename "$f")"
+  done
+  for f in "$LOOP_ROOT"/templates/*; do
+    [ -e "$f" ] || continue
+    ln -sf "$f" "$fake/templates/$(basename "$f")"
+  done
+  # Override the triage gate — pretend it's tractable so we always reach
+  # the LLM pipeline that the new fallback guards.
+  rm -f "$fake/runners/run-conflict-triage.sh"
+  cat >"$fake/runners/run-conflict-triage.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "[triage-stub] tractable"
+exit 0
+STUB
+  chmod +x "$fake/runners/run-conflict-triage.sh"
+  echo "$fake"
+}
+
+# PATH-mock `claude` (exit code is the test parameter) and `gh` (capture
+# argv to a file, exit 0 always). The gh stub records ALL argv across all
+# calls so a single grep can prove the fallback fired.
+_make_mode3_path_stubs() {
+  local exit_code="$1"
+  local tmpbin="$BATS_TEST_TMPDIR/bin"
+  local state="$BATS_TEST_TMPDIR/state"
+  mkdir -p "$tmpbin" "$state"
+  cat >"$tmpbin/claude" <<STUB
+#!/usr/bin/env bash
+touch '$state/claude-was-called'
+exit $exit_code
+STUB
+  chmod +x "$tmpbin/claude"
+  cat >"$tmpbin/gh" <<STUB
+#!/usr/bin/env bash
+{
+  printf 'CALL: '
+  printf '%s ' "\$@"
+  printf '\n'
+} >>'$state/gh-args'
+exit 0
+STUB
+  chmod +x "$tmpbin/gh"
+}
+
+@test "Mode 3 hard-failure: claude exit=124 (max-turns) → wrapper drafts PR + posts fallback comment, returns 124" {
+  local repo fake
+  repo=$(make_repo)
+  fake=$(_make_mode3_loop_home)
+  _make_mode3_path_stubs 124
+
+  REPO_ROOT="$repo" LOOP_HOME="$fake" KEEP_ON_FAIL=0 \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-developer.sh" resolve-conflicts 99
+
+  [ "$status" -eq 124 ]
+  [ -f "$BATS_TEST_TMPDIR/state/claude-was-called" ]
+  # Both fallback gh side-effects fired with the right PR number.
+  grep -qF 'pr ready --undo 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'pr comment 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  # The comment carries the same '🤖 Mode 3 conflict resolution — aborted'
+  # marker prefix used by the prompt's three graceful-abort blocks, so any
+  # log-scraping / dashboards keyed on that prefix pick up hard failures
+  # too.
+  grep -qF 'Mode 3 conflict resolution — aborted' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'agent run failed mid-flow' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'exit=124' "$BATS_TEST_TMPDIR/state/gh-args"
+}
+
+@test "Mode 3 hard-failure: claude exit=137 (SIGKILL/OOM) → wrapper drafts PR + posts fallback comment, returns 137" {
+  local repo fake
+  repo=$(make_repo)
+  fake=$(_make_mode3_loop_home)
+  _make_mode3_path_stubs 137
+
+  REPO_ROOT="$repo" LOOP_HOME="$fake" KEEP_ON_FAIL=0 \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-developer.sh" resolve-conflicts 77
+
+  [ "$status" -eq 137 ]
+  [ -f "$BATS_TEST_TMPDIR/state/claude-was-called" ]
+  grep -qF 'pr ready --undo 77' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'pr comment 77' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'exit=137' "$BATS_TEST_TMPDIR/state/gh-args"
+}
+
+@test "Mode 3 graceful exit (regression guard): claude exit=0 → wrapper does NOT draft, no fallback comment" {
+  # When the LLM exits cleanly in Mode 3 the prompt's graceful-abort blocks
+  # (or a successful resolution) have already done the right thing. The
+  # wrapper must NOT double-draft / double-comment, otherwise we corrupt
+  # operator-visible state — the existing "Mode 3 conflict resolution —
+  # complete." comment from R9 would be followed by a misleading "aborted"
+  # comment.
+  local repo fake
+  repo=$(make_repo)
+  fake=$(_make_mode3_loop_home)
+  _make_mode3_path_stubs 0
+
+  REPO_ROOT="$repo" LOOP_HOME="$fake" KEEP_ON_FAIL=0 \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-developer.sh" resolve-conflicts 99
+
+  [ "$status" -eq 0 ]
+  [ -f "$BATS_TEST_TMPDIR/state/claude-was-called" ]
+  if [ -f "$BATS_TEST_TMPDIR/state/gh-args" ]; then
+    ! grep -qF 'pr ready --undo 99' "$BATS_TEST_TMPDIR/state/gh-args"
+    ! grep -qF 'agent run failed mid-flow' "$BATS_TEST_TMPDIR/state/gh-args"
+  fi
+}
+
+@test "Mode 3 hard-failure (regression guard): default mode (Mode 1) failures do NOT draft anything" {
+  # The new fallback must be Mode 3-scoped only. A Mode 1 LLM crash leaves
+  # the GH issue assigned but no PR exists yet to draft — calling
+  # `gh pr ready --undo` against a non-existent PR would emit a real error
+  # and confuse operators. Pre-lock with DEV_AGENT_TARGET_ISSUE so the
+  # wrapper skips the eligibility scan and goes straight to spawning
+  # claude (which then fails).
+  local repo fake
+  repo=$(make_repo)
+  fake=$(_make_mode3_loop_home)
+  _make_mode3_path_stubs 124
+
+  DEV_AGENT_TARGET_ISSUE=42 REPO_ROOT="$repo" LOOP_HOME="$fake" KEEP_ON_FAIL=0 \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-developer.sh"
+
+  # Wrapper's Mode 1 path runs the eligibility preflight which under our
+  # gh stub returns no issues, so it exits 2 BEFORE invoking claude. That's
+  # the right behavior — and crucially gh-args contains no `pr ready` /
+  # `pr comment` calls.
+  if [ -f "$BATS_TEST_TMPDIR/state/gh-args" ]; then
+    ! grep -qF 'pr ready --undo' "$BATS_TEST_TMPDIR/state/gh-args"
+    ! grep -qF 'agent run failed mid-flow' "$BATS_TEST_TMPDIR/state/gh-args"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Source-of-truth: pin the new fallback wiring so a future refactor can't
+# silently drop the gh-comment / gh-pr-ready calls.
+# ---------------------------------------------------------------------------
+
+@test "run-developer.sh: Mode 3 hard-failure fallback is wired up after wait" {
+  # The body uses the same '🤖 Mode 3 conflict resolution — aborted' marker
+  # prefix as the prompt's three graceful aborts.
+  grep -qF 'Mode 3 conflict resolution — aborted' "$LOOP_ROOT/runners/run-developer.sh"
+  # The fallback is gated on Mode 3 + non-zero LLM exit code.
+  grep -qF 'agent run failed mid-flow' "$LOOP_ROOT/runners/run-developer.sh"
+  # The fallback issues the same gh side-effects as the graceful aborts.
+  grep -cF 'gh pr ready --undo' "$LOOP_ROOT/runners/run-developer.sh" >/tmp/_gh_undo_count
+  # Two call sites: one in the triage-untractable block, one in the new
+  # post-LLM hard-failure block. Pre-fix only one existed.
+  [ "$(cat /tmp/_gh_undo_count)" -ge 2 ]
+}
