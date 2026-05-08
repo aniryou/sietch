@@ -586,6 +586,59 @@ _with_check_rollup() {
 }
 
 # ---------------------------------------------------------------------------
+# GH#55: a wrapper-posted stub `[reviewer-agent: blocked]` review must satisfy
+# the predicate's "review covers head" gate so the orchestrator does not
+# re-fire on the same head SHA. The stub body matches REVIEWER_AGENT_VERDICT_REGEX
+# (the [reviewer-agent: blocked] substring is what the regex tests for) and
+# carries a submittedAt later than the head's committedDate. After a new
+# commit pushes the head forward, the stub becomes stale and the predicate
+# must re-include the PR — proving non-stickiness (the stub doesn't
+# permanently silence a PR; pushing fresh code re-triggers review).
+# ---------------------------------------------------------------------------
+
+# Build a one-PR fixture whose only review is a wrapper-style stub posting.
+# The body shape mirrors run-reviewer.sh's `gh pr review --body "..."` exactly,
+# so a regression in either site (wrapper body vs. predicate regex) trips
+# this test.
+_with_stub_blocked_review() {
+  local submitted_at="$1"
+  local stub_body='🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure). The reviewer dispatcher will not re-fire on this head SHA. Please push a new commit or request a fresh review.'
+  jq --arg sa "$submitted_at" --arg body "$stub_body" \
+    '.[0].reviews = [{"body": $body, "submittedAt": $sa}]' \
+    "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json"
+}
+
+@test "review filter: stub [reviewer-agent: blocked] review covering head is filtered OUT (GH#55)" {
+  # Stub review at T2=2026-05-07T13:00:00Z, head committedDate at T1=2026-05-07T12:00:00Z
+  # (DATES_STALE for headRefOid aabb...). The stub covers head → predicate
+  # excludes the PR → next-cycle wrapper sees `result=no-work` and skips the
+  # orchestrator LLM. This is the closing half of the GH#55 fix: without it,
+  # posting the stub would do nothing, and the wrapper-side post would be
+  # busy-work.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_stub_blocked_review '2026-05-07T13:00:00Z' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: stub blocked + newer commit pushes PR back into pending (GH#55 non-stickiness)" {
+  # Stub at T2=2026-05-07T13:00:00Z, but the head is now T3=2026-05-07T14:00:00Z
+  # (a new commit pushed AFTER the stub). The stub no longer covers head →
+  # predicate re-includes the PR → next-cycle wrapper invokes the orchestrator
+  # again (giving the dev a fresh shot at a successful sub-agent run).
+  # Without this guard, a one-time orchestrator failure could wedge a PR
+  # permanently — even a green-CI rebase wouldn't unstick it.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local newer_dates
+  newer_dates='{"aabbccddeeff00112233445566778899aabbccdd":"2026-05-07T14:00:00Z"}'
+  local n
+  n=$(_with_stub_blocked_review '2026-05-07T13:00:00Z' \
+      | jq --arg re "$re" --argjson dates "$newer_dates" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
 # eligibility_review_pending (function-level, GH#26): exercise the predicate
 # end-to-end via PATH-mocked gh, confirming exit-code semantics match the
 # rest of the predicate family (0=work, 1=skip, 2=fail) AND that the gh
