@@ -305,7 +305,7 @@ check_worktree_base_unique() {
       "set WORKTREE_BASE in .loop/loop.config to a writable path"
     return 1
   fi
-  if ! printf '%s\n' "$me" > "$marker" 2>/dev/null; then
+  if ! printf '%s\n' "$me" >"$marker" 2>/dev/null; then
     _fail check_worktree_base_unique "cannot write owner marker $marker" \
       "verify $base is writable"
     return 1
