@@ -179,7 +179,7 @@ eligibility_dev_candidates() {
 
 # ---------------------------------------------------------------------------
 # Reviewer orchestrator: open ${BRANCH_PREFIX}/* PRs whose head commit is not
-# yet covered by a [reviewer-agent: ...] review.
+# yet covered by a [reviewer-agent: ...] review AND whose CI has finished.
 #
 # A review is considered to "cover" the head when its `submittedAt` is later
 # than the head commit's `committedDate`. (We can't use `review.commit_id` —
@@ -200,6 +200,19 @@ eligibility_dev_candidates() {
 # `commits` connection) and resolves the head commit's `committedDate` per
 # `headRefOid` via a separate `gh api graphql` call — bounded at 1 commit
 # × 1 field per PR, well under the 500k node ceiling.
+#
+# GH#46: pre-fix this predicate filtered only on review coverage; the CI gate
+# the orchestrator applies in-prompt (skip if any check is IN_PROGRESS /
+# PENDING / QUEUED) was missing. While CI ran on a freshly-pushed dev-agent
+# PR, every reviewer poll cycle spawned the orchestrator LLM only to discover
+# CI hadn't finished and exit `result=none-found` — leaking ~$0.50–$1.50
+# per CI window per PR. The fix adds `statusCheckRollup` to the `--json` field
+# set (one extra field on the existing call, no extra round-trip) and excludes
+# any PR with an unfinished check. Note: gh's `statusCheckRollup` carries a
+# `.status` field on `CheckRun` entries (Actions/check-suite checks) and a
+# `.state` field on legacy `StatusContext` entries (older status API), so the
+# filter normalizes via `.status // .state` to handle both shapes. Failed CI
+# (COMPLETED + FAILURE) is still reviewable — only RUNNING states gate.
 # ---------------------------------------------------------------------------
 eligibility_review_pending() {
   local prs owner repo oid_dates oid date_iso count
@@ -207,7 +220,7 @@ eligibility_review_pending() {
     PAGER=cat GIT_PAGER=cat gh pr list \
       --repo "$REPO_SLUG" --state open \
       --search "head:${BRANCH_PREFIX}/ -is:draft" \
-      --json number,headRefOid,reviews \
+      --json number,headRefOid,reviews,statusCheckRollup \
       --limit 100 2>/dev/null
   ); then
     echo "?"
@@ -244,11 +257,13 @@ eligibility_review_pending() {
     oid_dates=$(jq --arg oid "$oid" --arg d "$date_iso" '. + {($oid): $d}' <<<"$oid_dates")
   done < <(echo "$prs" | jq -r '.[].headRefOid // empty')
 
-  # Apply the same "no review covers head" filter as before, but look up the
-  # head date in $dates (keyed by headRefOid) instead of pulling it from the
-  # PR's commits sub-selection. Missing/orphan oids fall through to
-  # head_date=null and the PR is treated as "not yet reviewed" (same as the
-  # pre-fix behaviour for PRs whose `commits` field happened to be empty).
+  # Apply the "no review covers head" filter as before (looking up the head
+  # date in $dates by headRefOid), AND a CI gate (GH#46): exclude any PR with
+  # a check in IN_PROGRESS/PENDING/QUEUED. The gate uses `.status // .state`
+  # because gh's statusCheckRollup carries `status` for CheckRun (Actions)
+  # and `state` for legacy StatusContext entries. Missing/null statusCheckRollup
+  # falls through to an empty list (PR is treated as "no CI gating") so the
+  # predicate is permissive when GitHub has nothing to report.
   if ! count=$(
     echo "$prs" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
       --argjson dates "$oid_dates" '
@@ -256,9 +271,15 @@ eligibility_review_pending() {
        | . as $pr
        | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
        | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+       | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
        | select(
            $head_date == null
            or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
+         )
+       | select(
+           ($check_states | index("IN_PROGRESS") | not)
+           and ($check_states | index("PENDING") | not)
+           and ($check_states | index("QUEUED") | not)
          )
       ] | length
     ' 2>/dev/null

@@ -48,7 +48,7 @@ Keep only PRs where **all** are true:
 
 - `headRefName` starts with `${BRANCH_PREFIX}/` **OR** `body` contains `${DEV_AGENT_PR_BODY_TAG}`.
 - `isDraft` is **false**.
-- **CI has finished** — for each candidate, check `gh pr checks <num> --repo ${REPO_SLUG} --json state,conclusion`. None of the checks should be in `IN_PROGRESS`, `PENDING`, or `QUEUED`. If CI is still running, skip — review on the next orchestrator invocation.
+- **CI has finished** — for each candidate, check `gh pr checks <num> --repo ${REPO_SLUG} --json state,conclusion`. None of the checks should be in `IN_PROGRESS`, `PENDING`, or `QUEUED`. If CI is still running, skip — review on the next orchestrator invocation. (GH#46: this gate is now also enforced in `runners/lib/eligibility.sh`'s `eligibility_review_pending`, so wrapper-driven invocations short-circuit before reaching this prompt. The check here is the defense-in-depth safety net for direct `claude -p` invocations that bypass the wrapper.)
 - **Idempotence with a human-comment override.** Run:
   ```bash
   gh pr view <num> --repo ${REPO_SLUG} --json reviews,comments

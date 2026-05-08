@@ -413,20 +413,33 @@ JSON
 }
 
 # ---------------------------------------------------------------------------
-# eligibility_review_pending: jq filter for "no agent review covers head"
-# Compares review.submittedAt against the head commit's committedDate. The
-# committedDate is no longer carried in the gh pr list payload — that hit
-# GH#26's GraphQL 500k-node ceiling — so the predicate now resolves it via
-# a per-headRefOid `gh api graphql` call and injects the resulting map as
-# the `$dates` jq variable, keyed by `headRefOid`.
+# eligibility_review_pending: jq filter for "no agent review covers head AND
+# CI has finished".
+#
+# Review-coverage half: compares review.submittedAt against the head commit's
+# committedDate. The committedDate is no longer carried in the gh pr list
+# payload — that hit GH#26's GraphQL 500k-node ceiling — so the predicate
+# resolves it via a per-headRefOid `gh api graphql` call and injects the
+# resulting map as the `$dates` jq variable, keyed by `headRefOid`.
+#
+# CI-gate half (GH#46): excludes any PR with a check in IN_PROGRESS / PENDING
+# / QUEUED. Uses `.status // .state` because gh's statusCheckRollup carries
+# `.status` for CheckRun (Actions) and `.state` for legacy StatusContext.
+# Missing/null statusCheckRollup falls through to an empty list (no gating).
 # ---------------------------------------------------------------------------
 REVIEW_FILTER='[.[]
   | . as $pr
   | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
   | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+  | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
   | select(
       $head_date == null
       or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
+    )
+  | select(
+      ($check_states | index("IN_PROGRESS") | not)
+      and ($check_states | index("PENDING") | not)
+      and ($check_states | index("QUEUED") | not)
     )
 ] | length'
 
@@ -470,6 +483,105 @@ DATES_MIXED='{"0011223344556677889900112233445566778899":"2026-05-07T10:00:00Z",
   local n
   n=$(jq --arg re "$re" --argjson dates '{}' "$REVIEW_FILTER" \
         < "$LOOP_ROOT/tests/fixtures/gh/prs-current.json")
+  [ "$n" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_review_pending CI gate (GH#46): the predicate must exclude PRs
+# whose statusCheckRollup contains any IN_PROGRESS / PENDING / QUEUED check.
+# Failed CI (COMPLETED+FAILURE) is still reviewable. Missing/null/empty
+# statusCheckRollup is treated as "no gating" — same posture as the orchestrator
+# behaviour the gate mirrors.
+#
+# Tests mutate the prs-stale.json fixture (which has a stale review and would
+# otherwise be INCLUDED by the review-coverage half) so the CI gate's effect
+# is observable in isolation: a non-finished check must drop the count from
+# 1 to 0; a finished check leaves it at 1.
+# ---------------------------------------------------------------------------
+
+# Helper: rewrite the statusCheckRollup field of the stale-fixture PR.
+# Accepts a JSON literal (typically an array of one or more {status: ...}
+# entries) and returns the mutated PR list on stdout.
+_with_check_rollup() {
+  local rollup_json="$1"
+  jq --argjson rollup "$rollup_json" '.[0].statusCheckRollup = $rollup' \
+     "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json"
+}
+
+@test "review filter: stale review + IN_PROGRESS check is filtered OUT (GH#46)" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[{"__typename":"CheckRun","status":"IN_PROGRESS"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: stale review + PENDING check is filtered OUT (GH#46)" {
+  # PENDING is the StatusContext idiom (legacy commit-status API), so it
+  # surfaces under .state, not .status. The .status // .state normalization
+  # must catch both shapes.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[{"__typename":"StatusContext","state":"PENDING"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: stale review + QUEUED check is filtered OUT (GH#46)" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[{"__typename":"CheckRun","status":"QUEUED"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: stale review + COMPLETED+SUCCESS check is INCLUDED (GH#46)" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "review filter: stale review + COMPLETED+FAILURE check is INCLUDED (GH#46)" {
+  # Failed CI is still reviewable — only RUNNING states gate. This matches
+  # the orchestrator's pre-existing behaviour: a red PR should still be
+  # picked up by the reviewer agent.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "review filter: stale review + mixed (IN_PROGRESS + COMPLETED) is filtered OUT (GH#46)" {
+  # Any one running check gates — the predicate must not require ALL checks
+  # to be running before excluding the PR.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: stale review + empty statusCheckRollup is INCLUDED (GH#46)" {
+  # Empty array means GitHub has no checks reported (e.g., a repo with no CI).
+  # The gate must not exclude such PRs — there is nothing to wait on.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_check_rollup '[]' \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "review filter: stale review + null statusCheckRollup is INCLUDED (GH#46)" {
+  # Defensive guard. If the gh response somehow omits the field or sets it
+  # to null, the filter's `// []` fallback must keep the PR eligible rather
+  # than crashing or silently excluding it.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(jq '.[0].statusCheckRollup = null' "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json" \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
   [ "$n" -eq 1 ]
 }
 
@@ -601,6 +713,107 @@ STUB
   [ "$output" = "2" ]
 }
 
+# ---------------------------------------------------------------------------
+# eligibility_review_pending CI gate (GH#46): function-level tests using the
+# PATH-mocked gh stub. These exercise the predicate end-to-end so the wrapper
+# preflight gets the correct exit-code semantics — the whole point of GH#46
+# is that runners/run-reviewer.sh skips with `result=no-work` instead of
+# spawning the orchestrator LLM while CI is still running.
+#
+# Helper: make a one-PR fixture from prs-stale.json with a custom rollup and
+# return the path. The stale-fixture's review is older than the head, so the
+# review-coverage half always votes INCLUDE — making the CI gate's effect
+# observable in isolation (exit 0 ⇔ CI completed, exit 1 ⇔ CI gating).
+# ---------------------------------------------------------------------------
+_with_rollup_to_file() {
+  local rollup_json="$1"
+  local out_path="$2"
+  jq --argjson rollup "$rollup_json" '.[0].statusCheckRollup = $rollup' \
+     "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json" > "$out_path"
+}
+
+@test "eligibility_review_pending: PR with IN_PROGRESS check exits 1, prints '0' (GH#46)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-ci-running.json"
+  _with_rollup_to_file '[{"__typename":"CheckRun","status":"IN_PROGRESS"}]' "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
+}
+
+@test "eligibility_review_pending: PR with PENDING check exits 1, prints '0' (GH#46)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-ci-pending.json"
+  _with_rollup_to_file '[{"__typename":"StatusContext","state":"PENDING"}]' "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
+}
+
+@test "eligibility_review_pending: PR with QUEUED check exits 1, prints '0' (GH#46)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-ci-queued.json"
+  _with_rollup_to_file '[{"__typename":"CheckRun","status":"QUEUED"}]' "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
+}
+
+@test "eligibility_review_pending: PR with COMPLETED+SUCCESS exits 0, prints '1' (GH#46)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-ci-success.json"
+  _with_rollup_to_file '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]' "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "eligibility_review_pending: PR with COMPLETED+FAILURE exits 0, prints '1' (GH#46)" {
+  # Failed CI is reviewable — only RUNNING states gate. The orchestrator
+  # has always reviewed red PRs; the predicate must mirror that.
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-ci-failure.json"
+  _with_rollup_to_file '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]' "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
 @test "eligibility_review_pending: gh pr list failure exits 2, prints '?'" {
   local repo
   repo=$(make_repo)
@@ -673,6 +886,35 @@ STUB
   # The narrowed-fetch fix resolves committedDate per oid via gh api graphql.
   grep -qF 'gh api graphql' "$BATS_TEST_TMPDIR/fn.sh"
   grep -qF 'committedDate' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+# ---------------------------------------------------------------------------
+# Source-of-truth: regression guard for the GH#46 CI gate.
+# Without this check, a future refactor could silently revert the predicate
+# to review-only filtering and reintroduce the per-cycle orchestrator-LLM
+# leak during in-flight CI windows. The greps assert that the function
+# requests the statusCheckRollup field AND filters on the running states.
+# ---------------------------------------------------------------------------
+@test "eligibility_review_pending: --json field set requests statusCheckRollup (GH#46)" {
+  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'statusCheckRollup' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_review_pending: filter excludes IN_PROGRESS / PENDING / QUEUED (GH#46)" {
+  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'IN_PROGRESS' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'PENDING' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'QUEUED' "$BATS_TEST_TMPDIR/fn.sh"
+  # Both shapes must be normalized — gh's statusCheckRollup carries .status
+  # for CheckRun and .state for legacy StatusContext.
+  grep -qE '\.status[[:space:]]*//[[:space:]]*\.state' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "reviewer-orchestrator.md: in-prompt CI gate references the predicate (GH#46)" {
+  # The orchestrator template must note that the in-prompt CI gate is now
+  # also enforced by the eligibility predicate (defense-in-depth for direct
+  # claude -p invocations that bypass the wrapper).
+  grep -qF 'eligibility_review_pending' "$LOOP_ROOT/templates/reviewer-orchestrator.md"
 }
 
 # ---------------------------------------------------------------------------
