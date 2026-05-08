@@ -56,9 +56,11 @@ Run this scan **exactly once** at startup. Do not loop, do not re-poll.
 
 - Set `ISSUE_NUM=$DEV_AGENT_TARGET_ISSUE` and proceed straight to "Mode 1: Per-issue Workflow" Step 0 (parent beads issue).
 - Do **not** re-run the eligibility predicate. Do **not** re-attempt the lock — you already own it. Do **not** scan for other candidates.
-- Read the issue body via `gh issue view "$ISSUE_NUM" --repo ${REPO_SLUG} --json title,body,labels,url` to capture severity and acceptance criteria.
+- Read the issue body via `gh issue view "$ISSUE_NUM" --repo ${REPO_SLUG} --json title,body,labels` to capture severity and acceptance criteria.
 
 The unset-env steps below are the fallback path for direct `claude -p` invocations (no wrapper).
+
+**`--json` field discipline (HARD RULE).** Ask `gh ... --json` for only the fields you'll use in the next step or two. Do not preemptively pull `title,body,labels,assignees,url,number` "in case." Unused fields stay echoed in your context for the rest of the run — `labels` alone is ~286 chars, six fields together can be 700+ chars of dead weight. If a later step needs another field, fetch it then. Same rule for `gh pr view` (use `--json body` only when reading the PR body) and `gh issue list`.
 
 0. **Fast eligibility gate.** Run the same predicate the wrapper uses, so the wrapper preflight and your in-prompt gate stay in sync:
    ```bash
@@ -70,10 +72,11 @@ The unset-env steps below are the fallback path for direct `claude -p` invocatio
 1. **Full scan** (only reached if the gate found candidates) — run both queries once:
    ```bash
    gh issue list --repo ${REPO_SLUG} --state open \
-     --label "${SEVERITY_LABEL_HIGH}" --json number,title,labels,assignees,url --limit 50
+     --label "${SEVERITY_LABEL_HIGH}" --json number,title,assignees --limit 50
    gh issue list --repo ${REPO_SLUG} --state open \
-     --label "${SEVERITY_LABEL_MEDIUM}" --json number,title,labels,assignees,url --limit 50
+     --label "${SEVERITY_LABEL_MEDIUM}" --json number,title,assignees --limit 50
    ```
+   Per the `--json` field-discipline rule above, `labels` is dropped (the `--label` filter already guarantees it) and `url` is dropped (derivable as `https://github.com/${REPO_SLUG}/issues/<num>`).
 2. **Pick one issue**:
    - Prefer `${SEVERITY_LABEL_HIGH}` over `${SEVERITY_LABEL_MEDIUM}`.
    - Skip issues that already have an assignee (likely being worked on by another agent or a human).
@@ -171,9 +174,13 @@ Mark each child `--claim` and `bd update <id> --status=in_progress` as you start
 
 Work in an isolated worktree so parallel agents do not collide. The path **must** be under `${WORKTREE_BASE}/` — never inside the primary repo (no `.worktrees/` in-repo).
 
+**The wrapper exports `WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"` for you (Mode 1).** Use `$WORKTREE` and `$WORKTREE/<relpath>` everywhere from this point on — in commands, `Read`s, `Write`s, and `Edit`s. Never re-type the literal `${WORKTREE_BASE}/gh-N/...` form: a typical Mode 1 cycle has 60+ worktree references and the literal eats ~680 chars per run that `$WORKTREE` doesn't. (If you're in the unwrapped-fallback path with `DEV_AGENT_TARGET_ISSUE` unset, set `WORKTREE` yourself once after picking an issue, then follow the same rule.)
+
 ```bash
 REPO=$REPO_ROOT
-WORKTREE=${WORKTREE_BASE}/gh-<num>
+# WORKTREE already set by the wrapper (Mode 1). The line below is a no-op
+# in that case; in the unwrapped-fallback path it sets the var once.
+: "${WORKTREE:=${WORKTREE_BASE}/gh-<num>}"
 BRANCH=${BRANCH_PREFIX}/gh-<num>-<slug>
 
 # Refresh origin/main BEFORE cutting a new branch. In a long `st loop`
@@ -239,12 +246,11 @@ The PR title and body are read first by maintainers, contributors, and the user 
 
 **PR title rules:** keep the `Fix GH#<num>:` traceability prefix, then a plain-English summary. ≤70 characters total. No opaque insider acronyms (e.g. `TOCTOU`, `rc=2`, `dispatch:followup`); common domain terms like `CI`, `PR`, `dispatcher`, `worktree`, `lock`, `rebase` are fine. Lead with the user-visible effect, not the internal mechanism. If the issue title itself violates these rules (older issues filed before the plain-English rule landed), rewrite into plain English in the PR title — do not blindly copy the issue title.
 
-```bash
-git push -u origin "$BRANCH"
-gh pr create --repo ${REPO_SLUG} \
-  --base main --head "$BRANCH" \
-  --title "Fix GH#<num>: <plain-English summary>" \
-  --body "$(cat <<'EOF'
+**Compose the body in a file, pass it via `--body-file` — never inline the body via a `cat`-heredoc inside `--body`.** The inline form echoes the full ~3 000-char body into your tool-call message and bloats every subsequent turn's input context. Write the body to `/tmp/pr-body-<num>.md` first (use the `Write` tool — preferred, since the body is multi-paragraph markdown — or `cat <<'EOF' > /tmp/pr-body-<num>.md ... EOF`), then point `gh pr create` at the file. Step 7a's CI-checkbox flip then `Edit`s the same file and re-runs `gh pr edit --body-file /tmp/pr-body-<num>.md`, so the body content sits in your context exactly once.
+
+The body content uses this template (a complete, final PR description — Step 7a only flips the unchecked CI checkbox and appends any retry commits to `## Commits`; do not change the section structure or add ad-hoc sections):
+
+```markdown
 ## TL;DR
 
 <1–2 sentences in plain English: what changed and why, written so a non-expert reader of the PR list can understand it. No file paths, no function names, no `file:line` citations — those live in `## Changes` below.>
@@ -278,13 +284,20 @@ gh pr create --repo ${REPO_SLUG} \
 - <item> — file separately if/when needed.
 
 ${DEV_AGENT_PR_BODY_TAG}
-EOF
-)"
+```
+
+Then push and open the PR pointing at the file:
+
+```bash
+git push -u origin "$BRANCH"
+# /tmp/pr-body-<num>.md was written above (Write tool / cat-into-file).
+gh pr create --repo ${REPO_SLUG} \
+  --base main --head "$BRANCH" \
+  --title "Fix GH#<num>: <plain-English summary>" \
+  --body-file /tmp/pr-body-<num>.md
 ```
 
 Record the PR number as `$PR`.
-
-The body above is the **complete, final** PR description — it already includes the parent/child beads IDs and the commit SHA(s) from Step 4. Step 7a does **not** rewrite this body; it only flips the unchecked CI checkbox once CI is green and appends any retry commits to `## Commits`. Do not change the section structure or add ad-hoc sections.
 
 ### Step 6 — Wait for CI
 
@@ -300,7 +313,7 @@ If `--watch` is unavailable or hangs, fall back to a polling loop with `gh pr ch
 
 When all required checks are green:
 
-1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. Use `gh pr edit "$PR" --body "$NEW_BODY"`. Do not change section structure or invent new sections — keep the format identical to Step 5's template.
+1. Edit the PR body to flip the CI checkbox green and (if there were CI-retry commits in Step 7b) append them to `## Commits`. `Edit` `/tmp/pr-body-<num>.md` (the same file Step 5 wrote), then `gh pr edit "$PR" --repo ${REPO_SLUG} --body-file /tmp/pr-body-<num>.md`. Never `--body "$NEW_BODY"` with the body inlined — same context-bloat reason as Step 5. Do not change section structure or invent new sections — keep the format identical to Step 5's template.
 2. Merge is **not** your responsibility — leave that to the user, unless the user has explicitly enabled auto-merge for the repo. Do **not** force-merge.
 3. **Do NOT close the GitHub issue.** GitHub auto-closes it when the PR is merged (the PR body includes `Closes #<num>` from Step 5), and auto-adds a linking comment at that time. Closing now would mark the issue resolved before the work has actually shipped — the PR could still be abandoned, reverted, or have a P0 finding from review.
 4. Close the parent beads issue and any still-open child issues. Beads is internal tracking; closing on CI-green is acceptable since you can manually reopen with `bd update --status=open` if the PR is later abandoned:
@@ -376,8 +389,10 @@ Capture `PR=<num>` from the kickoff prompt.
 PR=<num>
 REPO=$REPO_ROOT
 
-# PR metadata
-gh pr view "$PR" --repo ${REPO_SLUG} --json title,body,headRefName,headRefOid,isDraft,url
+# PR body — only field needed in F0/F1 (Closes #N, Beads: <id> live here).
+# Per the `--json` field-discipline rule: don't preemptively pull title /
+# headRefName / headRefOid / isDraft / url. F3 fetches headRefName on demand.
+gh pr view "$PR" --repo ${REPO_SLUG} --json body
 
 # Latest review (reviewer agent's most recent)
 gh pr view "$PR" --repo ${REPO_SLUG} --json reviews -q '.reviews[-1]'
