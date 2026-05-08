@@ -174,6 +174,14 @@ REPO=$REPO_ROOT
 WORKTREE=${WORKTREE_BASE}/gh-<num>
 BRANCH=${BRANCH_PREFIX}/gh-<num>-<slug>
 
+# Refresh origin/main BEFORE cutting a new branch. In a long `st loop`
+# session the local origin/main ref drifts behind the remote (the merger
+# pane uses server-side `gh pr merge`, dispatchers don't fetch), so without
+# this fetch new branches start from a stale base and racing PRs hit
+# avoidable conflicts that dispatch:conflicts then resolves with a Mode 3
+# LLM (~$0.50–$2.00 per run). Mirrors the Mode 2/3 fetch pattern below.
+git -C "$REPO" fetch origin
+
 # Clean any leftover from a prior run BEFORE creating the new worktree
 git -C "$REPO" worktree remove --force "$WORKTREE" 2>/dev/null || true
 rm -rf "$WORKTREE"
