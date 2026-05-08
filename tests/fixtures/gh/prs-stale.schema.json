@@ -15,5 +15,18 @@
   ".[].reviews[].includesCreatedEdit": "boolean",
   ".[].reviews[].reactionGroups": "array",
   ".[].reviews[].state": "string",
-  ".[].reviews[].submittedAt": "string"
+  ".[].reviews[].submittedAt": "string",
+  ".[].statusCheckRollup": "array",
+  ".[].statusCheckRollup[]": "object",
+  ".[].statusCheckRollup[].__typename": "string",
+  ".[].statusCheckRollup[].completedAt": "string",
+  ".[].statusCheckRollup[].conclusion": "string",
+  ".[].statusCheckRollup[].context": "string",
+  ".[].statusCheckRollup[].detailsUrl": "string",
+  ".[].statusCheckRollup[].name": "string",
+  ".[].statusCheckRollup[].startedAt": "string",
+  ".[].statusCheckRollup[].state": "string",
+  ".[].statusCheckRollup[].status": "string",
+  ".[].statusCheckRollup[].targetUrl": "string",
+  ".[].statusCheckRollup[].workflowName": "string"
 }

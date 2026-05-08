@@ -2,16 +2,25 @@
   {
     "number": 200,
     "headRefOid": "0011223344556677889900112233445566778899",
-    "reviews": [{"body": "[reviewer-agent: clean] LGTM.", "submittedAt": "2026-05-07T11:00:00Z"}]
+    "reviews": [{"body": "[reviewer-agent: clean] LGTM.", "submittedAt": "2026-05-07T11:00:00Z"}],
+    "statusCheckRollup": [
+      {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
   },
   {
     "number": 201,
     "headRefOid": "aabbccddeeff00112233445566778899aabbccdd",
-    "reviews": [{"body": "[reviewer-agent: changes] please fix.", "submittedAt": "2026-05-07T10:00:00Z"}]
+    "reviews": [{"body": "[reviewer-agent: changes] please fix.", "submittedAt": "2026-05-07T10:00:00Z"}],
+    "statusCheckRollup": [
+      {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
   },
   {
     "number": 202,
     "headRefOid": "ffeeddccbbaa99887766554433221100ffeeddcc",
-    "reviews": []
+    "reviews": [],
+    "statusCheckRollup": [
+      {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
   }
 ]

@@ -4,6 +4,9 @@
     "headRefOid": "aabbccddeeff00112233445566778899aabbccdd",
     "reviews": [
       {"body": "[reviewer-agent: changes] please address findings.", "submittedAt": "2026-05-07T10:00:00Z"}
+    ],
+    "statusCheckRollup": [
+      {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"}
     ]
   }
 ]
