@@ -28,9 +28,8 @@
 #   - Sampling happens via bash's `$RANDOM`; the CLI accepts COUNT to make
 #     uniformity testable in a single bash process (one RANDOM sequence).
 
-set -u
-set -o pipefail
-\unalias -a 2>/dev/null || true
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
 dev_startup_jitter() {
   local poll="${1:-}"

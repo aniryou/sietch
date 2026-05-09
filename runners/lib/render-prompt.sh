@@ -12,9 +12,8 @@
 # Outputs the rendered prompt on stdout. Wrappers pipe this into
 # `claude --append-system-prompt "$(...)"`.
 
-set -u
-set -o pipefail
-\unalias -a 2>/dev/null || true
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
 : "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"

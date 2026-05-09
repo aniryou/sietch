@@ -16,6 +16,7 @@ env:
     runners/run-issue-author.sh
     runners/run-loop.sh
     runners/run-reviewer.sh
+    runners/lib/_preamble.sh
     runners/lib/dispatcher.sh
     runners/lib/eligibility.sh
     runners/lib/event_log.sh
