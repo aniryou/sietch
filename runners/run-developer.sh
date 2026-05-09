@@ -75,6 +75,12 @@ REPO="$REPO_ROOT"
 # is available in every code path below.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/gh_helpers.sh"
+# Shared idempotent-escalate helper (GH#108). Sourced ahead of any wrapper
+# code that could hard-fail; the existing inline escalation block at
+# run-developer.sh:474-489 is left in place for now (sub-issue 2 swaps it
+# for a one-line call).
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/hard_failure.sh"
 
 # Default for older loop.config files predating GH#74. Sanitize via the
 # canonical helper so REPO_NAMEs containing `.` produce a clean prefix
