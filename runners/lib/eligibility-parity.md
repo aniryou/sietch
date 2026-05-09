@@ -51,7 +51,7 @@ The audit (filed as GH#114) had three goals:
 | `templates/developer.md:425` | `[reviewer-agent: clean]` or `[reviewer-agent: nits]` → exit `result=follow-up-no-action` | `eligibility_followup_pr` (`if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"`) | Mirrored | The clean/nits branch short-circuits regardless of comment timestamps |
 | `templates/developer.md:426` | `comment` (P1) or `changes` (P0) → dispatch | `eligibility_followup_pr` (`elif ($latest_devcomment == null or $latest_review.submittedAt > $latest_devcomment.createdAt) then "\($verdict)\tyes"`) | Mirrored | Dispatches iff review's submittedAt is newer than latest dev-agent comment's createdAt |
 | `templates/developer.md:427` | No marker found → exit cleanly | `eligibility_followup_pr` (`if $latest_review == null then "none\tno"`) | Mirrored | `$latest_review` is null when no review body matches `$REVIEWER_AGENT_VERDICT_REGEX` |
-| `templates/developer.md:429-461` (F2) | After 3 follow-up cycles → give up, mark PR draft? **No** — only marks beads parent blocked + `bd human` | (none) | **Gap** | Predicate has no per-PR follow-up-cycle counter. After give-up, the wrapper still fires Mode 2 every cycle; the LLM re-counts beads memories, re-trips the cap, and exits — token leak (~$0.20-$0.50 per cycle). Mode 3's give-up paths *do* draft the PR (developer.md:660-663, 701-703, 748-752), so they get the `-is:draft` filter for free. Mode 2's give-up does not. **Filed as follow-up.** |
+| `templates/developer.md:429-461` (F2) | After 3 follow-up cycles → give up, mark PR draft? **Yes** — drafts the PR alongside marking beads parent blocked + `bd human` | `eligibility_followup_pr` (`if (.isDraft // false) then "drafted\tno"` short-circuit) | Mirrored | GH#134. Mode 2's F2 give-up now runs `gh pr ready --undo "$PR"`, mirroring Mode 3's abort paths. The dispatcher's `_dispatch_followup_jq` `isDraft == false` filter and the predicate's new `isDraft` short-circuit both exclude drafted PRs next cycle, closing the token-leak loop. **Resolved by GH#134.** |
 | `templates/developer.md:585`, `templates/developer.md:815` | Mode 3 — abort on a conflict in test/CI/secrets/core files | `runners/run-conflict-triage.sh` (separate gate) | Defense-in-depth | Triage script is the gate of record (it's a separate strict-mode gate, not an `eligibility.sh` predicate). Mode 3 abort paths additionally draft the PR so the next-cycle conflicts dispatcher's `isDraft == false` filter excludes it |
 | `templates/developer.md:631`, `templates/developer.md:585` | Mode 3 — abort if conflict ≤ `${TRIAGE_LINE_LIMIT}` budget exceeded | `runners/run-conflict-triage.sh` | Defense-in-depth | Triage script enforces the line-count cap before the LLM is spawned |
 
@@ -97,8 +97,10 @@ Each gap is filed as a separate follow-up GitHub issue:
   `head:${BRANCH_PREFIX}/`; body-tag fallback (`DEV_AGENT_PR_BODY_TAG`)
   is missing. Filed as GH#133.
 - **G3** (`templates/developer.md:429-461`) — Mode 2's 3-cycle give-up
-  has no predicate-level guard, and unlike Mode 3's give-up paths it
-  does not draft the PR. Filed as GH#134.
+  had no predicate-level guard, and unlike Mode 3's give-up paths it
+  did not draft the PR. **Resolved by GH#134**: F2 give-up now runs
+  `gh pr ready --undo`, and `eligibility_followup_pr` short-circuits on
+  `isDraft == true` so drafted PRs skip dispatch next cycle.
 - **G4** (`templates/developer.md:85`) — stale prompt rule references
   a "beads memory tag `developer-agent:claimed:<issue#>`" mechanism
   that does not exist. Actual concurrency primitive is the filesystem
