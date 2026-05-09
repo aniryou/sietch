@@ -81,6 +81,10 @@ REPO="$REPO_ROOT"
 # the comment when the label is already present, avoiding per-cycle noise.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/hard_failure.sh"
+# Append-only log marker helpers (GH#100). Used by the Mode-3 triage parse
+# below to read the LATEST `reason=...` token from triage output.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/log_helpers.sh"
 
 # Default for older loop.config files predating GH#74. Sanitize via the
 # canonical helper so REPO_NAMEs containing `.` produce a clean prefix
@@ -337,7 +341,14 @@ if [ "$MODE" = "resolve-conflicts" ]; then
       ;;
     1)
       echo "$TRIAGE_OUTPUT" >&2
-      REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
+      # GH#100: read the LATEST reason= token. The triage script currently
+      # emits one reason= line, but treating its output as append-only keeps
+      # this site robust if the script grows progress logs that reuse the
+      # same marker shape.
+      REASON=$(printf '%s\n' "$TRIAGE_OUTPUT" \
+        | grep -oE 'reason=[^ ]+' \
+        | loop_marker_last 'reason=[^ ]+' \
+        | cut -d= -f2-)
       echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
       event_emit dev triage_result pr="$TARGET_PR" result=untractable reason="$REASON"
       PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
