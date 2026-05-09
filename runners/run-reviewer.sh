@@ -127,6 +127,15 @@ event_emit reviewer llm_exited mode=default exit_code="$LLM_EXIT" duration_s="$(
 # "review covers head" half fires next cycle and skips the PR until a new
 # commit lands.
 #
+# GH#94: GH#55's stub closes the per-SHA loop but not the per-PR loop. On a
+# deterministically-failing PR (oversized diff, malformed PR), every new push
+# yields a fresh head SHA, the orchestrator dispatches again, the sub-agent
+# fails the same way, and the wrapper posts another stub. After
+# REVIEWER_SUB_AGENT_FAILURE_CAP consecutive stubs (default 3) escalate to a
+# human via REVIEWER_ESCALATION_LABEL + one explanation comment instead of
+# yet another stub. eligibility_review_pending then drops the PR from
+# dispatch until a human removes the label.
+#
 # The orchestrator template's hard rule "Never call gh pr review" forces this
 # fix to live in the wrapper rather than the orchestrator itself; see
 # templates/reviewer-orchestrator.md (search for GH#55).
@@ -144,13 +153,79 @@ if [ "$LLM_EXIT" -eq 0 ]; then
     [ -n "$FAILED_PR" ] && break
   done
   if [ -n "${FAILED_PR:-}" ]; then
-    echo "[wrapper] orchestrator reported sub-agent failure on PR #$FAILED_PR; posting stub [reviewer-agent: blocked] review" >&2
-    PAGER=cat GIT_PAGER=cat gh pr review "$FAILED_PR" \
-      --repo "$REPO_SLUG" \
-      --comment \
-      --body "🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure). The reviewer dispatcher will not re-fire on this head SHA. Please push a new commit or request a fresh review." \
-      >/dev/null 2>&1 || true
+    # GH#92 observability: emit hard_failure once per orchestrator-reported
+    # sub-agent failure, regardless of whether the wrapper goes on to post a
+    # stub (below cap), escalate to a human (cap hit), or idempotent-skip
+    # (label already present). All three paths represent the same underlying
+    # event from a control-tower perspective.
     event_emit reviewer hard_failure mode=default pr="$FAILED_PR" reason=sub-agent-failed
+
+    # Defaults for older loop.config files predating GH#94. Set unconditionally
+    # (default-if-unset) so consumer repos don't have to re-run `st init`.
+    : "${REVIEWER_SUB_AGENT_FAILURE_CAP:=3}"
+    : "${REVIEWER_ESCALATION_LABEL:=reviewer:needs-human}"
+
+    # The substring is the unambiguous marker for "wrapper-posted stub" vs
+    # "sub-agent-authored real [reviewer-agent: blocked] verdict" — the
+    # sub-agent's review body never contains this phrase.
+    STUB_MARKER='Sub-agent run failed before posting a review'
+
+    PR_DATA=$(
+      PAGER=cat GIT_PAGER=cat gh pr view "$FAILED_PR" \
+        --repo "$REPO_SLUG" \
+        --json reviews,labels 2>/dev/null
+    ) || PR_DATA=""
+
+    STUB_COUNT=0
+    HAS_LABEL=0
+    if [ -n "$PR_DATA" ]; then
+      STUB_COUNT=$(
+        printf '%s' "$PR_DATA" \
+          | jq --arg marker "$STUB_MARKER" \
+              '[.reviews // [] | .[] | select((.body // "") | contains($marker))] | length' \
+          2>/dev/null
+      ) || STUB_COUNT=0
+      HAS_LABEL=$(
+        printf '%s' "$PR_DATA" \
+          | jq --arg label "$REVIEWER_ESCALATION_LABEL" \
+              'if ((.labels // []) | map(.name) | index($label)) != null then 1 else 0 end' \
+          2>/dev/null
+      ) || HAS_LABEL=0
+    fi
+    STUB_COUNT="${STUB_COUNT:-0}"
+    HAS_LABEL="${HAS_LABEL:-0}"
+
+    if [ "$STUB_COUNT" -ge "$REVIEWER_SUB_AGENT_FAILURE_CAP" ]; then
+      if [ "$HAS_LABEL" -eq 1 ]; then
+        # Idempotent: label already applied, human already pinged. Re-applying
+        # the label would be a no-op (gh dedupes), but re-posting the comment
+        # would pile up noise on every subsequent failed cycle.
+        echo "[wrapper] PR #$FAILED_PR already carries $REVIEWER_ESCALATION_LABEL ($STUB_COUNT stub failures); skipping escalation (idempotent)" >&2
+      else
+        echo "[wrapper] PR #$FAILED_PR has $STUB_COUNT stub-blocked reviews (cap=$REVIEWER_SUB_AGENT_FAILURE_CAP); escalating to human via $REVIEWER_ESCALATION_LABEL" >&2
+        # Idempotent label create — --force makes "already exists" a no-op.
+        PAGER=cat GIT_PAGER=cat gh label create "$REVIEWER_ESCALATION_LABEL" \
+          --repo "$REPO_SLUG" \
+          --color d73a4a \
+          --description "Reviewer sub-agent failed repeatedly; reviewer will not re-dispatch until removed" \
+          --force >/dev/null 2>&1 || true
+        PAGER=cat GIT_PAGER=cat gh pr edit "$FAILED_PR" \
+          --repo "$REPO_SLUG" \
+          --add-label "$REVIEWER_ESCALATION_LABEL" \
+          >/dev/null 2>&1 || true
+        PAGER=cat GIT_PAGER=cat gh pr comment "$FAILED_PR" \
+          --repo "$REPO_SLUG" \
+          --body "🤖 Reviewer agent has failed $STUB_COUNT consecutive times on this PR. This is likely a deterministic failure (oversized diff, malformed PR, or similar). Human attention required; the reviewer will not re-dispatch on this PR until the \`$REVIEWER_ESCALATION_LABEL\` label is removed." \
+          >/dev/null 2>&1 || true
+      fi
+    else
+      echo "[wrapper] orchestrator reported sub-agent failure on PR #$FAILED_PR ($((STUB_COUNT + 1))/$REVIEWER_SUB_AGENT_FAILURE_CAP); posting stub [reviewer-agent: blocked] review" >&2
+      PAGER=cat GIT_PAGER=cat gh pr review "$FAILED_PR" \
+        --repo "$REPO_SLUG" \
+        --comment \
+        --body "🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure). The reviewer dispatcher will not re-fire on this head SHA. Please push a new commit or request a fresh review." \
+        >/dev/null 2>&1 || true
+    fi
   fi
 fi
 

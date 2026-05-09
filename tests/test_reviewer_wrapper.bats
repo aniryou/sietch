@@ -67,7 +67,32 @@ case "\$SUB1 \$SUB2" in
     emit '{"data":{"repository":{"object":{"committedDate":"2026-05-07T10:00:00Z"}}}}'
     exit 0
     ;;
-  "pr review"|"pr comment")
+  "pr view")
+    # GH#94 cap path: wrapper queries existing reviews + labels before posting
+    # the stub. Drive the test scenario via state files:
+    #   \$state/stub-review-count   — N existing stub-blocked reviews on the PR
+    #   \$state/has-escalation-label — "1" if escalation label already present
+    # Defaults (file missing) are 0 / 0 — matching the original GH#55 path.
+    STUB_COUNT=0
+    if [ -f '$state/stub-review-count' ]; then
+      STUB_COUNT=\$(cat '$state/stub-review-count')
+    fi
+    HAS_LABEL=0
+    if [ -f '$state/has-escalation-label' ]; then
+      HAS_LABEL=\$(cat '$state/has-escalation-label')
+    fi
+    REVIEWS=\$(jq -n --argjson n "\$STUB_COUNT" '
+      [range(\$n) | {
+        body: "🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure).",
+        submittedAt: "2026-05-07T10:00:00Z"
+      }]')
+    LABELS=\$(jq -n --argjson has "\$HAS_LABEL" '
+      if \$has == 1 then [{name: "reviewer:needs-human"}] else [] end')
+    emit "\$(jq -n --argjson reviews "\$REVIEWS" --argjson labels "\$LABELS" \
+      '{reviews: \$reviews, labels: \$labels}')"
+    exit 0
+    ;;
+  "pr review"|"pr comment"|"pr edit"|"label create")
     {
       printf 'CALL: '
       printf '%s ' "\$@"
@@ -211,4 +236,107 @@ STUB
   # `gh pr review` or the wrapper's failure-marker grep needs to update
   # both sites. This test enforces the doc trail.
   grep -qF 'GH#55' "$LOOP_ROOT/templates/reviewer-orchestrator.md"
+}
+
+# ---------------------------------------------------------------------------
+# GH#94: per-PR cap on consecutive sub-agent failures. After
+# REVIEWER_SUB_AGENT_FAILURE_CAP (default 3) wrapper-stub reviews on the same
+# PR, the next failure escalates to a human (label + one comment) instead of
+# posting yet another stub. This stops the per-PR loop on deterministically-
+# failing PRs (oversized diff, malformed PR) where every new push reproduces
+# the same sub-agent failure and accumulates blocked stubs indefinitely.
+#
+# The cap is observable via `gh pr view --json reviews` filtered on the
+# stub-body marker substring "Sub-agent run failed before posting a review"
+# (run-reviewer.sh:139). The escalation label defaults to `reviewer:needs-human`
+# and is consumed by eligibility_review_pending to drop the PR from review
+# dispatch until a human removes the label.
+# ---------------------------------------------------------------------------
+
+@test "run-reviewer.sh: PR has 2 existing stub reviews → wrapper posts stub #3 (still under default cap of 3) (GH#94)" {
+  local repo
+  repo=$(make_repo)
+  _make_path_stubs 0 '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#99 reason=context-exhausted"}]}}'
+  echo 2 >"$BATS_TEST_TMPDIR/state/stub-review-count"
+  echo 0 >"$BATS_TEST_TMPDIR/state/has-escalation-label"
+
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+
+  [ "$status" -eq 0 ]
+  [ -f "$BATS_TEST_TMPDIR/state/gh-args" ]
+  # Stub #3 IS posted (count was 2; 2 < cap=3, still under).
+  grep -qF 'pr review 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF '[reviewer-agent: blocked]' "$BATS_TEST_TMPDIR/state/gh-args"
+  # Cap-path side effects must NOT have fired.
+  ! grep -qF 'pr edit 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  ! grep -qF 'label create' "$BATS_TEST_TMPDIR/state/gh-args"
+  ! grep -qF 'pr comment 99' "$BATS_TEST_TMPDIR/state/gh-args"
+}
+
+@test "run-reviewer.sh: PR has 3 existing stub reviews → wrapper escalates (label + one comment, no stub) (GH#94)" {
+  local repo
+  repo=$(make_repo)
+  _make_path_stubs 0 '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#99 reason=context-exhausted"}]}}'
+  echo 3 >"$BATS_TEST_TMPDIR/state/stub-review-count"
+  echo 0 >"$BATS_TEST_TMPDIR/state/has-escalation-label"
+
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+
+  [ "$status" -eq 0 ]
+  [ -f "$BATS_TEST_TMPDIR/state/gh-args" ]
+  # Escalation: label create (idempotent --force) + label add to PR + ONE
+  # escalation comment. NO stub review.
+  grep -qF 'label create' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'reviewer:needs-human' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'pr edit 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  grep -qF 'pr comment 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  # Critical: no stub review posted at the cap.
+  ! grep -qF 'pr review 99' "$BATS_TEST_TMPDIR/state/gh-args"
+  # Comment was posted exactly once (no pile-up).
+  [ "$(grep -c 'pr comment 99' "$BATS_TEST_TMPDIR/state/gh-args")" -eq 1 ]
+}
+
+@test "run-reviewer.sh: PR already has escalation label → wrapper is fully idempotent (no label, no comment, no stub) (GH#94)" {
+  local repo
+  repo=$(make_repo)
+  _make_path_stubs 0 '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#99 reason=context-exhausted"}]}}'
+  echo 5 >"$BATS_TEST_TMPDIR/state/stub-review-count"
+  echo 1 >"$BATS_TEST_TMPDIR/state/has-escalation-label"
+
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+
+  [ "$status" -eq 0 ]
+  # No mutating side effects at all — full idempotency. The label is already
+  # present, the human has been notified, and re-posting either the label
+  # or the comment would just pile up noise. gh-args either doesn't exist
+  # (no captured call fired) or is empty.
+  [ ! -f "$BATS_TEST_TMPDIR/state/gh-args" ] || [ ! -s "$BATS_TEST_TMPDIR/state/gh-args" ]
+}
+
+@test "run-reviewer.sh: GH#94 cap + escalation wiring is present (source-of-truth)" {
+  # Wrapper grep counts existing stubs by the marker substring.
+  grep -qF 'Sub-agent run failed before posting a review' "$LOOP_ROOT/runners/run-reviewer.sh"
+  # Cap config knob.
+  grep -qF 'REVIEWER_SUB_AGENT_FAILURE_CAP' "$LOOP_ROOT/runners/run-reviewer.sh"
+  # Escalation label config knob.
+  grep -qF 'REVIEWER_ESCALATION_LABEL' "$LOOP_ROOT/runners/run-reviewer.sh"
+  # Wrapper applies the label via gh pr edit (the GH CLI label-add idiom).
+  grep -qE 'gh pr edit' "$LOOP_ROOT/runners/run-reviewer.sh"
+}
+
+@test "loop.config.example: documents REVIEWER_SUB_AGENT_FAILURE_CAP + REVIEWER_ESCALATION_LABEL (GH#94)" {
+  grep -qF 'REVIEWER_SUB_AGENT_FAILURE_CAP' "$LOOP_ROOT/templates/loop.config.example"
+  grep -qF 'REVIEWER_ESCALATION_LABEL' "$LOOP_ROOT/templates/loop.config.example"
+}
+
+@test "reviewer-orchestrator.md: GH#55 note references the GH#94 cap (coupling)" {
+  # Anyone changing the failure-marker format must update both the per-SHA
+  # stub grep AND the per-PR cap grep — they're the same marker.
+  grep -qF 'GH#94' "$LOOP_ROOT/templates/reviewer-orchestrator.md"
 }

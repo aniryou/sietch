@@ -131,6 +131,25 @@ STALE_LOCK_HOURS=6
 # where transient gh / claude API blips are common. (GH#56)
 DEV_HARD_FAILURE_RETRY_LIMIT=3
 
+# Consecutive reviewer sub-agent failures on the same PR before the wrapper
+# stops posting [reviewer-agent: blocked] stub reviews and escalates to a
+# human via ${REVIEWER_ESCALATION_LABEL} + a one-time explanation comment.
+# GH#55 closed the per-SHA loop (each new commit is a fresh head), but on
+# deterministically-failing PRs (oversized diff, malformed PR) every push
+# reproduces the failure and accumulates stubs indefinitely; this cap closes
+# the per-PR loop too. Default 3 — tighten to 2 for faster human escalation,
+# loosen to 5+ on repos where the sub-agent's failure modes are typically
+# transient. (GH#94)
+REVIEWER_SUB_AGENT_FAILURE_CAP=3
+
+# Label applied to a PR after REVIEWER_SUB_AGENT_FAILURE_CAP consecutive
+# stub-blocked reviews. While present, eligibility_review_pending excludes
+# the PR from review dispatch — the wrapper will not re-fire the orchestrator
+# until a human removes the label. Mirrors the BLOCKED_HUMAN_LABEL precedent
+# used by the dev-agent flow. The label is created on demand (idempotent).
+# (GH#94)
+REVIEWER_ESCALATION_LABEL="reviewer:needs-human"
+
 # ---------------------------------------------------------------------------
 # Project-specific test command (used in Mode 3 post-rebase verification)
 # ---------------------------------------------------------------------------
