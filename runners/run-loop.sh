@@ -12,6 +12,13 @@
 # Issue-author is NOT in the loop — it's interactive. Run it manually in a
 # separate terminal: st issue
 #
+# Lock topology — see runners/lib/lock-topology.md for the per-mode map of
+# every mkdir-style lock the fleet uses (Mode 1 wrapper-acquired,
+# Mode 2/3 dispatcher-acquired, reviewer single-pane), the lock dirs
+# ($LOCK_DIR vs $DISPATCH_LOCK_DIR), and the GC story (trap, PID-liveness,
+# stale-lock cleanup). Update that doc in lockstep when adding a new
+# dispatcher or lock-name format.
+#
 # Usage:
 #   st loop                              # equivalent to 'start' with defaults
 #   st loop start                        # create the tmux session and attach
