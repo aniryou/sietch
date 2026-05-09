@@ -208,10 +208,12 @@ _events() {
 }
 
 @test "run-loop.sh emits cycle_start in every dispatcher loop" {
-  # Per-loop pin — guards against regressions where one of the three
+  # Per-loop pin — guards against regressions where one of the four
   # dispatcher loops loses its cycle_start while the others still emit it
-  # (the all-loops grep above would still pass in that case).
-  for role in 'dispatch:followup' 'dispatch:conflicts' 'merger'; do
+  # (the all-loops grep above would still pass in that case). GH#117 added
+  # dispatch:review to the set when loop_reviewer was replaced by
+  # loop_dispatcher_review.
+  for role in 'dispatch:review' 'dispatch:followup' 'dispatch:conflicts' 'merger'; do
     grep -qE "event_emit[[:space:]]+(\"${role}\"|${role})[[:space:]]+cycle_start" \
       "$LOOP_ROOT/runners/run-loop.sh" \
       || { echo "missing cycle_start emit for role=${role}"; return 1; }

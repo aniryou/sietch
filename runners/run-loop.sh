@@ -3,11 +3,11 @@
 # own tmux pane.
 #
 # Layout:
-#   ┌────────────┬─────────────────────┬──────────────────────┐
-#   │ reviewer   │ dispatch:followup   │ dispatch:conflicts   │
-#   ├────────────┼──────────┬──────────┴──────────────────────┤
-#   │ dev-1      │ dev-2    │ dev-3 (number = --dev-instances)│
-#   └────────────┴──────────┴─────────────────────────────────┘
+#   ┌─────────────────────┬─────────────────────┬──────────────────────┐
+#   │ dispatch:review     │ dispatch:followup   │ dispatch:conflicts   │
+#   ├─────────────────────┼──────────┬──────────┴──────────────────────┤
+#   │ dev-1               │ dev-2    │ dev-3 (number = --dev-instances)│
+#   └─────────────────────┴──────────┴─────────────────────────────────┘
 #
 # Issue-author is NOT in the loop — it's interactive. Run it manually in a
 # separate terminal: st issue
@@ -98,6 +98,10 @@ cleanup_stale_dispatch_locks() {
 # governs foreground tmux-pane workers); this caps background dispatches.
 # The LOCK_NAME_PREFIX glob (GH#74) keeps the count repo-local even when
 # DISPATCH_LOCK_DIR is shared with another repo by misconfiguration.
+#
+# Counts follow-up + conflicts locks; review locks (suffix `-review.lock`,
+# GH#117) are tracked separately by count_active_review_dispatch_locks so
+# the two caps stay independent — neither workload can starve the other.
 count_active_dispatch_locks() {
   [ -d "$DISPATCH_LOCK_DIR" ] || {
     echo 0
@@ -105,6 +109,23 @@ count_active_dispatch_locks() {
   }
   local count=0 lock
   for lock in "$DISPATCH_LOCK_DIR"/"${LOCK_NAME_PREFIX}"*.lock; do
+    [ -d "$lock" ] || continue
+    case "$lock" in *-review.lock) continue ;; esac
+    count=$((count + 1))
+  done
+  echo "$count"
+}
+
+# Sibling counter for review-only dispatch locks (GH#117). Independent budget
+# from count_active_dispatch_locks so a saturated follow-up/conflicts cap
+# doesn't block reviews and vice versa.
+count_active_review_dispatch_locks() {
+  [ -d "$DISPATCH_LOCK_DIR" ] || {
+    echo 0
+    return 0
+  }
+  local count=0 lock
+  for lock in "$DISPATCH_LOCK_DIR"/"${LOCK_NAME_PREFIX}"*-review.lock; do
     [ -d "$lock" ] && count=$((count + 1))
   done
   echo "$count"
@@ -175,39 +196,74 @@ loop_dev_mode1() {
   done
 }
 
-loop_reviewer() {
-  local empty_streak=0 ec sleep_for
-  local cycle_counter=0 cycle_id cycle_start_s cycle_dur
+loop_dispatcher_review() {
+  # GH#117: replaces the single-pane `loop_reviewer` with a dispatcher pattern
+  # mirroring loop_dispatcher_followup. Scans eligible PRs via
+  # eligibility_review_pending_list and fans out one background
+  # `run-reviewer.sh <PR>` per slot up to REVIEWER_DISPATCH_MAX_CONCURRENT
+  # so several PR reviews can run in parallel — under the previous design,
+  # each review serialized on the lone reviewer pane.
+  : "${REVIEWER_DISPATCH_MAX_CONCURRENT:=3}"
+  local cycle_counter=0 cycle_id cycle_start_s cycle_dur dispatched empty_streak=0 sleep_for
   while true; do
     cycle_counter=$((cycle_counter + 1))
     cycle_id="$$-${cycle_counter}"
     cycle_start_s=$(date +%s)
-    echo "[$(ts)] [reviewer] starting orchestrator cycle"
-    event_emit reviewer cycle_start cycle_id="$cycle_id"
-    ec=0
-    "$LOOP_HOME/runners/run-reviewer.sh" || ec=$?
+    dispatched=0
+    event_emit "dispatch:review" cycle_start cycle_id="$cycle_id"
+    # Re-source lib/eligibility.sh each cycle so on-disk fixes apply without
+    # restarting the long-running tmux pane (matches the followup/conflicts
+    # dispatchers). Failure logs a WARN and keeps cached helpers.
+    # shellcheck disable=SC1091
+    . "$LOOP_HOME/runners/lib/eligibility.sh" || echo "[$(ts)] [dispatch:review] WARN: failed to re-source lib/eligibility.sh; using cached predicates"
+    cleanup_stale_dispatch_locks
+    echo "[$(ts)] [dispatch:review] scanning open dev-agent PRs..."
+
+    while IFS= read -r pr; do
+      [ -z "$pr" ] && continue
+      local lock="${DISPATCH_LOCK_DIR}/${LOCK_NAME_PREFIX}pr-${pr}-review.lock"
+      [ -d "$lock" ] && continue
+
+      local active
+      active=$(count_active_review_dispatch_locks)
+      if [ "$active" -ge "$REVIEWER_DISPATCH_MAX_CONCURRENT" ]; then
+        echo "[$(ts)] [dispatch:review] at cap (${active}/${REVIEWER_DISPATCH_MAX_CONCURRENT}); skipping remaining eligible PRs this cycle"
+        event_emit "dispatch:review" dispatch_at_cap kind=review active="$active" cap="$REVIEWER_DISPATCH_MAX_CONCURRENT"
+        break
+      fi
+
+      if mkdir "$lock" 2>/dev/null; then
+        echo "$$" >"$lock/pid"
+        echo "[$(ts)] [dispatch:review] dispatching review for PR #${pr}"
+        event_emit "dispatch:review" dispatch_fired kind=review pr="$pr"
+        ("$LOOP_HOME/runners/run-reviewer.sh" "$pr" >/dev/null 2>&1) &
+        local child=$!
+        echo "$child" >"$lock/pid"
+        dispatched=$((dispatched + 1))
+      elif [ ! -d "$lock" ]; then
+        # mkdir failed AND the lock dir doesn't exist — i.e. NOT the
+        # legitimate EEXIST skip (parent missing, permissions, etc.). Make
+        # it loud so a future failure mode isn't another silent fall-through
+        # (mirrors the followup/conflicts dispatchers post-GH#86).
+        echo "[$(ts)] [dispatch:review] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
+        event_emit "dispatch:review" dispatch_skip kind=review pr="$pr" reason=mkdir-failed
+      fi
+    done < <(
+      bash "$LOOP_HOME/runners/lib/eligibility.sh" review-list 2>/dev/null
+    )
+
     cycle_dur=$(($(date +%s) - cycle_start_s))
-    case "$ec" in
-      0)
-        echo "[$(ts)] [reviewer] cycle done (exit 0)"
-        event_emit reviewer cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur"
-        empty_streak=0
-        sleep_for="$POLL_INTERVAL"
-        ;;
-      2)
-        empty_streak=$((empty_streak + 1))
-        sleep_for=$(empty_cycle_sleep "$empty_streak")
-        echo "[$(ts)] [reviewer] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)"
-        event_emit reviewer cycle_skip cycle_id="$cycle_id" reason=no-work streak="$empty_streak" sleep_s="$sleep_for"
-        ;;
-      *)
-        echo "[$(ts)] [reviewer] cycle done (exit ${ec})"
-        event_emit reviewer cycle_end cycle_id="$cycle_id" exit_code="$ec" duration_s="$cycle_dur"
-        empty_streak=0
-        sleep_for="$POLL_INTERVAL"
-        ;;
-    esac
-    echo "[$(ts)] [reviewer] sleeping ${sleep_for}s..."
+    if [ "$dispatched" -eq 0 ]; then
+      empty_streak=$((empty_streak + 1))
+      sleep_for=$(empty_cycle_sleep "$empty_streak")
+      echo "[$(ts)] [dispatch:review] no new dispatches (streak=${empty_streak}, next sleep=${sleep_for}s)"
+      event_emit "dispatch:review" cycle_skip cycle_id="$cycle_id" reason=no-work streak="$empty_streak" sleep_s="$sleep_for"
+    else
+      empty_streak=0
+      sleep_for="$POLL_INTERVAL"
+      echo "[$(ts)] [dispatch:review] dispatched ${dispatched} PR(s); sleeping ${sleep_for}s..."
+      event_emit "dispatch:review" cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur" dispatched="$dispatched"
+    fi
     sleep "$sleep_for"
   done
 }
@@ -457,7 +513,7 @@ if [[ "${1:-}" == --internal-role=* ]]; then
   cd "$REPO" || exit 1
   case "$ROLE" in
     dev-[1-9]) loop_dev_mode1 "${ROLE#dev-}" ;;
-    reviewer) loop_reviewer ;;
+    dispatch-review) loop_dispatcher_review ;;
     dispatch-followup) loop_dispatcher_followup ;;
     dispatch-conflicts) loop_dispatcher_conflicts ;;
     dispatch-merge) loop_dispatcher_merge ;;
@@ -493,7 +549,7 @@ Options (for 'start'):
   --help, -h             Show this help.
 
 Layout:
-  Top row:    reviewer | dispatch:followup | dispatch:conflicts [| merger]
+  Top row:    dispatch:review | dispatch:followup | dispatch:conflicts [| merger]
   Bottom row: dev-1, dev-2, ..., dev-<N>
 
 Inside tmux:
@@ -604,13 +660,13 @@ start_session() {
   tmux set-option -t "$SESSION" pane-border-status top
   tmux set-option -t "$SESSION" pane-border-format ' #{pane_title} '
 
-  # Pane 0 (initial pane) becomes top-left = reviewer.
+  # Pane 0 (initial pane) becomes top-left = dispatch:review.
   TOP1=$(tmux list-panes -t "$SESSION:agents" -F '#{pane_id}' | head -1)
 
   # Split horizontally to create the bottom row at 50% height.
   BOT1=$(tmux split-window -P -F '#{pane_id}' -t "$TOP1" -v -p 50)
 
-  # Split top into 3 cols (reviewer | dispatch:followup | dispatch:conflicts),
+  # Split top into 3 cols (dispatch:review | dispatch:followup | dispatch:conflicts),
   # or 4 cols when --enable-merger adds the merger pane on the right.
   # Even-split percentages: for N panes, split[i] = 100*(N-i)/(N-i+1).
   if [ "$ENABLE_MERGER" -eq 1 ]; then
@@ -636,7 +692,7 @@ start_session() {
   done
 
   # Title each pane (for the tmux pane border).
-  tmux select-pane -t "$TOP1" -T "reviewer"
+  tmux select-pane -t "$TOP1" -T "dispatch:review"
   tmux select-pane -t "$TOP2" -T "dispatch:followup"
   tmux select-pane -t "$TOP3" -T "dispatch:conflicts"
   if [ "$ENABLE_MERGER" -eq 1 ]; then
@@ -648,7 +704,7 @@ start_session() {
 
   # Send the loop command to each pane. Don't `exec` — keeps the shell
   # alive after the loop dies (e.g., from Ctrl+C), so the user sees output.
-  tmux send-keys -t "$TOP1" "cd '$REPO' && '$SCRIPT' --internal-role=reviewer $COMMON_ARGS" Enter
+  tmux send-keys -t "$TOP1" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-review $COMMON_ARGS" Enter
   tmux send-keys -t "$TOP2" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-followup $COMMON_ARGS" Enter
   tmux send-keys -t "$TOP3" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-conflicts $COMMON_ARGS" Enter
   if [ "$ENABLE_MERGER" -eq 1 ]; then

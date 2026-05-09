@@ -15,6 +15,6 @@ project-specific overrides. Defaults are documented inline.
 From anywhere inside this repo:
 
     st dev          # scan issues, claim one, drive a PR
-    st review       # review an open dev-agent PR
+    st review <PR>  # review a specific open dev-agent PR
     st loop start   # run the full multi-agent fleet in tmux
     st help         # full command list

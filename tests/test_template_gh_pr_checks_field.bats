@@ -11,25 +11,28 @@
 # This test pins the correct field so a future template edit can't silently
 # regress to the GH-API-style `conclusion` (used by `pr view`/`pr status`,
 # but not by `pr checks`).
+#
+# GH#117: the reviewer-orchestrator.md template was deleted; the per-PR
+# `gh pr checks` invocation now lives in templates/reviewer.md (Step 1).
 
 load 'helpers'
 
 setup() {
-  ORCH_TPL="$LOOP_ROOT/templates/reviewer-orchestrator.md"
+  REVIEWER_TPL="$LOOP_ROOT/templates/reviewer.md"
   DEV_TPL="$LOOP_ROOT/templates/developer.md"
 }
 
-# --- reviewer-orchestrator.md -------------------------------------------
+# --- reviewer.md --------------------------------------------------------
 
-@test "reviewer-orchestrator template uses 'gh pr checks ... --json state,bucket'" {
-  grep -qE 'gh pr checks[^`]*--json state,bucket' "$ORCH_TPL"
+@test "reviewer template uses 'gh pr checks' (per-PR sanity check)" {
+  grep -qE 'gh pr checks' "$REVIEWER_TPL"
 }
 
-@test "reviewer-orchestrator template does not pass the unknown 'conclusion' field to gh pr checks" {
+@test "reviewer template does not pass the unknown 'conclusion' field to gh pr checks" {
   # The bad form would re-introduce GH#71. Match on the literal field list
   # so a deliberate mention in commentary (e.g. "not conclusion") is still
   # allowed if the actual command uses bucket.
-  ! grep -qE 'gh pr checks[^`]*--json state,conclusion' "$ORCH_TPL"
+  ! grep -qE 'gh pr checks[^`]*--json state,conclusion' "$REVIEWER_TPL"
 }
 
 # --- developer.md -------------------------------------------------------

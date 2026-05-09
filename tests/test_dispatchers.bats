@@ -125,6 +125,48 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# Reviewer dispatcher (GH#117): the previous single-pane loop_reviewer was
+# replaced by loop_dispatcher_review, which scans candidates from
+# eligibility_review_pending_list and fans out per-PR background invocations
+# of `run-reviewer.sh <PR>`. These guards pin the wiring.
+# ---------------------------------------------------------------------------
+
+@test "run-loop.sh: loop_dispatcher_review exists and consumes review-list (GH#117)" {
+  grep -qF 'loop_dispatcher_review()' "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qF 'review-list' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh: loop_reviewer is removed (GH#117)" {
+  ! grep -qF 'loop_reviewer()' "$LOOP_ROOT/runners/run-loop.sh"
+  ! grep -qE -- '--internal-role=reviewer\b' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh: dispatch:review pane is wired in start_session (GH#117)" {
+  grep -qF 'dispatch-review' "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qF 'dispatch:review' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh: review locks use the *-review.lock suffix (GH#117)" {
+  grep -qF 'pr-${pr}-review.lock' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh: review cap is independent (REVIEWER_DISPATCH_MAX_CONCURRENT) (GH#117)" {
+  grep -qF 'REVIEWER_DISPATCH_MAX_CONCURRENT' "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qF 'count_active_review_dispatch_locks' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh: count_active_dispatch_locks excludes review locks (GH#117)" {
+  # The followup/conflicts shared cap must not count review locks against
+  # itself. The skip clause is what enforces the independent budget.
+  grep -qE 'count_active_dispatch_locks\(\)' "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qE '\*-review\.lock\) continue' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "loop.config.example: documents REVIEWER_DISPATCH_MAX_CONCURRENT (GH#117)" {
+  grep -qF 'REVIEWER_DISPATCH_MAX_CONCURRENT' "$LOOP_ROOT/templates/loop.config.example"
+}
+
+# ---------------------------------------------------------------------------
 # templates/developer.md: every Mode 3 abort path must draft the PR (GH#44).
 # Without this, a CONFLICTING + non-draft PR matches the conflicts dispatcher's
 # filter on every cycle and keeps re-firing the LLM until a human intervenes.

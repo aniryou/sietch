@@ -89,9 +89,15 @@ STUB
   repo=$(make_repo)
   tmpbin=$(_make_stub_path fail)
 
+  # GH#117: wrapper now takes a mandatory <PR> arg. The arg-validation rc=2
+  # path is exercised in test_reviewer_wrapper.bats; this test still pins
+  # GH#27's predicate-failure rc=2 contract (gh outage → skip+backoff, not
+  # "proceed to be safe"). The PR arg supplied here is what gets passed to
+  # the wrapper's per-PR `gh pr view`; the `fail` stub makes that view
+  # exit 1, and the wrapper's empty-PR_DATA branch is what we're pinning.
   REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
     run env PATH="$tmpbin:$PATH" \
-    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+    bash "$LOOP_ROOT/runners/run-reviewer.sh" 99
 
   [ "$status" -eq 2 ]
   [ ! -f "$BATS_TEST_TMPDIR/claude-was-called" ]
@@ -121,13 +127,44 @@ STUB
 }
 
 @test "run-reviewer.sh: predicate rc=1 (no work) → exit 2, no claude (regression guard)" {
+  # GH#117: the wrapper now takes a specific <PR> and does its own per-PR
+  # eligibility check (drafted / reviewed / escalated / CI-running). The
+  # equivalent of "rc=1 no work" is now "this PR is not eligible". Use a
+  # gh stub that returns a drafted-PR shape so the wrapper's skip-arm fires.
   local repo tmpbin
   repo=$(make_repo)
-  tmpbin=$(_make_stub_path empty)
+  tmpbin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$tmpbin"
+  cat >"$tmpbin/gh" <<'STUB'
+#!/usr/bin/env bash
+ARGS=("$@")
+JSON_EXPR=""
+for ((i=0; i<${#ARGS[@]}; i++)); do
+  if [ "${ARGS[i]}" = "--json" ]; then JSON_EXPR="${ARGS[i+1]:-}"; fi
+done
+case "${ARGS[0]:-} ${ARGS[1]:-}" in
+  "pr view")
+    if [[ "$JSON_EXPR" == *statusCheckRollup* ]]; then
+      jq -n '{state: "OPEN", isDraft: true, headRefOid: "abc", number: 99,
+              reviews: [], labels: [],
+              statusCheckRollup: [{__typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS"}]}'
+      exit 0
+    fi
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$tmpbin/gh"
+  cat >"$tmpbin/claude" <<STUB
+#!/usr/bin/env bash
+touch "$BATS_TEST_TMPDIR/claude-was-called"
+exit 0
+STUB
+  chmod +x "$tmpbin/claude"
 
   REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
     run env PATH="$tmpbin:$PATH" \
-    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+    bash "$LOOP_ROOT/runners/run-reviewer.sh" 99
 
   [ "$status" -eq 2 ]
   [ ! -f "$BATS_TEST_TMPDIR/claude-was-called" ]

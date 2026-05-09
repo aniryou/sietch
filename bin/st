@@ -8,7 +8,7 @@
 #   st dev                        # scan issues, claim one, drive a PR
 #   st dev follow-up <PR>         # address reviewer-agent feedback
 #   st dev resolve <PR>           # auto-resolve merge conflicts (triage-gated)
-#   st review                     # dispatch a per-PR reviewer sub-agent
+#   st review <PR>                # review a specific open dev-agent PR
 #   st issue [message]            # interactive issue author
 #   st loop [start|stop|...]      # tmux multi-pane orchestrator
 #   st triage <PR>                # decide whether a conflict is auto-resolvable
@@ -85,7 +85,7 @@ project-specific overrides. Defaults are documented inline.
 From anywhere inside this repo:
 
     st dev          # scan issues, claim one, drive a PR
-    st review       # review an open dev-agent PR
+    st review <PR>  # review a specific open dev-agent PR
     st loop start   # run the full multi-agent fleet in tmux
     st help         # full command list
 EOF
