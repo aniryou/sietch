@@ -68,3 +68,80 @@ setup() {
   echo "$hard_rules" | grep -qiE 'git show.*more than once|do not.*git show.*twice|never.*git show.*same' \
     || { echo "Hard Rules missing 'no repeated git show for the same <sha>:<path>' guidance" >&2; false; }
 }
+
+@test "reviewer template uses portable array iteration for CHANGED_AM (zsh-safe)" {
+  # The original implementation used unquoted `$CHANGED_AM` which silently
+  # fails in zsh (no default word-splitting) — every Read of /tmp/pr-N-files/
+  # missed and the agent fell back to per-file `git show`, defeating GH#136.
+  # Pin the array form so a regression to the unquoted-string form fails CI.
+  grep -qE 'CHANGED_AM=\(\)' "$REVIEWER_TPL" \
+    || { echo "reviewer.md missing 'CHANGED_AM=()' array initialisation" >&2; false; }
+  grep -qE '\$\{CHANGED_AM\[@\]\}' "$REVIEWER_TPL" \
+    || { echo "reviewer.md missing quoted '\${CHANGED_AM[@]}' array expansion" >&2; false; }
+  # Reject the bash-only unquoted expansion in the archive command.
+  if grep -qE 'archive .*HEAD_SHA.* -- \$CHANGED_AM([[:space:]]|$|\|)' "$REVIEWER_TPL"; then
+    echo "reviewer.md still uses unquoted \$CHANGED_AM (bash-only word-splitting; fails in zsh)" >&2
+    false
+  fi
+}
+
+@test "archive dump materialises post-PR files end-to-end under zsh and bash" {
+  # Runtime test (companion to the static lint above): build a fixture git
+  # repo that mirrors a PR (base + head commits, two AM files), then run
+  # the same archive+tar logic the template uses, in both bash and the zsh
+  # shell that Claude Code's Bash tool spawns on macOS. Catches regressions
+  # the static greps can't: word-splitting failures, tied-parameter
+  # clobbering (`path`/`PATH`), tar incompatibilities, etc.
+  command -v git >/dev/null 2>&1 || skip "git not installed"
+
+  local sandbox="$BATS_TEST_TMPDIR/archive-fixture"
+  mkdir -p "$sandbox"
+  (
+    cd "$sandbox"
+    git init -q
+    git config user.email test@test.test
+    git config user.name test
+    printf 'v1\n' > a.txt
+    git add a.txt
+    git commit -qm base
+    git rev-parse HEAD > "$BATS_TEST_TMPDIR/base_sha"
+    printf 'v2\n' > a.txt
+    printf 'added\n' > b.txt
+    git add a.txt b.txt
+    git commit -qm head
+    git rev-parse HEAD > "$BATS_TEST_TMPDIR/head_sha"
+  )
+  local base_sha head_sha
+  base_sha=$(cat "$BATS_TEST_TMPDIR/base_sha")
+  head_sha=$(cat "$BATS_TEST_TMPDIR/head_sha")
+
+  # Snippet body (matches templates/reviewer.md, parameterised on REPO/HEAD/BASE/DEST).
+  local snippet='
+    set -e
+    mkdir -p "$DEST"
+    CHANGED_AM=()
+    while IFS= read -r f; do
+      [ -n "$f" ] && CHANGED_AM+=("$f")
+    done < <(git -C "$REPO" diff --name-only --diff-filter=AM "$BASE".."$HEAD")
+    if [ "${#CHANGED_AM[@]}" -gt 0 ]; then
+      git -C "$REPO" archive "$HEAD" -- "${CHANGED_AM[@]}" | tar -x -C "$DEST"
+    fi
+  '
+
+  for shell_bin in bash zsh; do
+    command -v "$shell_bin" >/dev/null 2>&1 || { echo "skipping $shell_bin (not installed)"; continue; }
+    local dest="$BATS_TEST_TMPDIR/dump-$shell_bin"
+    rm -rf "$dest"
+    REPO="$sandbox" HEAD="$head_sha" BASE="$base_sha" DEST="$dest" PATH="$PATH" \
+      "$shell_bin" -c "$snippet" \
+      || { echo "$shell_bin: snippet failed"; false; }
+    [ -f "$dest/a.txt" ] \
+      || { echo "$shell_bin: expected $dest/a.txt to exist"; ls -laR "$dest" >&2; false; }
+    [ -f "$dest/b.txt" ] \
+      || { echo "$shell_bin: expected $dest/b.txt to exist"; ls -laR "$dest" >&2; false; }
+    [ "$(cat "$dest/a.txt")" = "v2" ] \
+      || { echo "$shell_bin: a.txt content wrong (expected v2, got $(cat "$dest/a.txt"))"; false; }
+    [ "$(cat "$dest/b.txt")" = "added" ] \
+      || { echo "$shell_bin: b.txt content wrong (expected added, got $(cat "$dest/b.txt"))"; false; }
+  done
+}

@@ -82,10 +82,22 @@ REPO="${REPO_ROOT:-.}"
 BASE_SHA=$(gh pr view "$PR" --repo ${REPO_SLUG} --json baseRefOid -q .baseRefOid)
 git -C "$REPO" fetch --quiet origin "$HEAD_SHA" 2>/dev/null || true
 mkdir -p /tmp/pr-${PR}-files
-CHANGED_AM=$(git -C "$REPO" diff --name-only --diff-filter=AM "$BASE_SHA".."$HEAD_SHA")
-if [ -n "$CHANGED_AM" ]; then
-  # shellcheck disable=SC2086 # word-splitting is the point — pass each path as a separate arg
-  git -C "$REPO" archive "$HEAD_SHA" -- $CHANGED_AM | tar -x -C /tmp/pr-${PR}-files
+# Read paths into an array, then expand quoted. Unquoted `$CHANGED_AM`
+# would have worked in bash but silently fails in zsh (Claude Code's
+# Bash tool runs commands under /bin/zsh on macOS) — zsh does not word-
+# split unquoted parameter expansions by default, so the multi-line
+# string ends up as one bogus pathspec and `git archive` errors with no
+# files extracted. Loop variable is `f`, not `path`, to avoid clobbering
+# zsh's `path` (an array tied to `PATH` via `export -T`).
+CHANGED_AM=()
+while IFS= read -r f; do
+  [ -n "$f" ] && CHANGED_AM+=("$f")
+done < <(git -C "$REPO" diff --name-only --diff-filter=AM "$BASE_SHA".."$HEAD_SHA")
+if [ "${#CHANGED_AM[@]}" -gt 0 ]; then
+  git -C "$REPO" archive "$HEAD_SHA" -- "${CHANGED_AM[@]}" | tar -x -C /tmp/pr-${PR}-files
+  # Sanity: surface silent archive failures so the agent doesn't silently
+  # fall back to per-file `git show` for everything (defeats GH#136).
+  [ -n "$(ls /tmp/pr-${PR}-files 2>/dev/null)" ] || echo "[reviewer template] archive dump produced no files at $HEAD_SHA"
 fi
 
 # PR metadata
