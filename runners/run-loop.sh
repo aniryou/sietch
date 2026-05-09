@@ -99,6 +99,35 @@ cleanup_stale_dispatch_locks() {
   done
 }
 
+cleanup_stale_dev_locks() {
+  # Symmetric counterpart to cleanup_stale_dispatch_locks for $LOCK_DIR
+  # (GH#139). The wrapper's EXIT/INT/TERM trap (run-developer.sh:198-210)
+  # is the primary release path on healthy exits, but a SIGKILL — or any
+  # crash that bypasses the trap — leaks a ${LOCK_NAME_PREFIX}gh-N.lock
+  # indefinitely. eligibility_dev_count and eligibility_dev_candidates
+  # (eligibility.sh:148,256) treat the leaked lock as a live claim, so
+  # without this GC the issue is permanently unclaimable until a human
+  # rm -rf's it manually.
+  #
+  # Heal a missing parent first, mirroring the dispatcher GC's GH#86 logic:
+  # if WORKTREE_BASE was wiped between cycles, every later wrapper mkdir
+  # would fail silently otherwise.
+  mkdir -p "$LOCK_DIR" 2>/dev/null
+  [ -d "$LOCK_DIR" ] || return 0
+  # Glob only own-prefix gh-* locks. Stays scoped to OUR repo when LOCK_DIR
+  # is shared with another repo via misconfiguration (GH#74), and avoids
+  # touching any non-issue lock dirs a future caller might add under
+  # LOCK_DIR.
+  for lock in "$LOCK_DIR"/"${LOCK_NAME_PREFIX}"gh-*.lock; do
+    [ -d "$lock" ] || continue
+    local pid
+    pid=$(cat "$lock/pid" 2>/dev/null || echo "")
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf "$lock"
+    fi
+  done
+}
+
 # Count surviving (live-PID) dispatch locks for THIS repo only. Callers
 # must invoke cleanup_stale_dispatch_locks first so dead PIDs don't
 # inflate the count. Independent budget from DEV_INSTANCES (which
@@ -174,6 +203,11 @@ loop_dev_mode1() {
     cycle_start_s=$(date +%s)
     echo "[$(ts)] [dev-${id}] starting Mode 1 cycle"
     event_emit "dev-${id}" cycle_start cycle_id="$cycle_id"
+    # GC any leaked gh-N issue locks before the wrapper's preflight runs
+    # (GH#139). The wrapper's trap is the primary release path; this only
+    # catches the SIGKILL-leak case where the trap was bypassed and the
+    # lock would otherwise block the issue from any future cycle.
+    cleanup_stale_dev_locks
     ec=0
     "$LOOP_HOME/runners/run-developer.sh" || ec=$?
     cycle_dur=$(($(date +%s) - cycle_start_s))

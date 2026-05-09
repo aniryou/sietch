@@ -264,6 +264,12 @@ if [ "$MODE" = "default" ]; then
         # issue number. Default behaviour with per-repo WORKTREE_BASE is
         # unchanged (the prefix just adds belt-and-suspenders).
         if mkdir "$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock" 2>/dev/null; then
+          # Stamp $$ for cleanup_stale_dev_locks (GH#139). The symmetric
+          # PID-liveness GC in run-loop.sh's loop_dev_mode1 needs this to
+          # tell a live wrapper from a SIGKILL-leaked lock; written first
+          # so the GC's race window between mkdir and pid-write is the
+          # narrowest possible single shell statement.
+          echo "$$" >"$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock/pid"
           echo "$DEV_AGENT_RUN_ID" >"$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock/run_id"
           date -Iseconds >"$LOCK_DIR/${LOCK_NAME_PREFIX}gh-${_cand}.lock/started"
           DEV_AGENT_TARGET_ISSUE="$_cand"
