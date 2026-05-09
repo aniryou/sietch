@@ -582,7 +582,7 @@ Exit. Single-pass mode — do not pick another issue or PR.
 
 Invoked when the kickoff prompt names a specific PR (e.g., "MODE 3 (resolve merge conflicts) on PR #27"). The wrapper has already run `.loop/run-conflict-triage.sh` and confirmed the conflict is tractable — your job is to perform the rebase, resolve the conflicts mechanically, verify tests still pass, and force-push the result. **Skip the entire Mode 1 issue scan.**
 
-The triage script's strict-mode rules already guarantee that the conflicts are NOT in test files, NOT in CI workflows, NOT in secrets/credentials, NOT in core code files (`eval.py`, `Dockerfile`, `.pre-commit-config.yaml`), and total ≤ 10 lines. If any of those constraints appear violated when you start, the triage script was bypassed — abort immediately, that's a bug.
+The triage script's strict-mode rules already guarantee that the conflicts are NOT in test files, NOT in CI workflows, NOT in secrets/credentials, NOT in core code files (`eval.py`, `Dockerfile`, `.pre-commit-config.yaml`), and total ≤ ${TRIAGE_LINE_LIMIT} lines. If any of those constraints appear violated when you start, the triage script was bypassed — abort immediately, that's a bug.
 
 Capture `PR=<num>` from the kickoff prompt.
 
@@ -628,7 +628,7 @@ echo "[dev-agent] PR #$PR head before resolution: $PRE_SHA"
 git -C "$WORKTREE" rebase origin/main
 ```
 
-This will fail with conflicts (we know — triage said tractable, meaning ≤ 10 mechanical conflict lines). That's expected.
+This will fail with conflicts (we know — triage said tractable, meaning ≤ ${TRIAGE_LINE_LIMIT} mechanical conflict lines). That's expected.
 
 ### Step R4 — Resolve each conflict file
 
@@ -649,7 +649,7 @@ git -C "$WORKTREE" rebase --abort
 gh pr comment "$PR" --body "$(cat <<'EOF'
 🤖 Mode 3 conflict resolution — aborted (ambiguous intent).
 
-The triage script flagged these conflicts as mechanically tractable (≤ 10 lines, not in test/CI/core files), but on inspection the changes have overlapping intent that I can't safely auto-resolve. Specifically:
+The triage script flagged these conflicts as mechanically tractable (≤ ${TRIAGE_LINE_LIMIT} lines, not in test/CI/core files), but on inspection the changes have overlapping intent that I can't safely auto-resolve. Specifically:
 
 - <conflict file>: <one-line summary of the ambiguity>
 
