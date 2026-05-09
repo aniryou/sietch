@@ -36,6 +36,10 @@ set -o pipefail
 
 # shellcheck disable=SC1091
 . "$REPO_ROOT/.loop/loop.config"
+# Canonical loop_sanitize_id helper — single source of truth for the
+# LOCK_NAME_PREFIX defaulting below (GH#98).
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/repo_id.sh"
 
 # Default for older loop.config files predating GH#28. Set unconditionally
 # (default-if-unset) so consumer repos don't have to re-run `st init` to pick
@@ -57,8 +61,8 @@ set -o pipefail
 
 # Default for older loop.config files predating GH#74 (multi-repo support).
 # Sanitize REPO_NAME so a `.`-bearing name (e.g. lodash.debounce) still
-# yields a filesystem-safe prefix.
-: "${LOCK_NAME_PREFIX:=$(printf '%s' "${REPO_NAME:-}" | tr -c 'A-Za-z0-9_-' '-')-}"
+# yields a filesystem-safe prefix. Helper sourced above (GH#98).
+: "${LOCK_NAME_PREFIX:=$(loop_sanitize_id "${REPO_NAME:-}")-}"
 
 # ---------------------------------------------------------------------------
 # Mode 1 dev-agent: open severity:high|medium issues with no assignee, no
