@@ -55,7 +55,8 @@ REPO="$REPO_ROOT"
 # `tmux new-session` and refused to start.
 # Exported so child wrappers (run-developer.sh, run-reviewer.sh) write to
 # the same /tmp/loop-events-${SESSION}.jsonl file (GH#92).
-export SESSION="$(loop_session_name)"
+SESSION="$(loop_session_name)"
+export SESSION
 
 DEV_INSTANCES="$DEV_INSTANCES_DEFAULT"
 POLL_INTERVAL="$POLL_INTERVAL_DEFAULT"

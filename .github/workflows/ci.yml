@@ -18,6 +18,7 @@ env:
     runners/run-reviewer.sh
     runners/lib/dispatcher.sh
     runners/lib/eligibility.sh
+    runners/lib/event_log.sh
     runners/lib/jitter.sh
     runners/lib/jq_filter.sh
     runners/lib/onboard.sh

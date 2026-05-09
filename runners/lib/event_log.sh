@@ -38,6 +38,7 @@ event_emit() {
     --arg event "$event"
     --argjson schema_version "$LOOP_EVENT_SCHEMA_VERSION"
   )
+  # shellcheck disable=SC2016 # $vars here are jq bindings, not shell expansions
   local filter='{ts:$ts, session:$session, repo:$repo, role:$role, event:$event, schema_version:$schema_version}'
 
   local kv k v
