@@ -26,6 +26,12 @@
 # loop.config keys consumed:
 #   REPO_SLUG, BRANCH_PREFIX, SEVERITY_LABEL_HIGH, SEVERITY_LABEL_MEDIUM,
 #   REVIEWER_AGENT_VERDICT_REGEX
+#
+# Parity with prompt skip-rules: see eligibility-parity.md (sibling file).
+# Each predicate below is the gate of record for one or more "skip if X"
+# rules in templates/{developer,reviewer,reviewer-orchestrator}.md. When
+# adding or changing a predicate, update the parity matrix at the same
+# time so the prompt rules and predicate filters stay in lockstep.
 
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
