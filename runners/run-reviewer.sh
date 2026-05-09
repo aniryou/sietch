@@ -16,6 +16,10 @@ set -o pipefail
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
+# Structured event log (GH#92) — best-effort NDJSON emission alongside the
+# existing human-readable echoes.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/event_log.sh"
 
 # Preflight: skip the LLM if no dev-agent PR needs review at its current
 # headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
@@ -23,10 +27,14 @@ REPO="$REPO_ROOT"
 EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" review)
 EL_RC=$?
 case "$EL_RC" in
-  0) echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding" ;;
+  0)
+    echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding"
+    event_emit reviewer eligibility result=proceeding count="$EL_COUNT"
+    ;;
   1)
     echo "[wrapper] eligibility: no PRs need review; skipping LLM invocation"
     echo "[wrapper] result=no-work"
+    event_emit reviewer eligibility result=no-work
     exit 2
     ;;
   *)
@@ -38,6 +46,7 @@ case "$EL_RC" in
     # Operators see the failure on stderr and can intervene.
     echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM invocation and backing off" >&2
     echo "[wrapper] result=no-work reason=predicate-failed"
+    event_emit reviewer eligibility result=predicate-failed rc="$EL_RC"
     exit 2
     ;;
 esac
@@ -85,6 +94,8 @@ echo
 # Background the pipeline in a subshell with `set -m` so `wait` (below) is
 # signal-interruptible and the pipeline lives in its own process group. See
 # runners/lib/pipeline_signal.sh for the rationale.
+event_emit reviewer llm_started mode=default
+_llm_start_s=$(date +%s)
 set -m
 (
   PAGER=cat GIT_PAGER=cat \
@@ -105,6 +116,7 @@ set +m
 
 wait "$PIPELINE_PID"
 LLM_EXIT=$?
+event_emit reviewer llm_exited mode=default exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))"
 
 # GH#55: when the orchestrator emits `result=sub-agent-failed pr=#N` and the
 # pipeline still exits 0 (the orchestrator's failure path is structured exit 0
@@ -138,6 +150,7 @@ if [ "$LLM_EXIT" -eq 0 ]; then
       --comment \
       --body "🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure). The reviewer dispatcher will not re-fire on this head SHA. Please push a new commit or request a fresh review." \
       >/dev/null 2>&1 || true
+    event_emit reviewer hard_failure mode=default pr="$FAILED_PR" reason=sub-agent-failed
   fi
 fi
 

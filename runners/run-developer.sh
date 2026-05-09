@@ -60,6 +60,11 @@ esac
 REPO="$REPO_ROOT"
 # shellcheck disable=SC1091
 . "$REPO/.loop/loop.config"
+# Structured event log (GH#92) — best-effort NDJSON emission alongside the
+# existing human-readable echoes. Sourced before any boundary that might
+# emit so a sourcing failure surfaces here, not mid-run.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/event_log.sh"
 
 # Default for older loop.config files predating GH#74. Sanitize via the
 # same rule used in lib/repo_id.sh so REPO_NAMEs containing `.` produce a
@@ -74,10 +79,14 @@ if [ "$MODE" = "default" ]; then
   EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" dev)
   EL_RC=$?
   case "$EL_RC" in
-    0) echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding" ;;
+    0)
+      echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding"
+      event_emit dev eligibility result=proceeding count="$EL_COUNT" mode="$MODE"
+      ;;
     1)
       echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
       echo "[wrapper] result=no-work mode=$MODE"
+      event_emit dev eligibility result=no-work mode="$MODE"
       exit 2
       ;;
     *)
@@ -89,6 +98,7 @@ if [ "$MODE" = "default" ]; then
       # Operators see the failure on stderr and can intervene.
       echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM invocation and backing off" >&2
       echo "[wrapper] result=no-work mode=$MODE reason=predicate-failed"
+      event_emit dev eligibility result=predicate-failed mode="$MODE" rc="$EL_RC"
       exit 2
       ;;
   esac
@@ -241,6 +251,7 @@ if [ "$MODE" = "default" ]; then
         # the listing and our mkdir attempts. Skip the LLM — no work left.
         echo "[wrapper] eligibility: every candidate already locked by sibling runs; skipping LLM"
         echo "[wrapper] result=lock-race-loss-pre-LLM mode=$MODE"
+        event_emit dev lock_race_lost run_id="$DEV_AGENT_RUN_ID"
         exit 2
       fi
       export DEV_AGENT_TARGET_ISSUE
@@ -252,10 +263,12 @@ if [ "$MODE" = "default" ]; then
       # from the PR body, so they set $WORKTREE themselves in F3/R1.
       export WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"
       echo "[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding"
+      event_emit dev lock_acquired issue="$DEV_AGENT_TARGET_ISSUE" run_id="$DEV_AGENT_RUN_ID"
       ;;
     1)
       echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
       echo "[wrapper] result=no-work mode=$MODE"
+      event_emit dev eligibility result=no-work mode="$MODE"
       exit 2
       ;;
     *)
@@ -264,6 +277,7 @@ if [ "$MODE" = "default" ]; then
       # rediscover and re-race anyway. Treat as no-work.
       echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM" >&2
       echo "[wrapper] result=predicate-failed mode=$MODE"
+      event_emit dev eligibility result=predicate-failed mode="$MODE" rc="$EL_RC"
       exit 2
       ;;
   esac
@@ -299,14 +313,17 @@ if [ "$MODE" = "resolve-conflicts" ]; then
       if grep -q 'reason=no-conflict' <<<"$TRIAGE_OUTPUT"; then
         echo "[wrapper] triage reports no conflict — skipping LLM (PR already mergeable)."
         echo "[wrapper] result=triage-no-conflict pr=#${TARGET_PR}"
+        event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=no-conflict
         exit 0
       fi
       echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
+      event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=mechanical-conflict
       ;;
     1)
       echo "$TRIAGE_OUTPUT" >&2
       REASON=$(echo "$TRIAGE_OUTPUT" | grep -oE 'reason=[^ ]+' | head -1 | cut -d= -f2-)
       echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
+      event_emit dev triage_result pr="$TARGET_PR" result=untractable reason="$REASON"
       PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
         cat <<EOF
 🤖 Conflict triage — auto-resolution declined.
@@ -330,6 +347,7 @@ EOF
       echo "$TRIAGE_OUTPUT" >&2
       echo "[wrapper] triage failed (rc=$TRIAGE_RC); transient setup error, skipping LLM and not drafting. Will retry next dispatcher cycle." >&2
       echo "[wrapper] result=triage-failed pr=#${TARGET_PR} rc=${TRIAGE_RC}"
+      event_emit dev triage_result pr="$TARGET_PR" result=failed rc="$TRIAGE_RC"
       exit 2
       ;;
   esac
@@ -369,6 +387,17 @@ echo
 # Inherited by claude and every Bash subprocess the agent spawns. Cuts
 # ~70 chars of pure-boilerplate prefix from every gh tool call.
 export GH_REPO="$REPO_SLUG"
+# GH#92: emit llm_started and capture wall-clock so the matching llm_exited
+# event records duration_s. The `pr`/`issue` field disambiguates which work
+# unit the LLM ran on; only one is populated per mode.
+_llm_target_kv=()
+if [ -n "$TARGET_PR" ]; then
+  _llm_target_kv=(pr="$TARGET_PR")
+elif [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
+  _llm_target_kv=(issue="$DEV_AGENT_TARGET_ISSUE")
+fi
+event_emit dev llm_started mode="$MODE" run_id="$DEV_AGENT_RUN_ID" "${_llm_target_kv[@]}"
+_llm_start_s=$(date +%s)
 set -m
 (
   PAGER=cat GIT_PAGER=cat \
@@ -389,6 +418,7 @@ set +m
 
 wait "$PIPELINE_PID"
 LLM_EXIT=$?
+event_emit dev llm_exited mode="$MODE" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_target_kv[@]}"
 
 # GH#56 — Mode 1 hard-failure retry counter (wrapper-side).
 #
@@ -450,6 +480,7 @@ if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
         >/dev/null 2>&1 || true
       unset _retry_body
     fi
+    event_emit dev hard_failure mode="$MODE" issue="$DEV_AGENT_TARGET_ISSUE" exit_code="$LLM_EXIT" retry_count="$_retry_next"
     unset _retry_labels_json _retry_current _retry_next
   else
     # Success path — clear any dev-failed:N labels so a transient failure
@@ -507,6 +538,7 @@ EOF
   )
   PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$HARD_FAIL_BODY" >/dev/null 2>&1 || true
   PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
 fi
 
 # GH#49: hard-failure marker for Mode 2 (follow-up). When `claude` exits
@@ -528,6 +560,7 @@ fi
 # `isDraft == false` filter then excludes.
 if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
   PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle." >/dev/null 2>&1 || true
+  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
 fi
 
 exit "$LLM_EXIT"

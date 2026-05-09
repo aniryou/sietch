@@ -42,6 +42,8 @@ REPO="$REPO_ROOT"
 . "$LOOP_HOME/runners/lib/eligibility.sh"
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/repo_id.sh"
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/event_log.sh"
 
 # Default for older loop.config files predating GH#74. Sanitize via the
 # same helper as the SESSION derivation so the prefix stays filesystem-safe
@@ -51,7 +53,10 @@ REPO="$REPO_ROOT"
 # Per-repo tmux session — two `st loop start` fleets in different repos
 # can coexist (GH#74). Old hardcoded `agent-loop` collided on the second
 # `tmux new-session` and refused to start.
+# Exported so child wrappers (run-developer.sh, run-reviewer.sh) write to
+# the same /tmp/loop-events-${SESSION}.jsonl file (GH#92).
 SESSION="$(loop_session_name)"
+export SESSION
 
 DEV_INSTANCES="$DEV_INSTANCES_DEFAULT"
 POLL_INTERVAL="$POLL_INTERVAL_DEFAULT"
@@ -128,6 +133,7 @@ empty_cycle_sleep() {
 loop_dev_mode1() {
   local id="$1"
   local empty_streak=0 ec sleep_for jitter
+  local cycle_counter=0 cycle_id cycle_start_s cycle_dur
   # De-converge parallel workers that all wake from `tmux send-keys` at the
   # same instant — without this, the first cycle has N-1 wasted scans as
   # everyone races for the same lock. See loop-k8u / GH#9.
@@ -135,12 +141,18 @@ loop_dev_mode1() {
   echo "[$(ts)] [dev-${id}] startup jitter: sleeping ${jitter}s before first cycle"
   sleep "$jitter"
   while true; do
+    cycle_counter=$((cycle_counter + 1))
+    cycle_id="$$-${cycle_counter}"
+    cycle_start_s=$(date +%s)
     echo "[$(ts)] [dev-${id}] starting Mode 1 cycle"
+    event_emit "dev-${id}" cycle_start cycle_id="$cycle_id"
     ec=0
     "$LOOP_HOME/runners/run-developer.sh" || ec=$?
+    cycle_dur=$(($(date +%s) - cycle_start_s))
     case "$ec" in
       0)
         echo "[$(ts)] [dev-${id}] cycle done (exit 0)"
+        event_emit "dev-${id}" cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur"
         empty_streak=0
         sleep_for="$POLL_INTERVAL"
         ;;
@@ -148,9 +160,11 @@ loop_dev_mode1() {
         empty_streak=$((empty_streak + 1))
         sleep_for=$(empty_cycle_sleep "$empty_streak")
         echo "[$(ts)] [dev-${id}] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)"
+        event_emit "dev-${id}" cycle_skip cycle_id="$cycle_id" reason=no-work streak="$empty_streak" sleep_s="$sleep_for"
         ;;
       *)
         echo "[$(ts)] [dev-${id}] cycle done (exit ${ec})"
+        event_emit "dev-${id}" cycle_end cycle_id="$cycle_id" exit_code="$ec" duration_s="$cycle_dur"
         # Don't backoff on agent failures — keep base interval so we retry promptly
         empty_streak=0
         sleep_for="$POLL_INTERVAL"
@@ -163,13 +177,20 @@ loop_dev_mode1() {
 
 loop_reviewer() {
   local empty_streak=0 ec sleep_for
+  local cycle_counter=0 cycle_id cycle_start_s cycle_dur
   while true; do
+    cycle_counter=$((cycle_counter + 1))
+    cycle_id="$$-${cycle_counter}"
+    cycle_start_s=$(date +%s)
     echo "[$(ts)] [reviewer] starting orchestrator cycle"
+    event_emit reviewer cycle_start cycle_id="$cycle_id"
     ec=0
     "$LOOP_HOME/runners/run-reviewer.sh" || ec=$?
+    cycle_dur=$(($(date +%s) - cycle_start_s))
     case "$ec" in
       0)
         echo "[$(ts)] [reviewer] cycle done (exit 0)"
+        event_emit reviewer cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur"
         empty_streak=0
         sleep_for="$POLL_INTERVAL"
         ;;
@@ -177,9 +198,11 @@ loop_reviewer() {
         empty_streak=$((empty_streak + 1))
         sleep_for=$(empty_cycle_sleep "$empty_streak")
         echo "[$(ts)] [reviewer] cycle skipped (no work, streak=${empty_streak}, next sleep=${sleep_for}s)"
+        event_emit reviewer cycle_skip cycle_id="$cycle_id" reason=no-work streak="$empty_streak" sleep_s="$sleep_for"
         ;;
       *)
         echo "[$(ts)] [reviewer] cycle done (exit ${ec})"
+        event_emit reviewer cycle_end cycle_id="$cycle_id" exit_code="$ec" duration_s="$cycle_dur"
         empty_streak=0
         sleep_for="$POLL_INTERVAL"
         ;;
@@ -190,7 +213,13 @@ loop_reviewer() {
 }
 
 loop_dispatcher_followup() {
+  local cycle_counter=0 cycle_id cycle_start_s cycle_dur dispatched
   while true; do
+    cycle_counter=$((cycle_counter + 1))
+    cycle_id="$$-${cycle_counter}"
+    cycle_start_s=$(date +%s)
+    dispatched=0
+    event_emit "dispatch:followup" cycle_start cycle_id="$cycle_id"
     # Re-read lib/dispatcher.sh and lib/eligibility.sh each cycle so on-disk
     # fixes apply without restarting the long-running tmux pane. Failure
     # (mid-edit, syntax error) logs a WARN and continues with the previously
@@ -212,6 +241,7 @@ loop_dispatcher_followup() {
       active=$(count_active_dispatch_locks)
       if [ "$active" -ge "$DISPATCH_MAX_CONCURRENT" ]; then
         echo "[$(ts)] [dispatch:followup] at cap (${active}/${DISPATCH_MAX_CONCURRENT}); skipping remaining eligible PRs this cycle"
+        event_emit "dispatch:followup" dispatch_at_cap kind=followup active="$active" cap="$DISPATCH_MAX_CONCURRENT"
         break
       fi
 
@@ -224,21 +254,25 @@ loop_dispatcher_followup() {
       verdict=$(eligibility_followup_pr "$pr") || ec=$?
       if [ "$ec" -ne 0 ]; then
         echo "[$(ts)] [dispatch:followup] skip PR #${pr} (verdict=${verdict})"
+        event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" verdict="$verdict"
         continue
       fi
 
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (verdict=${verdict})"
+        event_emit "dispatch:followup" dispatch_fired kind=followup pr="$pr" verdict="$verdict"
         ("$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
         local child=$!
         echo "$child" >"$lock/pid"
+        dispatched=$((dispatched + 1))
       elif [ ! -d "$lock" ]; then
         # mkdir failed AND the lock dir doesn't exist — i.e. the failure
         # was NOT the legitimate EEXIST skip (parent missing, permissions,
         # etc.). Make it loud so the next failure mode after GH#86 is not
         # another silent fall-through.
         echo "[$(ts)] [dispatch:followup] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
+        event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" reason=mkdir-failed
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -247,6 +281,12 @@ loop_dispatcher_followup() {
         2>/dev/null
     )
 
+    cycle_dur=$(($(date +%s) - cycle_start_s))
+    if [ "$dispatched" -eq 0 ]; then
+      event_emit "dispatch:followup" cycle_skip cycle_id="$cycle_id" reason=no-work streak=0 sleep_s="$POLL_INTERVAL"
+    else
+      event_emit "dispatch:followup" cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur" dispatched="$dispatched"
+    fi
     echo "[$(ts)] [dispatch:followup] sleeping ${POLL_INTERVAL}s..."
     sleep "$POLL_INTERVAL"
   done
@@ -258,7 +298,12 @@ loop_dispatcher_merge() {
   # activated by `st loop start --enable-merger`. Mirrors the follow-up
   # dispatcher's shape — pure shell, no LLM.
   local empty_streak=0 dispatched sleep_for
+  local cycle_counter=0 cycle_id cycle_start_s cycle_dur
   while true; do
+    cycle_counter=$((cycle_counter + 1))
+    cycle_id="$$-${cycle_counter}"
+    cycle_start_s=$(date +%s)
+    event_emit merger cycle_start cycle_id="$cycle_id"
     # Re-read lib/dispatcher.sh and lib/eligibility.sh each cycle so on-disk
     # fixes apply without restarting the long-running tmux pane. Failure
     # (mid-edit, syntax error) logs a WARN and continues with the previously
@@ -280,6 +325,7 @@ loop_dispatcher_merge() {
       verdict=$(eligibility_merge_pr "$pr") || ec=$?
       if [ "$ec" -ne 0 ]; then
         echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict}"
+        event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict"
         continue
       fi
 
@@ -290,12 +336,14 @@ loop_dispatcher_merge() {
       [ "$MERGER_DELETE_BRANCH" = "1" ] && merge_args+=(--delete-branch)
       if PAGER=cat GIT_PAGER=cat gh pr merge "$pr" --repo "$REPO_SLUG" "${merge_args[@]}" >/dev/null 2>&1; then
         echo "[$(ts)] [merger] merged pr=#${pr} verdict=${verdict}"
+        event_emit merger dispatch_fired kind=merge pr="$pr" verdict="$verdict"
         dispatched=$((dispatched + 1))
       else
         # gh failure here is rare (network, permissions, race with a human
         # merging concurrently). Log and move on; the candidate scan will
         # re-test next cycle.
         echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict} reason=gh-merge-failed"
+        event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict" reason=gh-merge-failed
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -304,16 +352,19 @@ loop_dispatcher_merge() {
         2>/dev/null
     )
 
+    cycle_dur=$(($(date +%s) - cycle_start_s))
     # Backoff on cycles where nothing was merged. Mirrors the conflict
     # dispatcher's shape — `dispatched` here counts successful merges only.
     if [ "$dispatched" -eq 0 ]; then
       empty_streak=$((empty_streak + 1))
       sleep_for=$(empty_cycle_sleep "$empty_streak")
       echo "[$(ts)] [merger] no merges (streak=${empty_streak}, next sleep=${sleep_for}s)"
+      event_emit merger cycle_skip cycle_id="$cycle_id" reason=no-work streak="$empty_streak" sleep_s="$sleep_for"
     else
       empty_streak=0
       sleep_for="$POLL_INTERVAL"
       echo "[$(ts)] [merger] merged ${dispatched} PR(s); sleeping ${sleep_for}s..."
+      event_emit merger cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur" dispatched="$dispatched"
     fi
     sleep "$sleep_for"
   done
@@ -321,7 +372,12 @@ loop_dispatcher_merge() {
 
 loop_dispatcher_conflicts() {
   local empty_streak=0 dispatched sleep_for
+  local cycle_counter=0 cycle_id cycle_start_s cycle_dur
   while true; do
+    cycle_counter=$((cycle_counter + 1))
+    cycle_id="$$-${cycle_counter}"
+    cycle_start_s=$(date +%s)
+    event_emit "dispatch:conflicts" cycle_start cycle_id="$cycle_id"
     # Re-read lib/dispatcher.sh each cycle so on-disk fixes apply without
     # restarting the long-running tmux pane. Failure (mid-edit, syntax error)
     # logs a WARN and continues with the previously cached helpers.
@@ -341,12 +397,14 @@ loop_dispatcher_conflicts() {
       active=$(count_active_dispatch_locks)
       if [ "$active" -ge "$DISPATCH_MAX_CONCURRENT" ]; then
         echo "[$(ts)] [dispatch:conflicts] at cap (${active}/${DISPATCH_MAX_CONCURRENT}); skipping remaining eligible PRs this cycle"
+        event_emit "dispatch:conflicts" dispatch_at_cap kind=conflicts active="$active" cap="$DISPATCH_MAX_CONCURRENT"
         break
       fi
 
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:conflicts] dispatching resolve-conflicts for PR #${pr}"
+        event_emit "dispatch:conflicts" dispatch_fired kind=conflicts pr="$pr"
         ("$LOOP_HOME/runners/run-developer.sh" resolve-conflicts "$pr" >/dev/null 2>&1) &
         local child=$!
         echo "$child" >"$lock/pid"
@@ -357,6 +415,7 @@ loop_dispatcher_conflicts() {
         # etc.). Make it loud so the next failure mode after GH#86 is not
         # another silent fall-through.
         echo "[$(ts)] [dispatch:conflicts] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
+        event_emit "dispatch:conflicts" dispatch_skip kind=conflicts pr="$pr" reason=mkdir-failed
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -365,6 +424,7 @@ loop_dispatcher_conflicts() {
         2>/dev/null
     )
 
+    cycle_dur=$(($(date +%s) - cycle_start_s))
     # Backoff on cycles where nothing new was dispatched. "Nothing new" means
     # zero NEW lock acquisitions — already-locked PRs from prior cycles don't
     # count as work this cycle. Resets to base on the first non-empty cycle.
@@ -372,10 +432,12 @@ loop_dispatcher_conflicts() {
       empty_streak=$((empty_streak + 1))
       sleep_for=$(empty_cycle_sleep "$empty_streak")
       echo "[$(ts)] [dispatch:conflicts] no new dispatches (streak=${empty_streak}, next sleep=${sleep_for}s)"
+      event_emit "dispatch:conflicts" cycle_skip cycle_id="$cycle_id" reason=no-work streak="$empty_streak" sleep_s="$sleep_for"
     else
       empty_streak=0
       sleep_for="$POLL_INTERVAL"
       echo "[$(ts)] [dispatch:conflicts] dispatched ${dispatched} PR(s); sleeping ${sleep_for}s..."
+      event_emit "dispatch:conflicts" cycle_end cycle_id="$cycle_id" exit_code=0 duration_s="$cycle_dur" dispatched="$dispatched"
     fi
     sleep "$sleep_for"
   done
