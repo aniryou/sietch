@@ -24,6 +24,9 @@
 # verbatim; jq parses them at filter-compile time and emits the literal
 # 0x1B byte to stdout.
 
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
+
 if [ "${NO_COLOR+set}" = "set" ]; then
   _C_INIT="" _C_TEXT="" _C_TOOL="" _C_RESULT="" _C_OK="" _C_ERR="" _C_RST=""
 else

@@ -27,9 +27,8 @@
 #   REPO_SLUG, BRANCH_PREFIX, SEVERITY_LABEL_HIGH, SEVERITY_LABEL_MEDIUM,
 #   REVIEWER_AGENT_VERDICT_REGEX
 
-set -u
-set -o pipefail
-\unalias -a 2>/dev/null || true
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI or wrappers}"
 : "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI or wrappers}"

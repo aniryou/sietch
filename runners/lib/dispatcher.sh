@@ -14,7 +14,8 @@
 # PRs. Shell-interpolating the prefix into the filter avoids that whole
 # class of bug.
 
-set -u
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
 # jq filter: emit .number for each open dev-agent PR whose isDraft == false.
 # Argument: branch prefix (without trailing slash), e.g. "dev-agent".

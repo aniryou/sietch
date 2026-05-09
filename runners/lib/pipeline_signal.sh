@@ -31,6 +31,9 @@
 # `wait` would unblock but the children would still be alive and re-parent
 # to PID 1 when bash exits.
 
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
+
 # Capture the process-group ID of a backgrounded pipeline.
 #
 # Under `set -m` (job control), a backgrounded subshell becomes its own

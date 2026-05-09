@@ -20,6 +20,9 @@
 # instrumentation must never break the loop. A missing parent directory or
 # permissions glitch on the log file is invisible to the caller's `set -e`.
 
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
+
 LOOP_EVENT_SCHEMA_VERSION=1
 
 event_emit() {

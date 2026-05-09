@@ -18,8 +18,8 @@
 #
 # Required env: REPO_ROOT, LOOP_HOME (set by bin/st).
 
-set -u
-\unalias -a 2>/dev/null || true
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via bin/st}"
 : "${LOOP_HOME:?LOOP_HOME must be set; invoke via bin/st}"

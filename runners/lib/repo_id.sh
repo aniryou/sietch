@@ -6,6 +6,9 @@
 # session name. REPO_OWNER and REPO_NAME must already be in scope (i.e.
 # the caller has sourced .loop/loop.config first).
 
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
+
 # Sanitize a repo identifier so it's safe inside tmux target syntax and
 # filesystem paths. tmux treats `.` and `:` as separators inside target
 # names ("session.window:pane"), and we also strip whitespace + slashes
