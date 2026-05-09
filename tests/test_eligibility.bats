@@ -1334,12 +1334,16 @@ STUB
   local tmpbin
   tmpbin=$(_make_review_gh_stub "$prs" "$dates")
 
-  local count_out list_out
-  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
-    count_out=$(env PATH="$tmpbin:$PATH" bash "$LOOP_ROOT/runners/lib/eligibility.sh" review)
-  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
-    list_out=$(env PATH="$tmpbin:$PATH" bash "$LOOP_ROOT/runners/lib/eligibility.sh" review-list)
-  local list_count
+  # `VAR=value count_out=$(...)` only sets VAR locally — it doesn't
+  # export into the subshell `bash` runs in. Pass everything through
+  # `env` so REPO_ROOT / LOOP_HOME reach the inner predicate (which fails
+  # on `set -u` when REPO_ROOT is missing). Local dev shells happen to leak
+  # REPO_ROOT; GitHub Actions runners don't.
+  local count_out list_out list_count
+  count_out=$(env REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review)
+  list_out=$(env REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review-list)
   list_count=$(printf '%s\n' "$list_out" | grep -c .)
   [ "$count_out" = "$list_count" ]
 }
