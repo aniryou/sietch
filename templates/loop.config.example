@@ -131,6 +131,27 @@ STALE_LOCK_HOURS=6
 # where transient gh / claude API blips are common. (GH#56)
 DEV_HARD_FAILURE_RETRY_LIMIT=3
 
+# Consecutive Mode 2 (follow-up) hard-failures on the same PR before the
+# wrapper stops posting "🤖 Developer agent — follow-up failed mid-flow"
+# stub comments and escalates to a human via ${BLOCKED_HUMAN_LABEL} + one
+# explanation comment. Counted by substring-matching the stub marker in
+# existing PR comments; eligibility_followup_pr drops PRs carrying the
+# label so the dispatcher stops re-firing. Default 3 — tighten to 2 for
+# faster escalation, loosen for repos where transient claude/gh blips are
+# more common than deterministic failures. (GH#111)
+DEV_FOLLOWUP_FAILURE_RETRY_LIMIT=3
+
+# Consecutive Mode 3 (resolve-conflicts) hard-failures on the same PR
+# before the wrapper stops posting "🤖 Mode 3 conflict resolution —
+# aborted" stub comments and escalates via ${BLOCKED_HUMAN_LABEL} + one
+# explanation comment. Counted by the same substring used in both LLM
+# graceful-abort comments and the wrapper's hard-fail stub. The conflicts
+# dispatcher's predicate (_dispatch_conflicts_jq) drops PRs carrying the
+# label so it stops re-firing. The per-trigger drafting (gh pr ready --undo)
+# still happens at every hard-failure regardless of the cap — that's the
+# per-trigger circuit breaker, not the per-PR cap. Default 3. (GH#111)
+DEV_CONFLICTS_FAILURE_RETRY_LIMIT=3
+
 # Consecutive reviewer sub-agent failures on the same PR before the wrapper
 # stops posting [reviewer-agent: blocked] stub reviews and escalates to a
 # human via ${REVIEWER_ESCALATION_LABEL} + a one-time explanation comment.

@@ -25,9 +25,21 @@ _dispatch_followup_jq() {
 
 # jq filter: emit .number for each open, non-draft dev-agent PR whose
 # mergeable state is CONFLICTING.
-# Argument: branch prefix (without trailing slash).
+# Arguments:
+#   $1 = branch prefix (without trailing slash), e.g. "dev-agent"
+#   $2 = (optional) blocked-human label name. When non-empty, PRs carrying
+#        the label are excluded — closes the per-PR loop after the Mode 3
+#        wrapper escalates DEV_CONFLICTS_FAILURE_RETRY_LIMIT consecutive
+#        hard-failures (GH#111). Empty/omitted = no label filtering, for
+#        backward-compat with older callers and tests.
 _dispatch_conflicts_jq() {
-  printf '.[] | select(.headRefName | startswith("%s/")) | select(.mergeable == "CONFLICTING") | select(.isDraft == false) | .number' "$1"
+  local prefix="$1"
+  local label="${2:-}"
+  if [ -n "$label" ]; then
+    printf '.[] | select(.headRefName | startswith("%s/")) | select(.mergeable == "CONFLICTING") | select(.isDraft == false) | select((.labels // [] | map(.name)) | index("%s") | not) | .number' "$prefix" "$label"
+  else
+    printf '.[] | select(.headRefName | startswith("%s/")) | select(.mergeable == "CONFLICTING") | select(.isDraft == false) | .number' "$prefix"
+  fi
 }
 
 # jq filter: emit .number for each open, non-draft dev-agent PR.
