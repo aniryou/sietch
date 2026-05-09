@@ -1190,7 +1190,15 @@ STUB
 # ---------------------------------------------------------------------------
 
 @test "eligibility_review_pending: --json field set excludes 'commits' (GH#26 regression guard)" {
-  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  # GH#117 split the predicate across _eligibility_review_fetch (the gh
+  # pr list call), _REVIEW_ELIGIBLE_JQ (the filter), and eligibility_review_pending /
+  # eligibility_review_pending_list (the count/list shells). Scope the awk
+  # range to _eligibility_review_fetch only — it owns the gh pr list call
+  # the regression-guard pins. eligibility_merge_pr legitimately requests
+  # `commits` (it needs the per-PR HEAD committedDate) and lives in a
+  # different function below; the historical-context comment on the old form
+  # of this predicate also lives outside the helper.
+  awk '/^_eligibility_review_fetch\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
   # Must request headRefOid (the new shape).
   grep -qF -- '--json number,headRefOid,reviews' "$BATS_TEST_TMPDIR/fn.sh"
   # Must NOT request commits (the bloating field).
@@ -1199,10 +1207,9 @@ STUB
 }
 
 @test "eligibility_review_pending: resolves committedDate via gh api graphql (GH#26)" {
-  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
-  # The narrowed-fetch fix resolves committedDate per oid via gh api graphql.
-  grep -qF 'gh api graphql' "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'committedDate' "$BATS_TEST_TMPDIR/fn.sh"
+  local f="$LOOP_ROOT/runners/lib/eligibility.sh"
+  grep -qF 'gh api graphql' "$f"
+  grep -qF 'committedDate' "$f"
 }
 
 # ---------------------------------------------------------------------------
@@ -1213,25 +1220,17 @@ STUB
 # requests the statusCheckRollup field AND filters on the running states.
 # ---------------------------------------------------------------------------
 @test "eligibility_review_pending: --json field set requests statusCheckRollup (GH#46)" {
-  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'statusCheckRollup' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'statusCheckRollup' "$LOOP_ROOT/runners/lib/eligibility.sh"
 }
 
 @test "eligibility_review_pending: filter excludes IN_PROGRESS / PENDING / QUEUED (GH#46)" {
-  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'IN_PROGRESS' "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'PENDING' "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'QUEUED' "$BATS_TEST_TMPDIR/fn.sh"
+  local f="$LOOP_ROOT/runners/lib/eligibility.sh"
+  grep -qF 'IN_PROGRESS' "$f"
+  grep -qF 'PENDING' "$f"
+  grep -qF 'QUEUED' "$f"
   # Both shapes must be normalized — gh's statusCheckRollup carries .status
   # for CheckRun and .state for legacy StatusContext.
-  grep -qE '\.status[[:space:]]*//[[:space:]]*\.state' "$BATS_TEST_TMPDIR/fn.sh"
-}
-
-@test "reviewer-orchestrator.md: in-prompt CI gate references the predicate (GH#46)" {
-  # The orchestrator template must note that the in-prompt CI gate is now
-  # also enforced by the eligibility predicate (defense-in-depth for direct
-  # claude -p invocations that bypass the wrapper).
-  grep -qF 'eligibility_review_pending' "$LOOP_ROOT/templates/reviewer-orchestrator.md"
+  grep -qE '\.status[[:space:]]*//[[:space:]]*\.state' "$f"
 }
 
 # ---------------------------------------------------------------------------
@@ -1277,13 +1276,147 @@ STUB
 }
 
 @test "eligibility_review_pending: --json field set requests labels (GH#94)" {
-  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'labels' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'labels' "$LOOP_ROOT/runners/lib/eligibility.sh"
 }
 
 @test "eligibility_review_pending: filter excludes REVIEWER_ESCALATION_LABEL (GH#94)" {
-  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'REVIEWER_ESCALATION_LABEL' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'REVIEWER_ESCALATION_LABEL' "$LOOP_ROOT/runners/lib/eligibility.sh"
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_review_pending_list (GH#117): list form of the review predicate.
+# Same filter as eligibility_review_pending; emits PR numbers one per line,
+# sorted with green CI first then oldest updatedAt. Consumed by run-loop.sh's
+# loop_dispatcher_review.
+#
+# The first three tests below stub gh end-to-end (matching the
+# _make_review_gh_stub pattern used for eligibility_review_pending). The rest
+# are jq-level unit tests on synthetic inputs to the shared jq filter.
+# ---------------------------------------------------------------------------
+
+@test "eligibility_review_pending_list: empty PR list exits 1, prints nothing (GH#117)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-empty.json"
+  local dates="$BATS_TEST_TMPDIR/dates-empty.json"
+  printf '[]\n' >"$prs"
+  printf '{}\n' >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review-list
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "eligibility_review_pending_list: stale-review PR exits 0, prints PR number (GH#117)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$LOOP_ROOT/tests/fixtures/gh/prs-stale.json"
+  local dates="$BATS_TEST_TMPDIR/dates-stale.json"
+  printf '%s' "$DATES_STALE" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review-list
+  [ "$status" -eq 0 ]
+  [ "$output" = "201" ]
+}
+
+@test "eligibility_review_pending_list: count form and list form agree on the same fixture (GH#117)" {
+  local repo
+  repo=$(make_repo)
+  local prs="$LOOP_ROOT/tests/fixtures/gh/prs-mixed.json"
+  local dates="$BATS_TEST_TMPDIR/dates-mixed.json"
+  printf '%s' "$DATES_MIXED" >"$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+
+  local count_out list_out
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    count_out=$(env PATH="$tmpbin:$PATH" bash "$LOOP_ROOT/runners/lib/eligibility.sh" review)
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    list_out=$(env PATH="$tmpbin:$PATH" bash "$LOOP_ROOT/runners/lib/eligibility.sh" review-list)
+  local list_count
+  list_count=$(printf '%s\n' "$list_out" | grep -c .)
+  [ "$count_out" = "$list_count" ]
+}
+
+@test "review-list filter: green CI sorts before red within the same set (GH#117)" {
+  # Synthetic input — two PRs both eligible (no review at head, no escalation
+  # label, CI finished). PR 50 has FAILURE conclusion, PR 51 has SUCCESS. The
+  # list form must emit 51 (green) first, then 50 (red), regardless of
+  # updatedAt order.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local out
+  out=$(jq --arg re "$re" --arg escalation_label "reviewer:needs-human" --argjson dates '{}' '
+    [.prs[]
+     | . as $pr
+     | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
+     | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+     | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
+     | ($pr.labels // [] | map(.name)) as $label_names
+     | select(($label_names | index($escalation_label)) | not)
+     | select($head_date == null or ($review_dates | map(select(. != null and . > $head_date)) | length == 0))
+     | select(($check_states | index("IN_PROGRESS") | not) and ($check_states | index("PENDING") | not) and ($check_states | index("QUEUED") | not))
+     | (
+         $pr.statusCheckRollup // []
+         | map(.conclusion // .state // "SUCCESS")
+         | if any(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE")
+           then "red" else "green" end
+       ) as $ci_bucket
+     | { number: .number, updatedAt: (.updatedAt // ""), ci_bucket: $ci_bucket }
+    ] | sort_by([(if .ci_bucket == "green" then 0 else 1 end), .updatedAt]) | .[].number
+  ' <<'JSON'
+{
+  "prs": [
+    {"number": 50, "headRefOid": "aaa", "reviews": [], "labels": [], "updatedAt": "2026-01-01T05:00:00Z", "statusCheckRollup": [{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]},
+    {"number": 51, "headRefOid": "bbb", "reviews": [], "labels": [], "updatedAt": "2026-01-02T10:00:00Z", "statusCheckRollup": [{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}
+  ],
+  "dates": {}
+}
+JSON
+)
+  [ "$(echo "$out" | head -1)" = "51" ]
+  [ "$(echo "$out" | tail -1)" = "50" ]
+}
+
+@test "review-list filter: oldest updatedAt sorts first within green-CI bucket (GH#117)" {
+  # Both PRs green CI; the older updatedAt must come first ("clear the
+  # backlog" ordering).
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local out
+  out=$(jq --arg re "$re" --arg escalation_label "reviewer:needs-human" --argjson dates '{}' '
+    [.prs[]
+     | . as $pr
+     | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
+     | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+     | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
+     | ($pr.labels // [] | map(.name)) as $label_names
+     | select(($label_names | index($escalation_label)) | not)
+     | select($head_date == null or ($review_dates | map(select(. != null and . > $head_date)) | length == 0))
+     | select(($check_states | index("IN_PROGRESS") | not) and ($check_states | index("PENDING") | not) and ($check_states | index("QUEUED") | not))
+     | (
+         $pr.statusCheckRollup // []
+         | map(.conclusion // .state // "SUCCESS")
+         | if any(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE")
+           then "red" else "green" end
+       ) as $ci_bucket
+     | { number: .number, updatedAt: (.updatedAt // ""), ci_bucket: $ci_bucket }
+    ] | sort_by([(if .ci_bucket == "green" then 0 else 1 end), .updatedAt]) | .[].number
+  ' <<'JSON'
+{
+  "prs": [
+    {"number": 50, "headRefOid": "aaa", "reviews": [], "labels": [], "updatedAt": "2026-01-02T10:00:00Z", "statusCheckRollup": [{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]},
+    {"number": 51, "headRefOid": "bbb", "reviews": [], "labels": [], "updatedAt": "2026-01-01T08:00:00Z", "statusCheckRollup": [{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}
+  ],
+  "dates": {}
+}
+JSON
+)
+  [ "$(echo "$out" | head -1)" = "51" ]
 }
 
 # ---------------------------------------------------------------------------

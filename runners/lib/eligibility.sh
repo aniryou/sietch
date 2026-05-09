@@ -303,20 +303,28 @@ eligibility_dev_candidates() {
 # filter normalizes via `.status // .state` to handle both shapes. Failed CI
 # (COMPLETED + FAILURE) is still reviewable — only RUNNING states gate.
 # ---------------------------------------------------------------------------
-eligibility_review_pending() {
-  local prs owner repo oid_dates oid date_iso count
+# Shared back-end for eligibility_review_pending (count form) and
+# eligibility_review_pending_list (PR-numbers form). Fetches the candidate PR
+# list + per-head committedDate map, then prints a single JSON object on
+# stdout: {"prs": <pr-array>, "dates": <oid→date map>}. Callers run their own
+# jq projection (count vs. ordered list) on top.
+#
+# Returns 0 on success, 2 on gh/jq failure.
+_eligibility_review_fetch() {
+  local prs owner repo oid_dates oid date_iso
   # GH#94: `labels` is added to the field set so the predicate can drop PRs
   # carrying ${REVIEWER_ESCALATION_LABEL}. Mirrors the BLOCKED_HUMAN_LABEL
   # precedent in eligibility_dev_count above. Single extra field on the
   # existing call — no extra round-trip.
+  # GH#117: `updatedAt` is added so the dispatcher can sort
+  # backlog by "oldest updatedAt first" within the green-CI bucket.
   if ! prs=$(
     PAGER=cat GIT_PAGER=cat gh pr list \
       --repo "$REPO_SLUG" --state open \
       --search "head:${BRANCH_PREFIX}/ -is:draft" \
-      --json number,headRefOid,reviews,statusCheckRollup,labels \
+      --json number,headRefOid,reviews,statusCheckRollup,labels,updatedAt \
       --limit 100 2>/dev/null
   ); then
-    echo "?"
     return 2
   fi
 
@@ -344,47 +352,120 @@ eligibility_review_pending() {
           }' \
         --jq '.data.repository.object.committedDate // ""' 2>/dev/null
     ); then
-      echo "?"
       return 2
     fi
     oid_dates=$(jq --arg oid "$oid" --arg d "$date_iso" '. + {($oid): $d}' <<<"$oid_dates")
   done < <(echo "$prs" | jq -r '.[].headRefOid // empty')
 
-  # Apply the "no review covers head" filter as before (looking up the head
-  # date in $dates by headRefOid), AND a CI gate (GH#46): exclude any PR with
-  # a check in IN_PROGRESS/PENDING/QUEUED. The gate uses `.status // .state`
-  # because gh's statusCheckRollup carries `status` for CheckRun (Actions)
-  # and `state` for legacy StatusContext entries. Missing/null statusCheckRollup
-  # falls through to an empty list (PR is treated as "no CI gating") so the
-  # predicate is permissive when GitHub has nothing to report.
+  jq -n --argjson prs "$prs" --argjson dates "$oid_dates" \
+    '{prs: $prs, dates: $dates}'
+}
+
+# Shared jq filter that maps the {prs, dates} object emitted by
+# _eligibility_review_fetch to the array of eligible PRs. Each surviving entry
+# carries .number plus a .ci_bucket ("green" | "red") so callers can sort by
+# CI status without re-querying. Apply the "no review covers head" filter
+# (looking up the head date in $dates by headRefOid) AND a CI gate (GH#46):
+# exclude any PR with a check in IN_PROGRESS/PENDING/QUEUED. The gate uses
+# `.status // .state` because gh's statusCheckRollup carries `status` for
+# CheckRun (Actions) and `state` for legacy StatusContext entries. Missing/null
+# statusCheckRollup falls through to an empty list (PR is treated as "no CI
+# gating") so the predicate is permissive when GitHub has nothing to report.
+#
+# The single-quoted body intentionally embeds jq variable references
+# ($pr, $head_date, $dates, $re, $escalation_label, $check_states, ...) —
+# they are jq, not bash, and must not expand at source-load time.
+# shellcheck disable=SC2016
+_REVIEW_ELIGIBLE_JQ='
+  [.prs[]
+   | . as $pr
+   | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
+   | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+   | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
+   | ($pr.labels // [] | map(.name)) as $label_names
+   | select(($label_names | index($escalation_label)) | not)
+   | select(
+       $head_date == null
+       or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
+     )
+   | select(
+       ($check_states | index("IN_PROGRESS") | not)
+       and ($check_states | index("PENDING") | not)
+       and ($check_states | index("QUEUED") | not)
+     )
+   | (
+       $pr.statusCheckRollup // []
+       | map(.conclusion // .state // "SUCCESS")
+       | if any(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE")
+         then "red"
+         else "green"
+         end
+     ) as $ci_bucket
+   | {
+       number: .number,
+       updatedAt: (.updatedAt // ""),
+       ci_bucket: $ci_bucket
+     }
+  ]'
+
+eligibility_review_pending() {
+  local fetched count
+  if ! fetched=$(_eligibility_review_fetch); then
+    echo "?"
+    return 2
+  fi
   if ! count=$(
-    echo "$prs" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+    jq -r --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
       --arg escalation_label "$REVIEWER_ESCALATION_LABEL" \
-      --argjson dates "$oid_dates" '
-      [.[]
-       | . as $pr
-       | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
-       | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
-       | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
-       | ($pr.labels // [] | map(.name)) as $label_names
-       | select(($label_names | index($escalation_label)) | not)
-       | select(
-           $head_date == null
-           or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
-         )
-       | select(
-           ($check_states | index("IN_PROGRESS") | not)
-           and ($check_states | index("PENDING") | not)
-           and ($check_states | index("QUEUED") | not)
-         )
-      ] | length
-    ' 2>/dev/null
+      --argjson dates "$(jq -c '.dates' <<<"$fetched")" \
+      "$_REVIEW_ELIGIBLE_JQ | length" \
+      <<<"$fetched" 2>/dev/null
   ); then
     echo "?"
     return 2
   fi
   count="${count:-0}"
   echo "$count"
+  [ "$count" -gt 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Reviewer dispatcher (GH#117): list form of eligibility_review_pending.
+# Emits one PR number per line on stdout, ordered: green CI first, then by
+# oldest updatedAt within each CI bucket (clear the backlog). Same filter
+# semantics as eligibility_review_pending; both share _eligibility_review_fetch
+# and _REVIEW_ELIGIBLE_JQ so the count-form and list-form can never disagree.
+#
+# Output and exit-code shape mirrors eligibility_dev_candidates:
+#   stdout: PR numbers, one per line (no trailing blank), or `?` on failure
+#   exit:   0 = at least one candidate, 1 = none, 2 = gh/jq failure
+# ---------------------------------------------------------------------------
+eligibility_review_pending_list() {
+  local fetched lines count
+  if ! fetched=$(_eligibility_review_fetch); then
+    echo "?"
+    return 2
+  fi
+  if ! lines=$(
+    jq -r --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+      --arg escalation_label "$REVIEWER_ESCALATION_LABEL" \
+      --argjson dates "$(jq -c '.dates' <<<"$fetched")" \
+      "$_REVIEW_ELIGIBLE_JQ
+       | sort_by([(if .ci_bucket == \"green\" then 0 else 1 end), .updatedAt])
+       | .[].number" \
+      <<<"$fetched" 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+  count=0
+  if [ -n "$lines" ]; then
+    # `lines` came from jq -r, which produces one value per line with no
+    # trailing blank. `$(...)` strips trailing newlines, so a single trailing
+    # printf '\n' restores newline-termination without doubling it.
+    printf '%s\n' "$lines"
+    count=$(printf '%s\n' "$lines" | grep -c .)
+  fi
   [ "$count" -gt 0 ]
 }
 
@@ -596,6 +677,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       eligibility_review_pending
       exit $?
       ;;
+    review-list)
+      eligibility_review_pending_list
+      exit $?
+      ;;
     followup)
       eligibility_followup_pr "${2:-}"
       exit $?
@@ -614,6 +699,9 @@ Modes:
                    severities, GH#113), so the wrapper can mkdir-acquire a lock
                    BEFORE spawning the LLM (closes the TOCTOU window of 'dev').
   review           Count open dev-agent PRs not yet reviewed at current head SHA.
+  review-list      Print one candidate-PR number per line (green CI first, then
+                   oldest updatedAt). Same filter as 'review'; consumed by the
+                   reviewer dispatcher in run-loop.sh (GH#117).
   followup <PR#>   Should the follow-up dispatcher dispatch a Mode 2 dev-agent
                    for PR <PR#>? Skips clean/nits verdicts unconditionally;
                    dispatches changes/comment/blocked iff the review is newer

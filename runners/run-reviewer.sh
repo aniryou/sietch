@@ -3,13 +3,37 @@
 # Streams readable output to a log while keeping raw stream-json for debugging.
 #
 # Usage:
-#   st review
+#   st review <PR>
+#
+# GH#117: takes a mandatory PR number. The previous orchestrator-based
+# scan-and-dispatch flow has been replaced by a shell-level dispatcher
+# (run-loop.sh: loop_dispatcher_review) that picks the PR and passes it in.
+# Without an argument, the wrapper exits 2 with a usage line — no LLM is
+# spawned. This lets dispatcher backoff treat "no work" as rc=2 (matches
+# the run-developer.sh contract).
 #
 # Exit code is the agent's exit code.
 
 set -u
 set -o pipefail
 \unalias -a 2>/dev/null || true
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: st review <PR>
+
+Reviews a single GitHub PR by number. The PR must be open, non-draft, have
+finished CI, not already carry a [reviewer-agent: ...] review at its current
+head, and not carry the REVIEWER_ESCALATION_LABEL.
+EOF
+}
+
+TARGET_PR="${1:-}"
+if ! [[ "$TARGET_PR" =~ ^[0-9]+$ ]]; then
+  echo "[wrapper] review requires a numeric <PR>; got: '${TARGET_PR}'" >&2
+  usage
+  exit 2
+fi
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
 : "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
@@ -25,41 +49,77 @@ REPO="$REPO_ROOT"
 # hard-fail.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/hard_failure.sh"
-# Append-only log marker helpers (GH#100). Provides loop_marker_last so the
-# sub-agent-failure parse below reads the LATEST marker, not the first.
-# shellcheck disable=SC1091
-. "$LOOP_HOME/runners/lib/log_helpers.sh"
 
-# Preflight: skip the LLM if no dev-agent PR needs review at its current
-# headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
-# from "ran successfully" so it can apply exponential backoff.
-EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" review)
-EL_RC=$?
-case "$EL_RC" in
-  0)
-    echo "[wrapper] eligibility: $EL_COUNT PR(s) pending review; proceeding"
-    event_emit reviewer eligibility result=proceeding count="$EL_COUNT"
+# Defaults for older loop.config files predating the relevant GH issues. Each
+# `:` default-if-unset matches the pattern run-developer.sh uses so consumer
+# repos don't have to re-run `st init` to pick up new knobs.
+# GH#94 — sub-agent-failure cap and escalation label (now flattened-LLM
+# failure cap).
+: "${REVIEWER_SUB_AGENT_FAILURE_CAP:=3}"
+: "${REVIEWER_ESCALATION_LABEL:=reviewer:needs-human}"
+# GH#117 — dispatcher-side concurrency cap default; consumed by run-loop.sh's
+# loop_dispatcher_review. Mirrored here so direct `st review <PR>` invocations
+# don't error on `set -u` if a stale loop.config lacks the key. The wrapper
+# itself doesn't gate on this knob (one wrapper handles one PR), but sourcing
+# the config file with the key absent is fine.
+
+# Defense-in-depth single-PR check (GH#117): the dispatcher already filtered
+# this PR via eligibility_review_pending_list, but the time between scan and
+# wrapper start is non-zero. A fresh review may have landed, the PR may have
+# been drafted, or CI may have restarted — re-check before spawning the LLM.
+# On miss, exit 2 so dispatcher backoff treats it as "no work" rather than
+# failure (mirrors the run-developer.sh contract).
+PR_DATA=$(
+  PAGER=cat GIT_PAGER=cat gh pr view "$TARGET_PR" \
+    --repo "$REPO_SLUG" \
+    --json number,state,isDraft,headRefOid,reviews,labels,statusCheckRollup 2>/dev/null
+) || PR_DATA=""
+if [ -z "$PR_DATA" ]; then
+  # GH#27 contract: predicate failures (gh outage, jq error, GraphQL drift)
+  # are skip+backoff, not "proceed to be safe". The wording mirrors
+  # run-developer.sh's rc=2 path so operators tailing the tmux pane see the
+  # same shape across wrappers.
+  echo "[wrapper] eligibility: predicate failed (gh-pr-view rc=non-zero or empty); skipping LLM invocation and backing off" >&2
+  echo "[wrapper] result=no-work reason=predicate-failed"
+  event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR"
+  exit 2
+fi
+
+ELIG_DECISION=$(
+  printf '%s' "$PR_DATA" | jq -r \
+    --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+    --arg label "$REVIEWER_ESCALATION_LABEL" '
+    if .state != "OPEN" then "skip:not-open"
+    elif .isDraft == true then "skip:draft"
+    elif (.labels // [] | map(.name) | index($label)) != null then "skip:escalated"
+    elif (.statusCheckRollup // [] | map(.status // .state)
+          | any(. == "IN_PROGRESS" or . == "PENDING" or . == "QUEUED"))
+      then "skip:ci-running"
+    elif (.reviews // [] | any((.body // "") | test($re))) then "skip:reviewed"
+    else "proceed"
+    end
+  ' 2>/dev/null
+) || ELIG_DECISION=""
+case "$ELIG_DECISION" in
+  proceed)
+    echo "[wrapper] eligibility: PR #${TARGET_PR} ready for review; proceeding"
+    event_emit reviewer eligibility result=proceeding pr="$TARGET_PR"
     ;;
-  1)
-    echo "[wrapper] eligibility: no PRs need review; skipping LLM invocation"
-    echo "[wrapper] result=no-work"
-    event_emit reviewer eligibility result=no-work
+  skip:*)
+    REASON="${ELIG_DECISION#skip:}"
+    echo "[wrapper] eligibility: PR #${TARGET_PR} not eligible (${REASON}); no PRs need review here, skipping LLM invocation"
+    echo "[wrapper] result=no-work reason=${REASON}"
+    event_emit reviewer eligibility result=no-work pr="$TARGET_PR" reason="$REASON"
     exit 2
     ;;
   *)
-    # GH#27: any non-{0,1} rc means the predicate itself failed (gh outage,
-    # jq error, GraphQL node-limit, ...). The previous "proceed to be safe"
-    # policy turned every persistent failure into a per-cycle token leak —
-    # the LLM was spawned each poll while doing nothing useful. Skip + exit 2
-    # so run-loop.sh applies the same exponential backoff it uses for rc=1.
-    # Operators see the failure on stderr and can intervene.
-    echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM invocation and backing off" >&2
+    # jq itself failed (malformed JSON, jq missing) — treat as predicate failed.
+    echo "[wrapper] eligibility: predicate failed (jq classification error); skipping LLM invocation and backing off" >&2
     echo "[wrapper] result=no-work reason=predicate-failed"
-    event_emit reviewer eligibility result=predicate-failed rc="$EL_RC"
+    event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR"
     exit 2
     ;;
 esac
-unset EL_COUNT EL_RC
 
 # $$ suffix keeps log paths unique when two wrappers start in the same second.
 TS="$(date +%Y%m%d-%H%M%S)-$$"
@@ -103,13 +163,20 @@ echo
 # Background the pipeline in a subshell with `set -m` so `wait` (below) is
 # signal-interruptible and the pipeline lives in its own process group. See
 # runners/lib/pipeline_signal.sh for the rationale.
-event_emit reviewer llm_started mode=default
+event_emit reviewer llm_started mode=default pr="$TARGET_PR"
 _llm_start_s=$(date +%s)
 set -m
 (
   PAGER=cat GIT_PAGER=cat \
-    claude -p "Run the reviewer orchestrator workflow defined in your system prompt. Begin the scan, then dispatch a sub-agent for the chosen PR via the Agent tool. Single-pass — exit after one dispatch." \
-    --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer-orchestrator.md")" \
+    claude -p "You are running headless as a reviewer agent. Never wait for human input. Decide and act.
+
+ASSIGNMENT: Review GitHub PR #${TARGET_PR} in the ${REPO_SLUG} repo.
+
+The dispatcher already filtered this PR for eligibility (open, non-draft, CI finished, not already reviewed at current head, no escalation label). Skip the orchestrator-style scan steps in your instructions — your PR is already assigned. Follow the per-PR workflow in your system prompt.
+
+When you finish, print exactly one final summary line in this format and exit:
+[reviewer-agent] result=<commented|requested-changes|skipped|blocked> pr=#${TARGET_PR} sha=<head_sha> findings=<P0:X P1:Y P2:Z> beads=<PARENT>" \
+    --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/reviewer.md")" \
     --permission-mode bypassPermissions \
     --max-turns "$REVIEWER_MAX_TURNS" \
     --verbose \
@@ -125,72 +192,70 @@ set +m
 
 wait "$PIPELINE_PID"
 LLM_EXIT=$?
-event_emit reviewer llm_exited mode=default exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))"
+event_emit reviewer llm_exited mode=default pr="$TARGET_PR" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))"
 
-# GH#55: when the orchestrator emits `result=sub-agent-failed pr=#N` and the
-# pipeline still exits 0 (the orchestrator's failure path is structured exit 0
-# — it ran to completion, the sub-agent didn't), no [reviewer-agent: ...]
-# review was posted on the PR. eligibility_review_pending would then re-fire
-# the orchestrator + sub-agent every cycle, both crash the same way, repeat.
-# Post a stub [reviewer-agent: blocked] review here so the predicate's
-# "review covers head" half fires next cycle and skips the PR until a new
-# commit lands.
+# GH#55 + GH#94 (re-applied to the flattened invocation, GH#117): when the
+# LLM exits 0 but never reaches its final `[reviewer-agent] result=...` line
+# (typical failure modes: claude max-turns mid-review, context exhaustion,
+# the LLM forgetting the marker contract), no [reviewer-agent: ...] review
+# was posted on the PR. eligibility_review_pending_list would then re-fire
+# the wrapper every cycle on the same PR, the LLM crashes the same way,
+# repeat — leaking ~$0.50–$2.50/cycle per such PR.
 #
-# GH#94: GH#55's stub closes the per-SHA loop but not the per-PR loop. On a
-# deterministically-failing PR (oversized diff, malformed PR), every new push
-# yields a fresh head SHA, the orchestrator dispatches again, the sub-agent
-# fails the same way, and the wrapper posts another stub. After
-# REVIEWER_SUB_AGENT_FAILURE_CAP consecutive stubs (default 3) escalate to a
-# human via REVIEWER_ESCALATION_LABEL + one explanation comment instead of
-# yet another stub. eligibility_review_pending then drops the PR from
-# dispatch until a human removes the label.
-#
-# The orchestrator template's hard rule "Never call gh pr review" forces this
-# fix to live in the wrapper rather than the orchestrator itself; see
-# templates/reviewer-orchestrator.md (search for GH#55).
-#
-# Exit-0-scoped on purpose: a non-zero LLM exit (claude crash, max-turns, OOM,
+# Fix mirrors the original GH#55 path: post a stub `[reviewer-agent: blocked]`
+# review here so the predicate's "review covers head" half fires next cycle
+# and skips the PR until a new commit lands. Exit-0-scoped on purpose: a
+# non-zero LLM exit (claude crash, max-turns at the protocol layer, OOM,
 # API outage) is a wrapper-level failure that run-loop.sh already backs off
 # on. Inventing a verdict in that case would mask hard failures.
+#
+# GH#94 cap: after $REVIEWER_SUB_AGENT_FAILURE_CAP consecutive stub-blocked
+# reviews on this PR, escalate via $REVIEWER_ESCALATION_LABEL + a one-time
+# explanation comment instead of yet another stub. The wrapper greps for
+# the same marker substring (`Sub-agent run failed before posting a review`)
+# the stub body carries, so the cap-counter stays in sync with the stub
+# format. Idempotent: re-running on a PR that already carries the label is
+# a no-op.
+#
+# Pre-GH#117 the failure-detection grep matched
+# `[reviewer-orchestrator] result=sub-agent-failed pr=#N` (the orchestrator
+# emitted that line when its dispatched sub-agent crashed). The flattened
+# invocation has no orchestrator layer — instead, a successfully-completed
+# review prints `[reviewer-agent] result=...` per templates/reviewer.md, so
+# the absence of that marker after exit 0 is the equivalent failure signal.
 if [ "$LLM_EXIT" -eq 0 ]; then
-  FAILED_PR=""
+  HAS_RESULT_LINE=0
   for src in "$LOG" "$RAW"; do
-    # GH#100: read the LATEST marker, not the earliest. The orchestrator's
-    # log is append-only and may contain stale markers from prior attempts
-    # within the same session; `head -1` would act on the wrong PR.
-    FAILED_LINE=$(loop_marker_last \
-      '\[reviewer-orchestrator\] result=sub-agent-failed pr=#[0-9]+' "$src")
-    FAILED_PR=$(printf '%s' "$FAILED_LINE" | grep -oE 'pr=#[0-9]+' | grep -oE '[0-9]+')
-    [ -n "$FAILED_PR" ] && break
+    [ -f "$src" ] || continue
+    if grep -qE '\[reviewer-agent\] result=(commented|requested-changes|skipped|blocked)' "$src" 2>/dev/null; then
+      HAS_RESULT_LINE=1
+      break
+    fi
   done
-  if [ -n "${FAILED_PR:-}" ]; then
-    # GH#92 observability: emit hard_failure once per orchestrator-reported
-    # sub-agent failure, regardless of whether the wrapper goes on to post a
+  if [ "$HAS_RESULT_LINE" -eq 0 ]; then
+    FAILED_PR="$TARGET_PR"
+    # GH#92 observability: emit hard_failure once per LLM-side failure to
+    # complete a review, regardless of whether the wrapper goes on to post a
     # stub (below cap), escalate to a human (cap hit), or idempotent-skip
     # (label already present). All three paths represent the same underlying
     # event from a control-tower perspective.
-    event_emit reviewer hard_failure mode=default pr="$FAILED_PR" reason=sub-agent-failed
-
-    # Defaults for older loop.config files predating GH#94. Set unconditionally
-    # (default-if-unset) so consumer repos don't have to re-run `st init`.
-    : "${REVIEWER_SUB_AGENT_FAILURE_CAP:=3}"
-    : "${REVIEWER_ESCALATION_LABEL:=reviewer:needs-human}"
+    event_emit reviewer hard_failure mode=default pr="$FAILED_PR" reason=no-result-line
 
     # The substring is the unambiguous marker for "wrapper-posted stub" vs
-    # "sub-agent-authored real [reviewer-agent: blocked] verdict" — the
-    # sub-agent's review body never contains this phrase.
+    # "LLM-authored real [reviewer-agent: blocked] verdict" — the LLM's
+    # review body never contains this phrase.
     STUB_MARKER='Sub-agent run failed before posting a review'
 
-    PR_DATA=$(
+    PR_REVIEW_DATA=$(
       PAGER=cat GIT_PAGER=cat gh pr view "$FAILED_PR" \
         --repo "$REPO_SLUG" \
         --json reviews 2>/dev/null
-    ) || PR_DATA=""
+    ) || PR_REVIEW_DATA=""
 
     STUB_COUNT=0
-    if [ -n "$PR_DATA" ]; then
+    if [ -n "$PR_REVIEW_DATA" ]; then
       STUB_COUNT=$(
-        printf '%s' "$PR_DATA" \
+        printf '%s' "$PR_REVIEW_DATA" \
           | jq --arg marker "$STUB_MARKER" \
             '[.reviews // [] | .[] | select((.body // "") | contains($marker))] | length' \
             2>/dev/null
@@ -203,10 +268,10 @@ if [ "$LLM_EXIT" -eq 0 ]; then
       _escalation_body="🤖 Reviewer agent has failed $STUB_COUNT consecutive times on this PR. This is likely a deterministic failure (oversized diff, malformed PR, or similar). Human attention required; the reviewer will not re-dispatch on this PR until the \`$REVIEWER_ESCALATION_LABEL\` label is removed."
       hard_failure_idempotent_escalate pr "$FAILED_PR" \
         "$REVIEWER_ESCALATION_LABEL" "$_escalation_body" \
-        d73a4a "Reviewer sub-agent failed repeatedly; reviewer will not re-dispatch until removed"
+        d73a4a "Reviewer LLM failed repeatedly; reviewer will not re-dispatch until removed"
       unset _escalation_body
     else
-      echo "[wrapper] orchestrator reported sub-agent failure on PR #$FAILED_PR ($((STUB_COUNT + 1))/$REVIEWER_SUB_AGENT_FAILURE_CAP); posting stub [reviewer-agent: blocked] review" >&2
+      echo "[wrapper] LLM produced no [reviewer-agent] result line on PR #$FAILED_PR ($((STUB_COUNT + 1))/$REVIEWER_SUB_AGENT_FAILURE_CAP); posting stub [reviewer-agent: blocked] review" >&2
       PAGER=cat GIT_PAGER=cat gh pr review "$FAILED_PR" \
         --repo "$REPO_SLUG" \
         --comment \
@@ -215,5 +280,7 @@ if [ "$LLM_EXIT" -eq 0 ]; then
     fi
   fi
 fi
+
+unset PR_DATA ELIG_DECISION
 
 exit "$LLM_EXIT"

@@ -28,7 +28,7 @@ size cap lives in the loop — that's the tower's responsibility.
 | `ts`             | string | ISO-8601 timestamp (`date -Iseconds`).                         |
 | `session`        | string | Per-repo session identifier; `default` when unset.             |
 | `repo`           | string | `${REPO_OWNER}/${REPO_NAME}` from `.loop/loop.config`.         |
-| `role`           | string | Pane / wrapper identity (`dev-1`, `reviewer`, `dispatch:followup`, …). |
+| `role`           | string | Pane / wrapper identity (`dev-1`, `reviewer`, `dispatch:review`, `dispatch:followup`, …). The `dispatch:review` pane uses the `reviewer` role on its wrapper invocations and `dispatch:review` on dispatcher-shell events. |
 | `event`          | string | One of the names listed below.                                 |
 | `schema_version` | number | Currently `1`. Bump only when an event's required fields change. |
 
@@ -97,12 +97,12 @@ and `default` for the reviewer wrapper. Either `pr` (Mode 2/3 / reviewer) or
 
 | event              | role(s)                                                  | extra fields                                | when |
 |--------------------|----------------------------------------------------------|---------------------------------------------|------|
-| `dispatch_fired`   | `dispatch:followup`, `dispatch:conflicts`, `merger`      | `pr`, `kind`, `verdict` (when present)      | when the dispatcher actually fires the underlying action (background dev-agent run for follow-up/conflicts, server-side merge for merger) |
-| `dispatch_skip`    | `dispatch:followup`, `dispatch:conflicts`, `merger`      | `pr`, `kind`, `reason` or `verdict`         | when an eligible PR is skipped (already-locked, gh-merge-failed, predicate skip) |
-| `dispatch_at_cap`  | `dispatch:followup`, `dispatch:conflicts`                | `kind`, `active`, `cap`                     | when the shared concurrency cap is reached and remaining eligible PRs are deferred to the next cycle |
+| `dispatch_fired`   | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`, `merger` | `pr`, `kind`, `verdict` (when present)      | when the dispatcher actually fires the underlying action (background dev-agent run for follow-up/conflicts, background reviewer run for review, server-side merge for merger) |
+| `dispatch_skip`    | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`, `merger` | `pr`, `kind`, `reason` or `verdict`         | when an eligible PR is skipped (already-locked, gh-merge-failed, predicate skip) |
+| `dispatch_at_cap`  | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`           | `kind`, `active`, `cap`                     | when the concurrency cap is reached and remaining eligible PRs are deferred to the next cycle. `dispatch:review` uses an independent `REVIEWER_DISPATCH_MAX_CONCURRENT` cap (GH#117); the other two share `DISPATCH_MAX_CONCURRENT` |
 
-`kind` is `followup` / `conflicts` / `merge` and disambiguates events when
-they all share a role-style name.
+`kind` is `review` / `followup` / `conflicts` / `merge` and disambiguates
+events when they all share a role-style name.
 
 ## Versioning
 

@@ -13,7 +13,7 @@ Run from anywhere inside this repo:
 - `st dev` — scan issues, claim one, drive a PR end-to-end.
 - `st dev follow-up <PR>` — address reviewer-agent feedback on an existing PR.
 - `st dev resolve <PR>` — auto-resolve a triage-gated merge conflict.
-- `st review` — dispatch a reviewer agent on an open dev-agent PR.
+- `st review <PR>` — review a specific open dev-agent PR.
 - `st loop start` — run the full multi-agent fleet under tmux.
 - `st help` — full command list.
 
