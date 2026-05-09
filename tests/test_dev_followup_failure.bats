@@ -272,8 +272,10 @@ _last_gh_comment_argv() {
 
   # Escalation: label create (idempotent --force) + label add to PR + one
   # escalation comment. Critical: the escalation comment must NOT contain
-  # the count-marker substring 'failed mid-flow' — otherwise the next cycle
-  # would count it as another stub and re-trigger escalation logic.
+  # the count-marker substring 'follow-up failed mid-flow' — otherwise the
+  # next cycle would count it as another stub and re-trigger escalation
+  # logic. (The marker is mode-specific so it doesn't conflate with
+  # Mode 3's 'agent run failed mid-flow' wrapper marker.)
   grep -qF 'label create' "$BATS_TEST_TMPDIR/gh-calls.log"
   grep -qF 'blocked:human' "$BATS_TEST_TMPDIR/gh-calls.log"
   grep -qF 'pr edit 99' "$BATS_TEST_TMPDIR/gh-calls.log"
@@ -281,7 +283,7 @@ _last_gh_comment_argv() {
   # Exactly one pr-comment call (the escalation comment, no stub pile-up).
   [ "$(grep -c 'pr comment 99' "$BATS_TEST_TMPDIR/gh-calls.log")" -eq 1 ]
   # Escalation comment must NOT contain the count-marker substring.
-  [ -z "$(grep -F 'pr comment' "$BATS_TEST_TMPDIR/gh-calls.log" 2>/dev/null | grep -F 'failed mid-flow')" ]
+  [ -z "$(grep -F 'pr comment' "$BATS_TEST_TMPDIR/gh-calls.log" 2>/dev/null | grep -F 'follow-up failed mid-flow')" ]
 }
 
 @test "run-developer.sh follow-up: PR already has BLOCKED_HUMAN_LABEL → wrapper is fully idempotent (no label, no comment, no stub) (GH#111)" {
@@ -306,17 +308,19 @@ _last_gh_comment_argv() {
 }
 
 @test "run-developer.sh follow-up: GH#111 cap+escalation wiring is present (source-of-truth)" {
-  # Wrapper queries pr view for comments+labels to count markers and check
-  # the label state. Grep is multiline-tolerant: the real call is split
-  # across lines (`gh pr view "$pr" \\\n      --repo ... --json comments,labels`).
+  # Wrapper queries pr view for comments to count markers (the has-label
+  # idempotency short-circuit is delegated to hard_failure_idempotent_escalate,
+  # which does its own --json labels fetch).
   grep -qF 'gh pr view' "$LOOP_ROOT/runners/run-developer.sh"
-  grep -qF -- '--json comments,labels' "$LOOP_ROOT/runners/run-developer.sh"
+  grep -qF -- '--json comments' "$LOOP_ROOT/runners/run-developer.sh"
   # Cap config knob.
   grep -qF 'DEV_FOLLOWUP_FAILURE_RETRY_LIMIT' "$LOOP_ROOT/runners/run-developer.sh"
-  # Wrapper applies the BLOCKED_HUMAN_LABEL via gh pr edit (mirrors the
-  # Mode 1 dev-failed:N → BLOCKED_HUMAN_LABEL escalation precedent).
+  # Wrapper escalates via the shared helper at the at-cap branch (GH#108
+  # / PR #119). Same migration shape as PR #125 (Mode 1) and PR #130
+  # (reviewer wrapper) — pins this branch as a call-site so a future
+  # refactor can't silently re-inline the escalation primitive.
   grep -qF 'BLOCKED_HUMAN_LABEL' "$LOOP_ROOT/runners/run-developer.sh"
-  grep -qF -- '--add-label' "$LOOP_ROOT/runners/run-developer.sh"
+  grep -qF 'hard_failure_idempotent_escalate pr' "$LOOP_ROOT/runners/run-developer.sh"
 }
 
 @test "loop.config.example: documents DEV_FOLLOWUP_FAILURE_RETRY_LIMIT (GH#111)" {

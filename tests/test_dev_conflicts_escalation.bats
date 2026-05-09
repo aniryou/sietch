@@ -244,12 +244,16 @@ _set_pr_state() {
 @test "run-developer.sh: GH#111 Mode 3 cap+escalation wiring is present" {
   # Cap config knob.
   grep -qF 'DEV_CONFLICTS_FAILURE_RETRY_LIMIT' "$LOOP_ROOT/runners/run-developer.sh"
-  # Wrapper queries pr view for comments+labels (call is multi-line).
+  # Wrapper queries pr view for comments to count markers (the has-label
+  # idempotency short-circuit lives in hard_failure_idempotent_escalate,
+  # which does its own --json labels fetch).
   grep -qF 'gh pr view' "$LOOP_ROOT/runners/run-developer.sh"
-  grep -qF -- '--json comments,labels' "$LOOP_ROOT/runners/run-developer.sh"
+  grep -qF -- '--json comments' "$LOOP_ROOT/runners/run-developer.sh"
   # The Mode 3 marker substring is preserved (graceful aborts in the prompt
   # use it too, so log-scrapers / dashboards rely on it).
   grep -qF '🤖 Mode 3 conflict resolution — aborted' "$LOOP_ROOT/runners/run-developer.sh"
+  # At-cap branch delegates to the shared escalation helper (GH#108 / PR #119).
+  grep -qF 'hard_failure_idempotent_escalate pr' "$LOOP_ROOT/runners/run-developer.sh"
 }
 
 @test "loop.config.example: documents DEV_CONFLICTS_FAILURE_RETRY_LIMIT (GH#111)" {

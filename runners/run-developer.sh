@@ -531,14 +531,15 @@ if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
   unset _retry_blocked_label _retry_limit
 fi
 
-# GH#111 — shared per-PR cap helper for Mode 2 / Mode 3 hard-failures.
+# GH#111 — per-PR cap wrapper for Mode 2 / Mode 3 hard-failures.
 #
 # Counts existing PR comments matching $marker_substring; under cap posts the
-# stub body, at-cap escalates via $BLOCKED_HUMAN_LABEL + the escalation body
-# (idempotent: if the label is already present, no-op). Mirrors the GH#94
-# reviewer pattern. Local to this wrapper — small enough that a separate lib
-# file is overkill, and Mode 1 (issue-scoped) keeps its own dev-failed:N
-# escalation path because it has no PR target to count comments against.
+# stub body via gh_best_effort, at-cap delegates the apply (label create +
+# add-label + comment) and the has-label idempotency short-circuit to
+# hard_failure_idempotent_escalate (GH#108 / PR #119). Mirrors the GH#94
+# reviewer pattern. The count-and-decide stays local to this wrapper —
+# Mode 1 (issue-scoped) keeps its own dev-failed:N escalation path because
+# it has no PR target to count comments against.
 #
 # Args:
 #   $1 = PR number
@@ -548,13 +549,12 @@ fi
 #   $5 = escalation body (posted at-cap, alongside the label)
 _dev_hardfail_post() {
   local pr="$1" marker="$2" cap="$3" stub_body="$4" escalation_body="$5"
-  local pr_data count has_label
+  local pr_data count
   pr_data=$(
     PAGER=cat GIT_PAGER=cat gh pr view "$pr" \
-      --repo "$REPO_SLUG" --json comments,labels 2>/dev/null
+      --repo "$REPO_SLUG" --json comments 2>/dev/null
   ) || pr_data=""
   count=0
-  has_label=0
   if [ -n "$pr_data" ]; then
     count=$(
       printf '%s' "$pr_data" \
@@ -562,35 +562,17 @@ _dev_hardfail_post() {
           '[.comments // [] | .[] | select((.body // "") | contains($m))] | length' \
           2>/dev/null
     ) || count=0
-    has_label=$(
-      printf '%s' "$pr_data" \
-        | jq --arg l "$BLOCKED_HUMAN_LABEL" \
-          'if ((.labels // []) | map(.name) | index($l)) != null then 1 else 0 end' \
-          2>/dev/null
-    ) || has_label=0
   fi
   count="${count:-0}"
-  has_label="${has_label:-0}"
-  # All mutating gh calls below route through gh_best_effort (GH#99) so a
-  # transient failure leaves a stderr breadcrumb instead of silently
-  # no-op'ing — same convention the surrounding hard-failure block uses.
   if [ "$count" -ge "$cap" ]; then
-    if [ "$has_label" -eq 1 ]; then
-      echo "[wrapper] PR #$pr already carries $BLOCKED_HUMAN_LABEL ($count failures); skipping escalation (idempotent)" >&2
-    else
-      echo "[wrapper] PR #$pr has $count hard-failure markers (cap=$cap); escalating to human via $BLOCKED_HUMAN_LABEL" >&2
-      gh_best_effort gh label create "$BLOCKED_HUMAN_LABEL" \
-        --repo "$REPO_SLUG" \
-        --color d73a4a \
-        --description "Blocked on human action; agents will skip" \
-        --force
-      gh_best_effort gh pr edit "$pr" \
-        --repo "$REPO_SLUG" \
-        --add-label "$BLOCKED_HUMAN_LABEL"
-      gh_best_effort gh pr comment "$pr" \
-        --repo "$REPO_SLUG" \
-        --body "$escalation_body"
-    fi
+    echo "[wrapper] PR #$pr has $count hard-failure markers (cap=$cap); escalating to human via $BLOCKED_HUMAN_LABEL" >&2
+    # Delegate the apply-side (label create + add-label + comment) and the
+    # has-label idempotency short-circuit to the shared helper from
+    # GH#108 / PR #119. Keeps the count-and-decide logic local while
+    # reusing the escalation primitive — same migration shape as PR #125
+    # (Mode 1) and PR #130 (reviewer wrapper).
+    hard_failure_idempotent_escalate pr "$pr" \
+      "$BLOCKED_HUMAN_LABEL" "$escalation_body"
   else
     gh_best_effort gh pr comment "$pr" \
       --repo "$REPO_SLUG" \
@@ -678,22 +660,25 @@ fi
 #
 # GH#111 — wraps the stub in a per-PR cap. After
 # DEV_FOLLOWUP_FAILURE_RETRY_LIMIT consecutive failure-marker stubs (matched
-# by 'failed mid-flow' substring), escalate to a human via
+# by 'follow-up failed mid-flow' substring — mode-specific so it doesn't
+# conflate with Mode 3's '🤖 Mode 3 conflict resolution — aborted (agent run
+# failed mid-flow, …)' wrapper marker), escalate to a human via
 # BLOCKED_HUMAN_LABEL + one explanation comment instead of yet another stub.
 # eligibility_followup_pr drops PRs carrying that label so the loop stops.
 if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
   : "${DEV_FOLLOWUP_FAILURE_RETRY_LIMIT:=3}"
   : "${BLOCKED_HUMAN_LABEL:=blocked:human}"
   STUB_BODY="🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle."
-  # Escalation body deliberately AVOIDS the count-marker substring 'failed
-  # mid-flow' so subsequent cycles don't count it as another stub. (Per the
-  # has-label idempotency guard the PR is dropped from dispatch anyway, but
-  # belt-and-suspenders.) Also retains the DEV_AGENT_COMMENT_PREFIX so
-  # eligibility_followup_pr's existing prefix filter still picks it up
-  # before the new label-exclusion kicks in.
+  # Escalation body deliberately AVOIDS the count-marker substring 'follow-up
+  # failed mid-flow' so subsequent cycles don't count it as another stub.
+  # (Per the has-label idempotency guard inside hard_failure_idempotent_escalate
+  # the PR is dropped from dispatch anyway, but belt-and-suspenders.) Also
+  # retains the DEV_AGENT_COMMENT_PREFIX so eligibility_followup_pr's
+  # existing prefix filter still picks it up before the new label-exclusion
+  # kicks in.
   ESCALATION_BODY="🤖 Developer agent — follow-up has hard-failed ${DEV_FOLLOWUP_FAILURE_RETRY_LIMIT} or more consecutive times on this PR. Likely a deterministic failure (oversized diff, broken test environment, cyclic reviewer feedback). Human attention required; the follow-up dispatcher will not re-fire on this PR until the \`${BLOCKED_HUMAN_LABEL}\` label is removed."
   _dev_hardfail_post "$TARGET_PR" \
-    'failed mid-flow' \
+    'follow-up failed mid-flow' \
     "$DEV_FOLLOWUP_FAILURE_RETRY_LIMIT" \
     "$STUB_BODY" \
     "$ESCALATION_BODY"
