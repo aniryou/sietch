@@ -693,11 +693,27 @@ REVIEW_FILTER='[.[]
   | . as $pr
   | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
   | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+  | ($review_dates | sort | last) as $latest_agent_review_date
+  | ($pr.comments // [] | [.[]
+       | select((.body // "") | startswith("🤖") | not)
+       | select((.body // "") | test($re) | not)
+       | .createdAt]) as $human_comment_dates
+  | ($pr.reviews // [] | [.[]
+       | select((.body // "") | startswith("🤖") | not)
+       | select((.body // "") | test($re) | not)
+       | .submittedAt]) as $human_review_dates
+  | (
+      $latest_agent_review_date != null
+      and (($human_comment_dates + $human_review_dates)
+           | map(select(. != null and . > $latest_agent_review_date))
+           | length > 0)
+    ) as $human_postdates_agent
   | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
   | ($pr.labels // [] | map(.name)) as $label_names
   | select(($label_names | index("reviewer:needs-human")) | not)
   | select(
-      $head_date == null
+      $human_postdates_agent
+      or $head_date == null
       or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
     )
   | select(
@@ -1421,6 +1437,205 @@ JSON
 JSON
 )
   [ "$(echo "$out" | head -1)" = "51" ]
+}
+
+# ---------------------------------------------------------------------------
+# GH#132: eligibility_review_pending must honor the orchestrator's "human
+# postdates agent review" override (templates/reviewer-orchestrator.md:59-61).
+# When a human comment / non-agent review's timestamp is later than the
+# latest agent review's submittedAt, the predicate must INCLUDE the PR even
+# when the agent review covers the current head — otherwise the wrapper
+# short-circuits with `result=none-found-fast`, the orchestrator never runs,
+# and the human's input is silently dropped.
+#
+# A "human" entry is one whose body does NOT start with `🤖` (filters out
+# dev-agent comments) AND does NOT match $REVIEWER_AGENT_VERDICT_REGEX
+# (filters out agent reviews whose bodies start with `[reviewer-agent: ...]`).
+# ---------------------------------------------------------------------------
+
+# Helper: take the prs-current.json fixture (agent review at current head →
+# normally EXCLUDED) and inject one comment postdating the agent review.
+# $1 = the comment body. $2 = createdAt. Emits the mutated PR list on stdout.
+_with_comment() {
+  local body="$1"
+  local created_at="$2"
+  jq --arg body "$body" --arg ca "$created_at" \
+     '.[0].comments = [{"body": $body, "createdAt": $ca}]' \
+     "$LOOP_ROOT/tests/fixtures/gh/prs-current.json"
+}
+
+# Helper: same idea but inject a second review postdating the agent review.
+_with_extra_review() {
+  local body="$1"
+  local submitted_at="$2"
+  jq --arg body "$body" --arg sa "$submitted_at" \
+     '.[0].reviews += [{"body": $body, "submittedAt": $sa}]' \
+     "$LOOP_ROOT/tests/fixtures/gh/prs-current.json"
+}
+
+@test "review filter: agent review covers head + human comment postdates → INCLUDED (GH#132)" {
+  # Agent review at 11:00 covers head (10:00). Human comment at 11:05 must
+  # re-include the PR so the orchestrator re-evaluates.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_comment "wait, this misses the empty-string case." "2026-05-07T11:05:00Z" \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "review filter: agent review covers head + 🤖 dev-agent comment postdates → EXCLUDED (GH#132)" {
+  # The 🤖 prefix marks the comment as dev-agent automation, not human input.
+  # Such comments must NOT re-trigger the orchestrator (the dev-agent's own
+  # follow-up summary postdates every clean review by definition).
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_comment "🤖 Developer agent — follow-up cycle 1\n\nFixed all P0s." \
+                    "2026-05-07T11:05:00Z" \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: agent review covers head + human review postdates → INCLUDED (GH#132)" {
+  # Same override applies to a non-agent review (e.g., a human reviewer
+  # leaves a CHANGES_REQUESTED review without the [reviewer-agent: ...]
+  # marker). Body neither starts with 🤖 nor matches the verdict regex.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_extra_review "Please re-check the off-by-one in foo()." \
+                         "2026-05-07T11:05:00Z" \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "review filter: agent review covers head + agent-stub review postdates → EXCLUDED (GH#132)" {
+  # An agent-shaped review (body matches $REVIEWER_AGENT_VERDICT_REGEX) is
+  # NOT a human entry — even when it postdates the latest agent review
+  # (e.g., a fresh [reviewer-agent: clean] from a re-run). The override is
+  # specifically for HUMAN input; agent reviews are handled by the existing
+  # "no agent review covers head" half of the filter.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_extra_review "[reviewer-agent: clean] Re-confirmed after refactor." \
+                         "2026-05-07T11:05:00Z" \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: human comment exists but predates agent review → EXCLUDED (GH#132)" {
+  # The override only fires when the human entry POSTDATES the agent review.
+  # A human comment from before the review is not an unaddressed signal.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_comment "let's also handle empty input." "2026-05-07T10:30:00Z" \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  # Agent review at 11:00 > comment at 10:30 → no override → covered by
+  # existing "agent review covers head" exclusion → 0.
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: human comment postdates agent review but CI is IN_PROGRESS → EXCLUDED (GH#132)" {
+  # Override doesn't bypass the CI gate. A still-running check still gates
+  # the PR, even if a human comment would otherwise re-include it. (The
+  # orchestrator can't review until CI settles regardless of human input.)
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_comment "ping" "2026-05-07T11:05:00Z" \
+      | jq '.[0].statusCheckRollup = [{"__typename":"CheckRun","status":"IN_PROGRESS"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: human comment postdates agent review but escalation label set → EXCLUDED (GH#132)" {
+  # Override doesn't bypass the GH#94 escalation label either — once a PR
+  # is escalated to a human, every poll cycle stops dispatching the
+  # orchestrator regardless of new comments.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_comment "ping" "2026-05-07T11:05:00Z" \
+      | jq '.[0].labels = [{"name":"reviewer:needs-human"}]' \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: PR with no agent review + human comment → INCLUDED (GH#132)" {
+  # Edge case: when there's no agent review at all, $latest_agent_review_date
+  # is null. The override must not fire (you can't postdate something that
+  # doesn't exist), but the existing "no review covers head" half should
+  # still include the PR. Regression guard against null-comparison crashes.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(_with_comment "first comment ever" "2026-05-07T10:30:00Z" \
+      | jq '.[0].reviews = []' \
+      | jq --arg re "$re" --argjson dates "$DATES_CURRENT" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "eligibility_review_pending: --json field set requests comments (GH#132)" {
+  # GH#117 refactor extracted the `gh pr list` call out of
+  # eligibility_review_pending() into the shared helper
+  # _eligibility_review_fetch() so eligibility_review_pending_list could reuse
+  # it. The --json field set therefore lives in the helper now — grep there.
+  awk '/^_eligibility_review_fetch\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  # The predicate must request `comments` so the human-postdates filter has
+  # data to inspect. Mirrors the GH#46/GH#94 source-of-truth pattern: a grep
+  # against the function body so a future refactor can't silently drop the
+  # field and re-introduce the silent-swallow bug.
+  grep -qE -- '--json[[:space:]]+number,headRefOid,reviews,comments' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_review_pending: filter references human-postdates override (GH#132)" {
+  # GH#117 refactor extracted the inline jq filter into the shared
+  # _REVIEW_ELIGIBLE_JQ variable so eligibility_review_pending and
+  # eligibility_review_pending_list share one source of truth. The override
+  # identifiers therefore live in that variable now — extract its body.
+  awk "/^_REVIEW_ELIGIBLE_JQ='/,/^  ]'/" "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  # The jq filter must build the override predicate. Three signals are
+  # required: latest agent review timestamp, human entry filter (🤖 + agent
+  # regex exclusion), and the postdates-comparison gate.
+  grep -qF 'latest_agent_review_date' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'human_postdates_agent' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'startswith("🤖")' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_review_pending: PR with covered head + human comment exits 0, prints '1' (GH#132)" {
+  # End-to-end via the CLI: prove the override actually drives the wrapper's
+  # exit-code semantics (0=work, not 1=skip). prs-current would normally
+  # exit 1 (review covers head). Adding a human comment must flip it to 0.
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-current-with-human-comment.json"
+  jq '.[0].comments = [{"body":"please double-check edge case","createdAt":"2026-05-07T11:05:00Z"}]' \
+     "$LOOP_ROOT/tests/fixtures/gh/prs-current.json" > "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-current.json"
+  printf '%s' "$DATES_CURRENT" > "$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "eligibility_review_pending: PR with covered head + 🤖 dev-comment still exits 1 (GH#132 regression guard)" {
+  # The dev-agent's own follow-up summary comment postdates every fresh
+  # review by construction (the dev posts it after CI goes green). If the
+  # override fired on 🤖 comments, the orchestrator would re-fire on every
+  # successful follow-up cycle — bigger token leak than the bug it fixes.
+  local repo
+  repo=$(make_repo)
+  local prs="$BATS_TEST_TMPDIR/prs-current-with-dev-comment.json"
+  jq '.[0].comments = [{"body":"🤖 Developer agent — follow-up complete","createdAt":"2026-05-07T11:05:00Z"}]' \
+     "$LOOP_ROOT/tests/fixtures/gh/prs-current.json" > "$prs"
+  local dates="$BATS_TEST_TMPDIR/dates-current.json"
+  printf '%s' "$DATES_CURRENT" > "$dates"
+  local tmpbin
+  tmpbin=$(_make_review_gh_stub "$prs" "$dates")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" review
+  [ "$status" -eq 1 ]
+  [ "$output" = "0" ]
 }
 
 # ---------------------------------------------------------------------------

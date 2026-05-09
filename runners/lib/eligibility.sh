@@ -324,11 +324,19 @@ _eligibility_review_fetch() {
   # existing call — no extra round-trip.
   # GH#117: `updatedAt` is added so the dispatcher can sort
   # backlog by "oldest updatedAt first" within the green-CI bucket.
+  #
+  # GH#132: `comments` is added to the field set so the predicate can honor
+  # the orchestrator's "human postdates agent review" override (templates/
+  # reviewer-orchestrator.md:59-61). Without it, a human comment landing
+  # after a clean reviewer-agent review at the current head was silently
+  # dropped — the wrapper short-circuited with `result=none-found-fast` and
+  # the orchestrator never re-evaluated. Single extra field on the existing
+  # call — no extra round-trip.
   if ! prs=$(
     PAGER=cat GIT_PAGER=cat gh pr list \
       --repo "$REPO_SLUG" --state open \
       --search "head:${BRANCH_PREFIX}/ -is:draft" \
-      --json number,headRefOid,reviews,statusCheckRollup,labels,updatedAt \
+      --json number,headRefOid,reviews,comments,statusCheckRollup,labels,updatedAt \
       --limit 100 2>/dev/null
   ); then
     return 2
@@ -378,6 +386,14 @@ _eligibility_review_fetch() {
 # statusCheckRollup falls through to an empty list (PR is treated as "no CI
 # gating") so the predicate is permissive when GitHub has nothing to report.
 #
+# GH#132: also include the PR when any human comment or non-agent review
+# postdates the latest agent review — even if that agent review covers head.
+# Mirrors the orchestrator's "idempotence with a human-comment override" rule
+# (templates/reviewer-orchestrator.md:59-61). A "human" entry is one whose
+# body does NOT start with `🤖` (filters out dev-agent comments) AND does NOT
+# match $REVIEWER_AGENT_VERDICT_REGEX (filters out agent reviews whose bodies
+# start with `[reviewer-agent: ...]` rather than `🤖`).
+#
 # The single-quoted body intentionally embeds jq variable references
 # ($pr, $head_date, $dates, $re, $escalation_label, $check_states, ...) —
 # they are jq, not bash, and must not expand at source-load time.
@@ -387,11 +403,27 @@ _REVIEW_ELIGIBLE_JQ='
    | . as $pr
    | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
    | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
+   | ($review_dates | sort | last) as $latest_agent_review_date
+   | ($pr.comments // [] | [.[]
+        | select((.body // "") | startswith("🤖") | not)
+        | select((.body // "") | test($re) | not)
+        | .createdAt]) as $human_comment_dates
+   | ($pr.reviews // [] | [.[]
+        | select((.body // "") | startswith("🤖") | not)
+        | select((.body // "") | test($re) | not)
+        | .submittedAt]) as $human_review_dates
+   | (
+       $latest_agent_review_date != null
+       and (($human_comment_dates + $human_review_dates)
+            | map(select(. != null and . > $latest_agent_review_date))
+            | length > 0)
+     ) as $human_postdates_agent
    | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
    | ($pr.labels // [] | map(.name)) as $label_names
    | select(($label_names | index($escalation_label)) | not)
    | select(
-       $head_date == null
+       $human_postdates_agent
+       or $head_date == null
        or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
      )
    | select(
