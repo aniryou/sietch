@@ -75,10 +75,10 @@ REPO="$REPO_ROOT"
 # is available in every code path below.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/gh_helpers.sh"
-# Shared idempotent-escalate helper (GH#108). Sourced ahead of any wrapper
-# code that could hard-fail; the existing inline escalation block at
-# run-developer.sh:474-489 is left in place for now (sub-issue 2 swaps it
-# for a one-line call).
+# Shared idempotent-escalate helper (GH#108). Used by the Mode 1 escalation
+# path below (GH#109) to apply blocked:human + post the operator comment
+# idempotently — re-applying the label is a no-op but the helper also skips
+# the comment when the label is already present, avoiding per-cycle noise.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/hard_failure.sh"
 
@@ -487,13 +487,9 @@ if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
       --repo "$REPO_SLUG" --add-label "dev-failed:${_retry_next}" \
       >/dev/null 2>&1 || true
     if [ "$_retry_next" -ge "$_retry_limit" ]; then
-      PAGER=cat GIT_PAGER=cat gh issue edit "$DEV_AGENT_TARGET_ISSUE" \
-        --repo "$REPO_SLUG" --add-label "$_retry_blocked_label" \
-        >/dev/null 2>&1 || true
       _retry_body="🤖 Dev-agent hard-failed ${_retry_next} consecutive times (last exit=${LLM_EXIT}). Labeling \`${_retry_blocked_label}\` so the eligibility predicate skips this issue. Investigate the wrapper logs at \`${LOG}\`."
-      PAGER=cat GIT_PAGER=cat gh issue comment "$DEV_AGENT_TARGET_ISSUE" \
-        --repo "$REPO_SLUG" --body "$_retry_body" \
-        >/dev/null 2>&1 || true
+      hard_failure_idempotent_escalate issue "$DEV_AGENT_TARGET_ISSUE" \
+        "$_retry_blocked_label" "$_retry_body"
       unset _retry_body
     fi
     event_emit dev hard_failure mode="$MODE" issue="$DEV_AGENT_TARGET_ISSUE" exit_code="$LLM_EXIT" retry_count="$_retry_next"
