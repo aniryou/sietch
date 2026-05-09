@@ -20,12 +20,16 @@ load 'helpers'
 
 # Build a tmp PATH dir with:
 #   - `gh` shim that:
-#       (a) serves the eligibility preflight: `pr list` returns one PR with
-#           empty reviews + a COMPLETED+SUCCESS check (so predicate exits 0
-#           and the wrapper proceeds to claude); `api graphql` returns a date.
-#       (b) responds to `pr view` with non-cap state (no existing stubs, no
-#           escalation label) so the GH#94 escalation path stays dormant.
-#       (c) captures any `pr review` / `pr comment` argv to a sentinel file
+#       (a) responds to `pr view` (the post-GH#117 single-PR eligibility
+#           preflight) with an OPEN, non-draft PR carrying no existing
+#           reviews, no escalation label, and a COMPLETED+SUCCESS check —
+#           so the eligibility classifier returns "proceed" and the wrapper
+#           proceeds to claude. Same shape doubles as the response for the
+#           wrapper's later `gh pr view <PR> --json reviews` call in the
+#           hard_failure stub-count path (no result line + 0 prior stubs,
+#           keeping GH#94 escalation dormant so this file can focus on
+#           overshoot signaling).
+#       (b) captures any `pr review` / `pr comment` argv to a sentinel file
 #           in case other tests want it (this file does not assert on it).
 #   - `claude` shim whose stdout is the stream-json payload for the test.
 #     Each Bash tool_use event lives on its own line, mimicking the real
@@ -62,9 +66,13 @@ case "\$SUB1 \$SUB2" in
     exit 0
     ;;
   "pr view")
-    # Non-cap state: no existing stubs, no escalation label. Keeps the GH#94
-    # escalation path dormant so this file can focus on overshoot signaling.
-    emit '{"reviews":[],"labels":[]}'
+    # Eligibility-shaped response (post-GH#117 wrapper requests
+    # number,state,isDraft,headRefOid,reviews,labels,statusCheckRollup).
+    # Non-cap state: no existing reviews, no escalation label, CI complete +
+    # successful — eligibility classifier returns "proceed", and the GH#94
+    # stub-count path stays dormant so this file can focus on overshoot
+    # signaling.
+    emit '{"number":99,"state":"OPEN","isDraft":false,"headRefOid":"abc123","reviews":[],"labels":[],"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
     exit 0
     ;;
   "pr review"|"pr comment"|"pr edit"|"label create")
@@ -106,6 +114,8 @@ _bash_tool_use_events() {
 }
 
 # Helper: run the reviewer wrapper with a per-test event log under tmpdir.
+# Passes `99` as the positional <PR> argument — post-GH#117 the wrapper
+# requires a numeric PR and exits 2 with no LLM spawned otherwise.
 _run_wrapper() {
   local repo="$1"
   REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
@@ -114,7 +124,7 @@ _run_wrapper() {
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
       LOOP_EVENT_LOG="$BATS_TEST_TMPDIR/state/events.jsonl" \
       SESSION="bats-overshoot-$$" \
-    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+    bash "$LOOP_ROOT/runners/run-reviewer.sh" 99
 }
 
 # ---------------------------------------------------------------------------
@@ -143,6 +153,14 @@ _run_wrapper() {
   [ -n "$hits" ]
   echo "$hits" | jq -e '.count == 26' >/dev/null
   echo "$hits" | jq -e '.guidance == 25' >/dev/null
+  # PR attribution must come from the wrapper's $TARGET_PR (the positional
+  # argument), NOT from log-greps for orchestrator markers that no longer
+  # exist post-GH#117. Pinning this catches the regression the reviewer
+  # caught on the previous cycle, where the bash_overshoot row carried no
+  # pr field because the orchestrator-marker grep returned empty.
+  # event_log.sh numeric-coerces values matching ^-?[0-9]+$, so pr lands as
+  # a JSON number, not a string.
+  echo "$hits" | jq -e '.pr == 99' >/dev/null
   # Exactly one overshoot event (no duplicate per pipeline buffer).
   [ "$(printf '%s\n' "$hits" | wc -l | tr -d ' ')" -eq 1 ]
 }
