@@ -8,12 +8,22 @@ export LOOP_ROOT
 # Make a throwaway consumer-repo dir under $BATS_TEST_TMPDIR and echo its path.
 # loop.config is a copy of templates/loop.config.example with placeholders
 # rewritten to test-owner/test-repo so REPO_SLUG is well-formed.
+#
+# WORKTREE_BASE is also rewritten to a $BATS_TEST_TMPDIR-derived path so
+# the config is hermetic by default — sourcing it sets LOCK_DIR and
+# DISPATCH_LOCK_DIR (which derive from ${WORKTREE_BASE}) under
+# $BATS_TEST_TMPDIR too. Without this, the production default
+# /tmp/dev-agent/${REPO_OWNER}-${REPO_NAME} leaks onto the host's /tmp
+# (GH#105). Tests that need a different WORKTREE_BASE / LOCK_DIR can still
+# append their own override after make_repo returns; later assignments
+# during config sourcing win.
 make_repo() {
   local repo="$BATS_TEST_TMPDIR/repo-$$"
   mkdir -p "$repo/.loop"
-  awk '
-    /^REPO_OWNER=/   { print "REPO_OWNER=\"test-owner\""; next }
-    /^REPO_NAME=/    { print "REPO_NAME=\"test-repo\""; next }
+  awk -v wb="$BATS_TEST_TMPDIR/wb-$$" '
+    /^REPO_OWNER=/    { print "REPO_OWNER=\"test-owner\""; next }
+    /^REPO_NAME=/     { print "REPO_NAME=\"test-repo\""; next }
+    /^WORKTREE_BASE=/ { print "WORKTREE_BASE=\"" wb "\""; next }
     { print }
   ' "$LOOP_ROOT/templates/loop.config.example" >"$repo/.loop/loop.config"
   echo "$repo"
