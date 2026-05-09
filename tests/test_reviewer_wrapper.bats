@@ -326,8 +326,11 @@ STUB
   grep -qF 'REVIEWER_SUB_AGENT_FAILURE_CAP' "$LOOP_ROOT/runners/run-reviewer.sh"
   # Escalation label config knob.
   grep -qF 'REVIEWER_ESCALATION_LABEL' "$LOOP_ROOT/runners/run-reviewer.sh"
-  # Wrapper applies the label via gh pr edit (the GH CLI label-add idiom).
-  grep -qE 'gh pr edit' "$LOOP_ROOT/runners/run-reviewer.sh"
+  # Wrapper delegates the label-add + comment to the shared helper from
+  # runners/lib/hard_failure.sh (GH#108). The helper internally fires
+  # `gh pr edit --add-label` + `gh pr comment`; the wrapper no longer
+  # contains those calls inline.
+  grep -qF 'hard_failure_idempotent_escalate pr' "$LOOP_ROOT/runners/run-reviewer.sh"
 }
 
 @test "loop.config.example: documents REVIEWER_SUB_AGENT_FAILURE_CAP + REVIEWER_ESCALATION_LABEL (GH#94)" {

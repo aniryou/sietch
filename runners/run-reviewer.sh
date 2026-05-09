@@ -20,10 +20,9 @@ REPO="$REPO_ROOT"
 # existing human-readable echoes.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/event_log.sh"
-# Shared idempotent-escalate helper (GH#108). Sourced ahead of any wrapper
-# code that could hard-fail; the existing inline escalation block at
-# run-reviewer.sh:198-220 is left in place for now (sub-issue 3 swaps it
-# for a one-line call).
+# Shared idempotent-escalate helper (GH#108 / GH#110) — used by the per-PR
+# cap escalation below. Sourced ahead of any wrapper code that could
+# hard-fail.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/hard_failure.sh"
 
@@ -179,11 +178,10 @@ if [ "$LLM_EXIT" -eq 0 ]; then
     PR_DATA=$(
       PAGER=cat GIT_PAGER=cat gh pr view "$FAILED_PR" \
         --repo "$REPO_SLUG" \
-        --json reviews,labels 2>/dev/null
+        --json reviews 2>/dev/null
     ) || PR_DATA=""
 
     STUB_COUNT=0
-    HAS_LABEL=0
     if [ -n "$PR_DATA" ]; then
       STUB_COUNT=$(
         printf '%s' "$PR_DATA" \
@@ -191,39 +189,16 @@ if [ "$LLM_EXIT" -eq 0 ]; then
             '[.reviews // [] | .[] | select((.body // "") | contains($marker))] | length' \
             2>/dev/null
       ) || STUB_COUNT=0
-      HAS_LABEL=$(
-        printf '%s' "$PR_DATA" \
-          | jq --arg label "$REVIEWER_ESCALATION_LABEL" \
-            'if ((.labels // []) | map(.name) | index($label)) != null then 1 else 0 end' \
-            2>/dev/null
-      ) || HAS_LABEL=0
     fi
     STUB_COUNT="${STUB_COUNT:-0}"
-    HAS_LABEL="${HAS_LABEL:-0}"
 
     if [ "$STUB_COUNT" -ge "$REVIEWER_SUB_AGENT_FAILURE_CAP" ]; then
-      if [ "$HAS_LABEL" -eq 1 ]; then
-        # Idempotent: label already applied, human already pinged. Re-applying
-        # the label would be a no-op (gh dedupes), but re-posting the comment
-        # would pile up noise on every subsequent failed cycle.
-        echo "[wrapper] PR #$FAILED_PR already carries $REVIEWER_ESCALATION_LABEL ($STUB_COUNT stub failures); skipping escalation (idempotent)" >&2
-      else
-        echo "[wrapper] PR #$FAILED_PR has $STUB_COUNT stub-blocked reviews (cap=$REVIEWER_SUB_AGENT_FAILURE_CAP); escalating to human via $REVIEWER_ESCALATION_LABEL" >&2
-        # Idempotent label create — --force makes "already exists" a no-op.
-        PAGER=cat GIT_PAGER=cat gh label create "$REVIEWER_ESCALATION_LABEL" \
-          --repo "$REPO_SLUG" \
-          --color d73a4a \
-          --description "Reviewer sub-agent failed repeatedly; reviewer will not re-dispatch until removed" \
-          --force >/dev/null 2>&1 || true
-        PAGER=cat GIT_PAGER=cat gh pr edit "$FAILED_PR" \
-          --repo "$REPO_SLUG" \
-          --add-label "$REVIEWER_ESCALATION_LABEL" \
-          >/dev/null 2>&1 || true
-        PAGER=cat GIT_PAGER=cat gh pr comment "$FAILED_PR" \
-          --repo "$REPO_SLUG" \
-          --body "🤖 Reviewer agent has failed $STUB_COUNT consecutive times on this PR. This is likely a deterministic failure (oversized diff, malformed PR, or similar). Human attention required; the reviewer will not re-dispatch on this PR until the \`$REVIEWER_ESCALATION_LABEL\` label is removed." \
-          >/dev/null 2>&1 || true
-      fi
+      echo "[wrapper] PR #$FAILED_PR has $STUB_COUNT stub-blocked reviews (cap=$REVIEWER_SUB_AGENT_FAILURE_CAP); escalating to human via $REVIEWER_ESCALATION_LABEL" >&2
+      _escalation_body="🤖 Reviewer agent has failed $STUB_COUNT consecutive times on this PR. This is likely a deterministic failure (oversized diff, malformed PR, or similar). Human attention required; the reviewer will not re-dispatch on this PR until the \`$REVIEWER_ESCALATION_LABEL\` label is removed."
+      hard_failure_idempotent_escalate pr "$FAILED_PR" \
+        "$REVIEWER_ESCALATION_LABEL" "$_escalation_body" \
+        d73a4a "Reviewer sub-agent failed repeatedly; reviewer will not re-dispatch until removed"
+      unset _escalation_body
     else
       echo "[wrapper] orchestrator reported sub-agent failure on PR #$FAILED_PR ($((STUB_COUNT + 1))/$REVIEWER_SUB_AGENT_FAILURE_CAP); posting stub [reviewer-agent: blocked] review" >&2
       PAGER=cat GIT_PAGER=cat gh pr review "$FAILED_PR" \
