@@ -3,6 +3,8 @@
 A multi-agent dev loop for Claude Code, built on top of
 [beads](https://github.com/steveyegge/beads).
 
+![loop](docs/loop.jpeg)
+
 ## Why "loop"?
 
 Agentic engineering, as framed in Steve Yegge and Gene Kim's
