@@ -26,6 +26,10 @@ REPO="$REPO_ROOT"
 # for a one-line call).
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/hard_failure.sh"
+# Append-only log marker helpers (GH#100). Provides loop_marker_last so the
+# sub-agent-failure parse below reads the LATEST marker, not the first.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/log_helpers.sh"
 
 # Preflight: skip the LLM if no dev-agent PR needs review at its current
 # headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
@@ -152,10 +156,12 @@ event_emit reviewer llm_exited mode=default exit_code="$LLM_EXIT" duration_s="$(
 if [ "$LLM_EXIT" -eq 0 ]; then
   FAILED_PR=""
   for src in "$LOG" "$RAW"; do
-    [ -f "$src" ] || continue
-    FAILED_PR=$(grep -oE '\[reviewer-orchestrator\] result=sub-agent-failed pr=#[0-9]+' "$src" 2>/dev/null \
-      | grep -oE '[0-9]+' \
-      | head -1)
+    # GH#100: read the LATEST marker, not the earliest. The orchestrator's
+    # log is append-only and may contain stale markers from prior attempts
+    # within the same session; `head -1` would act on the wrong PR.
+    FAILED_LINE=$(loop_marker_last \
+      '\[reviewer-orchestrator\] result=sub-agent-failed pr=#[0-9]+' "$src")
+    FAILED_PR=$(printf '%s' "$FAILED_LINE" | grep -oE 'pr=#[0-9]+' | grep -oE '[0-9]+')
     [ -n "$FAILED_PR" ] && break
   done
   if [ -n "${FAILED_PR:-}" ]; then

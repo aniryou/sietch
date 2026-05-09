@@ -340,3 +340,38 @@ STUB
   # stub grep AND the per-PR cap grep — they're the same marker.
   grep -qF 'GH#94' "$LOOP_ROOT/templates/reviewer-orchestrator.md"
 }
+
+# ---------------------------------------------------------------------------
+# GH#100: append-only logs must be parsed back-to-front. The orchestrator can
+# emit multiple `result=sub-agent-failed pr=#N` markers in one session (e.g.,
+# earlier attempts on different PRs before the wrapper terminates). With
+# `head -1`, the wrapper would post the stub on the FIRST (stale) PR; the
+# correct behavior is to post on the LAST (current) PR.
+# ---------------------------------------------------------------------------
+
+@test "run-reviewer.sh: log has two sub-agent-failed markers → wrapper posts stub on the LATER PR (GH#100)" {
+  local repo
+  repo=$(make_repo)
+  # Two assistant-text events on separate stream-json lines. The wrapper
+  # renders them into LOG (and stores RAW), then greps for the marker. The
+  # canonical value is the LAST match (PR #20), not the FIRST (#10).
+  local stream
+  stream=$(printf '%s\n%s' \
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#10 reason=context-exhausted"}]}}' \
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#20 reason=context-exhausted"}]}}')
+  _make_path_stubs 0 "$stream"
+
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+
+  [ "$status" -eq 0 ]
+  [ -f "$BATS_TEST_TMPDIR/state/gh-args" ]
+  # Stub was posted on the LATER PR (#20), not the earlier one (#10).
+  grep -qF 'pr review 20' "$BATS_TEST_TMPDIR/state/gh-args"
+  ! grep -qF 'pr review 10' "$BATS_TEST_TMPDIR/state/gh-args"
+  # Body matches the verdict-regex contract.
+  grep -qF '[reviewer-agent: blocked]' "$BATS_TEST_TMPDIR/state/gh-args"
+  # Exactly one stub, not one per marker.
+  [ "$(grep -c 'pr review' "$BATS_TEST_TMPDIR/state/gh-args")" -eq 1 ]
+}
