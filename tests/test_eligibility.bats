@@ -183,25 +183,41 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# eligibility_dev_candidates: high-then-medium ordering, dedupe, lock + assignee
-# filtering. The wrapper consumes this list to claim a lock BEFORE spawning the
-# LLM (GH#31): every printed number must be a viable claim target so the
-# wrapper's mkdir loop can pick one without re-querying gh.
+# eligibility_dev_candidates: id-ascending ordering across severities (GH#113),
+# dedupe, lock + assignee filtering. The wrapper consumes this list to claim a
+# lock BEFORE spawning the LLM (GH#31): every printed number must be a viable
+# claim target so the wrapper's mkdir loop can pick one without re-querying gh.
 #
-# Pure-shell tests exercise the same awk-dedupe + lock-skip pipeline the
-# function uses, so we don't need to mock `gh` for the ordering logic.
+# Pure-shell tests exercise the same `sort -un | grep .` + lock-skip pipeline
+# the function uses, so we don't need to mock `gh` for the ordering logic.
 # ---------------------------------------------------------------------------
 
-@test "dev-candidates: high-then-medium with overlap dedupes preserving high-first order" {
+@test "dev-candidates: id-ascending across severities — low-id medium beats high-id high (GH#113)" {
+  # Pure-shell assertion: combined output is sorted by issue number ascending,
+  # not by severity bucket. A medium issue with a low number must surface
+  # before a high issue with a high number — strictly lowest id wins. Use
+  # inline fixtures here because the on-disk fixtures (101/102 high, 102/103
+  # medium) happen to already be id-ascending, so they can't actually
+  # distinguish the old high-first order from the new id-ascending order.
+  local high_nums med_nums all
+  high_nums=$(echo '[{"number":50,"assignees":[]}]' \
+                | jq -r '.[] | select(.assignees == []) | .number')
+  med_nums=$(echo '[{"number":7,"assignees":[]},{"number":80,"assignees":[]}]' \
+               | jq -r '.[] | select(.assignees == []) | .number')
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | sort -un | grep . || true)
+  [ "$(printf '%s' "$all" | tr '\n' ' ')" = "7 50 80" ]
+}
+
+@test "dev-candidates: id-ascending with overlap dedupes once at low-id slot (GH#113)" {
+  # An issue tagged BOTH severities must surface exactly once, at its id slot.
+  # Using existing fixtures (which carry 102 in both high and medium): 102
+  # appears once in the union, between 101 and 103.
   local high_nums med_nums all
   high_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
                 < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
   med_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
                < "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
-  # awk dedupe preserves first occurrence, so high (101, 102) appears before
-  # the medium-only (103). 102 is in both files; should appear once, in its
-  # high-side position.
-  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | awk 'NF && !seen[$0]++')
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | sort -un | grep . || true)
   [ "$(printf '%s' "$all" | tr '\n' ' ')" = "101 102 103" ]
 }
 
@@ -213,7 +229,7 @@ STUB
                 < "$LOOP_ROOT/tests/fixtures/gh/issues-high.json")
   med_nums=$(jq -r '.[] | select(.assignees == []) | .number' \
                < "$LOOP_ROOT/tests/fixtures/gh/issues-medium.json")
-  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | awk 'NF && !seen[$0]++')
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | sort -un | grep . || true)
   filtered_lines=""
   for n in $all; do
     [ -d "$lock_dir/gh-${n}.lock" ] && continue
@@ -227,7 +243,7 @@ STUB
   local high_nums med_nums all
   high_nums=$(jq -r '.[] | select(.assignees == []) | .number' <<<'[]')
   med_nums=$(jq -r '.[] | select(.assignees == []) | .number' <<<'[]')
-  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | awk 'NF && !seen[$0]++')
+  all=$(printf '%s\n%s\n' "$high_nums" "$med_nums" | sort -un | grep . || true)
   [ -z "$all" ]
 }
 
@@ -269,7 +285,7 @@ STUB
   echo "$tmpbin"
 }
 
-@test "eligibility_dev_candidates: prints high-then-medium one-per-line, exits 0" {
+@test "eligibility_dev_candidates: prints id-ascending one-per-line, exits 0 (GH#113)" {
   local repo
   repo=$(make_repo)
   local lock_dir="$BATS_TEST_TMPDIR/empty-locks"
@@ -284,8 +300,35 @@ STUB
     run env PATH="$tmpbin:$PATH" \
     bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
   [ "$status" -eq 0 ]
-  # Output: 101, 102, 103 — high candidates first, medium-only candidate after.
+  # Existing fixtures are id-ascending by coincidence (101 high, 102 in both,
+  # 103 medium-only) so the output stays "101 102 103" — set membership
+  # unchanged from the pre-GH#113 high-then-medium order.
   [ "$(printf '%s' "$output" | tr '\n' ' ')" = "101 102 103" ]
+}
+
+@test "eligibility_dev_candidates: low-numbered medium beats high-numbered high (GH#113)" {
+  # End-to-end: a medium-severity issue with a low number must surface before
+  # a high-severity issue with a high number. This is the test the existing
+  # fixtures couldn't exercise (they're id-ascending by coincidence). Per the
+  # acceptance criteria, with high=[{50}] and medium=[{7},{80}], the predicate
+  # must emit "7\n50\n80\n" and exit 0.
+  local repo
+  repo=$(make_repo)
+  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-id-asc"
+  mkdir -p "$lock_dir"
+  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
+  local high="$BATS_TEST_TMPDIR/id-asc-high.json"
+  local med="$BATS_TEST_TMPDIR/id-asc-med.json"
+  echo '[{"number":50,"assignees":[],"labels":[{"name":"severity:high"}]}]' > "$high"
+  echo '[{"number":7,"assignees":[],"labels":[{"name":"severity:medium"}]},{"number":80,"assignees":[],"labels":[{"name":"severity:medium"}]}]' > "$med"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  # Strictly ascending across severities: 7 (medium) before 50 (high) before 80 (medium).
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "7 50 80" ]
 }
 
 @test "eligibility_dev_candidates: locked candidate excluded from output" {

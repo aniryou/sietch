@@ -158,7 +158,10 @@ eligibility_dev_count() {
 # ---------------------------------------------------------------------------
 # Mode 1 dev-agent (lock-acquisition variant): same filter semantics as
 # eligibility_dev_count but emits one candidate-number per line on stdout
-# in priority order (severity:high first, then medium), de-duplicated.
+# in strictly id-ascending order across both severities (GH#113), de-duplicated.
+# Severity is no longer a tiebreaker — lower-numbered issues are usually
+# foundational (filed earlier; later issues build on them), so claiming them
+# first keeps the queue in dependency order.
 #
 # This is what run-developer.sh consumes to acquire the lock BEFORE spawning
 # the LLM (GH#31). The wrapper iterates the printed numbers and tries
@@ -218,10 +221,11 @@ eligibility_dev_candidates() {
     echo "?"
     return 2
   fi
-  # Preserve high-then-medium order (sort -u would lose it). awk's
-  # !seen[$0]++ keeps the first occurrence and drops later duplicates,
-  # so an issue tagged both severities surfaces in its high-side slot.
-  all=$(printf '%s\n%s\n' "$raw_h" "$raw_m" | awk 'NF && !seen[$0]++')
+  # GH#113: strict id-ascending across both severities. `sort -un` dedupes
+  # numerically (an issue tagged both severities surfaces once, in its id
+  # slot) and orders by integer value. `grep .` strips blank lines so the
+  # iteration loop below doesn't burn a cycle on an empty entry.
+  all=$(printf '%s\n%s\n' "$raw_h" "$raw_m" | sort -un | grep . || true)
 
   # GH#65: build the set of issue numbers that already have an open dev-agent
   # PR. Skip the network call when there are no candidates to filter.
@@ -606,9 +610,9 @@ Usage: eligibility.sh <mode> [args]
 
 Modes:
   dev              Count open severity:high|medium issues with no assignee.
-  dev-candidates   Print one candidate-number per line (high-priority first),
-                   so the wrapper can mkdir-acquire a lock BEFORE spawning the
-                   LLM (closes the TOCTOU window of 'dev').
+  dev-candidates   Print one candidate-number per line (id-ascending across
+                   severities, GH#113), so the wrapper can mkdir-acquire a lock
+                   BEFORE spawning the LLM (closes the TOCTOU window of 'dev').
   review           Count open dev-agent PRs not yet reviewed at current head SHA.
   followup <PR#>   Should the follow-up dispatcher dispatch a Mode 2 dev-agent
                    for PR <PR#>? Skips clean/nits verdicts unconditionally;

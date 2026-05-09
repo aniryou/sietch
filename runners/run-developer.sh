@@ -238,8 +238,8 @@ if [ "$MODE" = "default" ]; then
   EL_RC=$?
   case "$EL_RC" in
     0)
-      # Iterate candidates in priority order (high-first per dev-candidates
-      # contract). The first mkdir that succeeds is our lock; mkdir is the
+      # Iterate candidates in id-ascending order (per dev-candidates contract,
+      # GH#113). The first mkdir that succeeds is our lock; mkdir is the
       # atomic primitive — exactly one caller wins under contention.
       mkdir -p "$LOCK_DIR"
       DEV_AGENT_TARGET_ISSUE=""
