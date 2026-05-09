@@ -47,14 +47,19 @@ load 'helpers'
 # fixture logs out of /tmp. Same hermeticity pattern as WORKTREE_BASE (GH#105).
 # ---------------------------------------------------------------------------
 
-@test "helpers.bash: exports LOOP_LOG_DIR not pointing at /tmp" {
+@test "helpers.bash: exports LOOP_LOG_DIR not equal to plain /tmp" {
   # helpers.bash has already been loaded by `load 'helpers'` at the top of
-  # this file. LOOP_LOG_DIR should be set and must NOT point at /tmp.
+  # this file. LOOP_LOG_DIR must be set and must NOT be the bare `/tmp`
+  # production default — a per-bats-file or per-run subdirectory is fine
+  # (on Linux, BATS_FILE_TMPDIR resolves under /tmp/bats-run-XXX/file/N/).
+  # The contract is "logs go to a hermetic subdir", not "logs go nowhere
+  # under /tmp at all".
   [ -n "${LOOP_LOG_DIR:-}" ]
-  case "$LOOP_LOG_DIR" in
-    /tmp|/tmp/*) false ;;
-    *) true ;;
-  esac
+  [ "$LOOP_LOG_DIR" != "/tmp" ]
+  [ "$LOOP_LOG_DIR" != "/tmp/" ]
+  # Whatever path it is, it must actually exist (so `tee` doesn't fail when
+  # the wrapper tries to write under it).
+  [ -d "$LOOP_LOG_DIR" ]
 }
 
 @test "helpers.bash: LOOP_LOG_DIR is exported (visible to subshells)" {
