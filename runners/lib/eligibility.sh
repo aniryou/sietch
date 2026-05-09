@@ -42,6 +42,12 @@ set -o pipefail
 # up the new safety-net skip marker.
 : "${BLOCKED_HUMAN_LABEL:=blocked:human}"
 
+# Default for older loop.config files predating GH#94. Same default-if-unset
+# pattern. Applied to PRs by run-reviewer.sh after
+# REVIEWER_SUB_AGENT_FAILURE_CAP consecutive sub-agent failures, and consumed
+# below by eligibility_review_pending to drop the PR from review dispatch.
+: "${REVIEWER_ESCALATION_LABEL:=reviewer:needs-human}"
+
 # Defaults for older loop.config files predating GH#37 (merger dispatcher).
 # Same default-if-unset pattern as BLOCKED_HUMAN_LABEL — consumer repos don't
 # have to re-run `st init` to pick up the merger.
@@ -292,11 +298,15 @@ eligibility_dev_candidates() {
 # ---------------------------------------------------------------------------
 eligibility_review_pending() {
   local prs owner repo oid_dates oid date_iso count
+  # GH#94: `labels` is added to the field set so the predicate can drop PRs
+  # carrying ${REVIEWER_ESCALATION_LABEL}. Mirrors the BLOCKED_HUMAN_LABEL
+  # precedent in eligibility_dev_count above. Single extra field on the
+  # existing call — no extra round-trip.
   if ! prs=$(
     PAGER=cat GIT_PAGER=cat gh pr list \
       --repo "$REPO_SLUG" --state open \
       --search "head:${BRANCH_PREFIX}/ -is:draft" \
-      --json number,headRefOid,reviews,statusCheckRollup \
+      --json number,headRefOid,reviews,statusCheckRollup,labels \
       --limit 100 2>/dev/null
   ); then
     echo "?"
@@ -342,12 +352,15 @@ eligibility_review_pending() {
   # predicate is permissive when GitHub has nothing to report.
   if ! count=$(
     echo "$prs" | jq --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+      --arg escalation_label "$REVIEWER_ESCALATION_LABEL" \
       --argjson dates "$oid_dates" '
       [.[]
        | . as $pr
        | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
        | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
        | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
+       | ($pr.labels // [] | map(.name)) as $label_names
+       | select(($label_names | index($escalation_label)) | not)
        | select(
            $head_date == null
            or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)

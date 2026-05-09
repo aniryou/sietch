@@ -679,6 +679,8 @@ REVIEW_FILTER='[.[]
   | (($dates[$pr.headRefOid] // "") | (if . == "" then null else . end)) as $head_date
   | ($pr.reviews // [] | [.[] | select(.body | test($re)) | .submittedAt]) as $review_dates
   | ($pr.statusCheckRollup // [] | map(.status // .state)) as $check_states
+  | ($pr.labels // [] | map(.name)) as $label_names
+  | select(($label_names | index("reviewer:needs-human")) | not)
   | select(
       $head_date == null
       or ($review_dates | map(select(. != null and . > $head_date)) | length == 0)
@@ -1215,6 +1217,58 @@ STUB
   # also enforced by the eligibility predicate (defense-in-depth for direct
   # claude -p invocations that bypass the wrapper).
   grep -qF 'eligibility_review_pending' "$LOOP_ROOT/templates/reviewer-orchestrator.md"
+}
+
+# ---------------------------------------------------------------------------
+# GH#94: eligibility_review_pending must exclude PRs carrying the escalation
+# label so the wrapper stops invoking the orchestrator on a PR the reviewer
+# has already escalated to a human. Removing the label re-makes the PR
+# eligible (no other state needs to change), mirroring the BLOCKED_HUMAN_LABEL
+# precedent in eligibility_dev_count (eligibility.sh:198-211 in the dev-agent
+# dispatch predicate).
+# ---------------------------------------------------------------------------
+
+@test "review filter: PR with REVIEWER_ESCALATION_LABEL is filtered OUT (GH#94)" {
+  # Stale review + green CI would normally INCLUDE this PR, but the
+  # escalation label takes precedence — the reviewer agent has given up.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(jq '.[0].labels = [{"name": "reviewer:needs-human"}]' \
+        "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json" \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 0 ]
+}
+
+@test "review filter: PR without REVIEWER_ESCALATION_LABEL is INCLUDED (GH#94 regression guard)" {
+  # Same fixture without the label must remain eligible — the stale review
+  # half votes INCLUDE and no other gate fires.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(jq '.[0].labels = [{"name": "enhancement"}]' \
+        "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json" \
+      | jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER")
+  [ "$n" -eq 1 ]
+}
+
+@test "review filter: PR with missing labels field defaults to INCLUDED (GH#94)" {
+  # Defensive: existing fixtures don't carry a labels field; the filter
+  # must fall through to "no escalation" rather than crashing or silently
+  # excluding.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local n
+  n=$(jq --arg re "$re" --argjson dates "$DATES_STALE" "$REVIEW_FILTER" \
+        < "$LOOP_ROOT/tests/fixtures/gh/prs-stale.json")
+  [ "$n" -eq 1 ]
+}
+
+@test "eligibility_review_pending: --json field set requests labels (GH#94)" {
+  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'labels' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_review_pending: filter excludes REVIEWER_ESCALATION_LABEL (GH#94)" {
+  awk '/^eligibility_review_pending\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'REVIEWER_ESCALATION_LABEL' "$BATS_TEST_TMPDIR/fn.sh"
 }
 
 # ---------------------------------------------------------------------------
