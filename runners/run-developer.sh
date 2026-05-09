@@ -65,11 +65,15 @@ REPO="$REPO_ROOT"
 # emit so a sourcing failure surfaces here, not mid-run.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/event_log.sh"
+# Canonical loop_sanitize_id helper — single source of truth for the
+# LOCK_NAME_PREFIX defaulting below (GH#98).
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/repo_id.sh"
 
 # Default for older loop.config files predating GH#74. Sanitize via the
-# same rule used in lib/repo_id.sh so REPO_NAMEs containing `.` produce a
-# clean prefix even if the user hasn't re-rendered loop.config.example.
-: "${LOCK_NAME_PREFIX:=$(printf '%s' "${REPO_NAME:-}" | tr -c 'A-Za-z0-9_-' '-')-}"
+# canonical helper so REPO_NAMEs containing `.` produce a clean prefix
+# even if the user hasn't re-rendered loop.config.example.
+: "${LOCK_NAME_PREFIX:=$(loop_sanitize_id "${REPO_NAME:-}")-}"
 
 # Mode 1 only — preflight: skip the LLM if there are no eligible issues.
 # Modes 2/3 already arrive with a specific PR number and don't scan.
