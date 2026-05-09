@@ -57,11 +57,6 @@ REPO="$REPO_ROOT"
 # failure cap).
 : "${REVIEWER_SUB_AGENT_FAILURE_CAP:=3}"
 : "${REVIEWER_ESCALATION_LABEL:=reviewer:needs-human}"
-# GH#117 — dispatcher-side concurrency cap default; consumed by run-loop.sh's
-# loop_dispatcher_review. Mirrored here so direct `st review <PR>` invocations
-# don't error on `set -u` if a stale loop.config lacks the key. The wrapper
-# itself doesn't gate on this knob (one wrapper handles one PR), but sourcing
-# the config file with the key absent is fine.
 
 # Defense-in-depth single-PR check (GH#117): the dispatcher already filtered
 # this PR via eligibility_review_pending_list, but the time between scan and
@@ -95,7 +90,11 @@ ELIG_DECISION=$(
     elif (.statusCheckRollup // [] | map(.status // .state)
           | any(. == "IN_PROGRESS" or . == "PENDING" or . == "QUEUED"))
       then "skip:ci-running"
-    elif (.reviews // [] | any((.body // "") | test($re))) then "skip:reviewed"
+    elif (
+      (.headRefOid // "") as $head
+      | .reviews // []
+      | any(((.body // "") | test($re)) and ((.commit.oid // "") == $head))
+    ) then "skip:reviewed"
     else "proceed"
     end
   ' 2>/dev/null

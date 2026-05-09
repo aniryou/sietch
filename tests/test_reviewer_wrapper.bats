@@ -460,36 +460,95 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# GH#100: append-only logs must be parsed back-to-front. The orchestrator can
-# emit multiple `result=sub-agent-failed pr=#N` markers in one session (e.g.,
-# earlier attempts on different PRs before the wrapper terminates). With
-# `head -1`, the wrapper would post the stub on the FIRST (stale) PR; the
-# correct behavior is to post on the LAST (current) PR.
+# GH#117 follow-up: skip:reviewed must scope the marker check to the current
+# head SHA, mirroring the dispatcher's _REVIEW_ELIGIBLE_JQ "review covers head"
+# semantic. Without the scoping, a marker review on a STALE head SHA would make
+# the wrapper drop every "second-pass" review on a dev-agent PR after a
+# follow-up commit.
 # ---------------------------------------------------------------------------
 
-@test "run-reviewer.sh: log has two sub-agent-failed markers → wrapper posts stub on the LATER PR (GH#100)" {
+@test "run-reviewer.sh: marker review on stale head SHA → wrapper proceeds (GH#117 fixup)" {
   local repo
   repo=$(make_repo)
-  # Two assistant-text events on separate stream-json lines. The wrapper
-  # renders them into LOG (and stores RAW), then greps for the marker. The
-  # canonical value is the LAST match (PR #20), not the FIRST (#10).
-  local stream
-  stream=$(printf '%s\n%s' \
-    '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#10 reason=context-exhausted"}]}}' \
-    '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-orchestrator] result=sub-agent-failed pr=#20 reason=context-exhausted"}]}}')
-  _make_path_stubs 0 "$stream"
+  _make_path_stubs 0 '{"type":"assistant","message":{"content":[{"type":"text","text":"[reviewer-agent] result=commented pr=#99 sha=newhead findings=P0:0 P1:0 P2:0 beads=loop-xyz"}]}}'
+
+  # Custom gh shim that returns one marker review whose .commit.oid is OLD,
+  # while the PR's current headRefOid is NEW.
+  cat >"$BATS_TEST_TMPDIR/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+ARGS=("$@")
+JSON_EXPR=""
+for ((i=0; i<${#ARGS[@]}; i++)); do
+  if [ "${ARGS[i]}" = "--json" ]; then JSON_EXPR="${ARGS[i+1]:-}"; fi
+done
+case "${ARGS[0]:-} ${ARGS[1]:-}" in
+  "pr view")
+    if [[ "$JSON_EXPR" == *statusCheckRollup* ]]; then
+      jq -n '{state: "OPEN", isDraft: false, headRefOid: "newhead", number: 99,
+              reviews: [{body: "🤖 Reviewer agent — automated review\n\n[reviewer-agent: clean]\n",
+                         commit: {oid: "oldhead"},
+                         submittedAt: "2026-05-01T00:00:00Z"}],
+              labels: [],
+              statusCheckRollup: [{__typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS"}]}'
+      exit 0
+    fi
+    jq -n '{reviews: [], labels: []}'
+    exit 0
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/gh"
 
   REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
     run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
-    bash "$LOOP_ROOT/runners/run-reviewer.sh"
+    bash "$LOOP_ROOT/runners/run-reviewer.sh" 99
 
+  # Wrapper must NOT short-circuit on `skip:reviewed` — the marker review is
+  # on a stale SHA and the dispatcher's predicate already determined this PR
+  # needs a re-review at the new head.
   [ "$status" -eq 0 ]
-  [ -f "$BATS_TEST_TMPDIR/state/gh-args" ]
-  # Stub was posted on the LATER PR (#20), not the earlier one (#10).
-  grep -qF 'pr review 20' "$BATS_TEST_TMPDIR/state/gh-args"
-  ! grep -qF 'pr review 10' "$BATS_TEST_TMPDIR/state/gh-args"
-  # Body matches the verdict-regex contract.
-  grep -qF '[reviewer-agent: blocked]' "$BATS_TEST_TMPDIR/state/gh-args"
-  # Exactly one stub, not one per marker.
-  [ "$(grep -c 'pr review' "$BATS_TEST_TMPDIR/state/gh-args")" -eq 1 ]
+  [ -f "$BATS_TEST_TMPDIR/state/claude-was-called" ]
+}
+
+@test "run-reviewer.sh: marker review on current head SHA → wrapper skips (GH#117 fixup)" {
+  local repo
+  repo=$(make_repo)
+  _make_path_stubs 0 ''
+
+  # Custom gh shim: one marker review whose .commit.oid MATCHES the current
+  # headRefOid. This is the "already reviewed at this head" case the wrapper
+  # is supposed to short-circuit on.
+  cat >"$BATS_TEST_TMPDIR/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+ARGS=("$@")
+JSON_EXPR=""
+for ((i=0; i<${#ARGS[@]}; i++)); do
+  if [ "${ARGS[i]}" = "--json" ]; then JSON_EXPR="${ARGS[i+1]:-}"; fi
+done
+case "${ARGS[0]:-} ${ARGS[1]:-}" in
+  "pr view")
+    if [[ "$JSON_EXPR" == *statusCheckRollup* ]]; then
+      jq -n '{state: "OPEN", isDraft: false, headRefOid: "samehead", number: 99,
+              reviews: [{body: "🤖 Reviewer agent — automated review\n\n[reviewer-agent: clean]\n",
+                         commit: {oid: "samehead"},
+                         submittedAt: "2026-05-01T00:00:00Z"}],
+              labels: [],
+              statusCheckRollup: [{__typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS"}]}'
+      exit 0
+    fi
+    jq -n '{reviews: [], labels: []}'
+    exit 0
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-reviewer.sh" 99
+
+  [ "$status" -eq 2 ]
+  [ ! -f "$BATS_TEST_TMPDIR/state/claude-was-called" ]
 }
