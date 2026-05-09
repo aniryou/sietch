@@ -69,6 +69,12 @@ REPO="$REPO_ROOT"
 # LOCK_NAME_PREFIX defaulting below (GH#98).
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/repo_id.sh"
+# gh_best_effort (GH#99) — log-on-failure wrapper for best-effort `gh` calls
+# (triage-untractable draft, Mode 3 hard-fail draft + comment, Mode 2
+# follow-up hard-fail comment). Sourced alongside event_log.sh so the helper
+# is available in every code path below.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/gh_helpers.sh"
 
 # Default for older loop.config files predating GH#74. Sanitize via the
 # canonical helper so REPO_NAMEs containing `.` produce a clean prefix
@@ -339,7 +345,7 @@ The triage rules deemed these merge conflicts not safe for autonomous resolution
 For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
 EOF
       )" >/dev/null 2>&1 || true
-      PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+      gh_best_effort gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG"
       echo "[wrapper] result=triage-untractable pr=#${TARGET_PR} reason=${REASON}"
       exit 1
       ;;
@@ -540,8 +546,8 @@ if [ "$MODE" = "resolve-conflicts" ] && [ "$LLM_EXIT" -ne 0 ]; then
 The dev-agent did not reach a graceful abort block (likely max-turns exceeded, claude API failure, or OOM kill). Drafting this PR so the conflicts dispatcher will not re-fire the LLM on the next cycle. Please resolve manually or re-attempt after investigation.
 EOF
   )
-  PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$HARD_FAIL_BODY" >/dev/null 2>&1 || true
-  PAGER=cat GIT_PAGER=cat gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+  gh_best_effort gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$HARD_FAIL_BODY"
+  gh_best_effort gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG"
   event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
 fi
 
@@ -563,7 +569,7 @@ fi
 # LLM's `gh pr ready --undo` paths (GH#44), which the conflicts dispatcher's
 # `isDraft == false` filter then excludes.
 if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
-  PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle." >/dev/null 2>&1 || true
+  gh_best_effort gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle."
   event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
 fi
 

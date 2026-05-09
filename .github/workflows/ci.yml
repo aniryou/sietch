@@ -20,6 +20,7 @@ env:
     runners/lib/dispatcher.sh
     runners/lib/eligibility.sh
     runners/lib/event_log.sh
+    runners/lib/gh_helpers.sh
     runners/lib/jitter.sh
     runners/lib/jq_filter.sh
     runners/lib/onboard.sh
