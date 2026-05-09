@@ -42,7 +42,7 @@ If you genuinely cannot proceed without a human (truly ambiguous issue, missing 
 ## Severity Filter (HARD RULE)
 
 GitHub issues are labeled with severity:
-- `${SEVERITY_LABEL_HIGH}` — work on these (priority order: high first)
+- `${SEVERITY_LABEL_HIGH}` — work on these
 - `${SEVERITY_LABEL_MEDIUM}` — work on these
 - `${SEVERITY_LABEL_LOW}` — **IGNORE**. The user will batch-fix these later. Never claim, comment on, or open a PR for a `${SEVERITY_LABEL_LOW}` issue.
 
@@ -79,7 +79,7 @@ The unset-env steps below are the fallback path for direct `claude -p` invocatio
    ```
    Per the `--json` field-discipline rule above, `labels` is dropped (the `--label` filter already guarantees it) and `url` is dropped (derivable as `https://github.com/${REPO_SLUG}/issues/<num>`).
 2. **Pick one issue**:
-   - Prefer `${SEVERITY_LABEL_HIGH}` over `${SEVERITY_LABEL_MEDIUM}`.
+   - Pick the lowest-numbered eligible issue across both severities — lower-numbered issues are usually filed earlier and tend to be foundational, so claiming them first keeps the queue in dependency order. Severity is no longer a tiebreaker.
    - Skip issues that already have an assignee (likely being worked on by another agent or a human).
    - Skip issues that already have a linked open PR (search PRs that mention `#<issue-number>`).
    - Skip issues that have a beads memory tag `developer-agent:claimed:<issue#>` (see "Concurrency safety" below).
