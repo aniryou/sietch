@@ -504,41 +504,51 @@ eligibility_followup_pr() {
   fi
 
   local data
+  # GH#111: `labels` is added to the field set so the predicate can drop PRs
+  # carrying ${BLOCKED_HUMAN_LABEL} after the wrapper escalates a Mode 2 cap.
+  # Mirrors the GH#94 REVIEWER_ESCALATION_LABEL precedent in
+  # eligibility_review_pending. Single extra field on the existing call —
+  # no extra round-trip.
   if ! data=$(
     PAGER=cat GIT_PAGER=cat gh pr view "$pr" \
       --repo "$REPO_SLUG" \
-      --json reviews,comments 2>/dev/null
+      --json reviews,comments,labels 2>/dev/null
   ); then
     echo "?"
     return 2
   fi
 
-  # One pass of jq: classify the latest reviewer-agent review and the
-  # ordering vs the latest dev-agent comment, emit a TAB-separated
-  # "<verdict>\t<dispatch?>" string.
+  # One pass of jq: short-circuit when BLOCKED_HUMAN_LABEL is present, else
+  # classify the latest reviewer-agent review and the ordering vs the latest
+  # dev-agent comment, emit a TAB-separated "<verdict>\t<dispatch?>" string.
   local result
   if ! result=$(
     echo "$data" | jq -r \
       --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
-      --arg prefix "$DEV_AGENT_COMMENT_PREFIX" '
-      (.reviews // []
-        | map(select(.body | test($re)))
-        | sort_by(.submittedAt)
-        | last) as $latest_review
-      | (.comments // []
-        | map(select(.body | startswith($prefix)))
-        | sort_by(.createdAt)
-        | last) as $latest_devcomment
-      | if $latest_review == null then "none\tno"
-        else
-          ($latest_review.body | match($re).captures[0].string) as $verdict
-          | if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"
-            elif ($latest_devcomment == null
-                  or $latest_review.submittedAt > $latest_devcomment.createdAt) then
-              "\($verdict)\tyes"
-            else "\($verdict)\tno"
-            end
-        end
+      --arg prefix "$DEV_AGENT_COMMENT_PREFIX" \
+      --arg blocked_label "$BLOCKED_HUMAN_LABEL" '
+      if ((.labels // [] | map(.name)) | index($blocked_label)) != null then
+        "blocked-by-label\tno"
+      else
+        (.reviews // []
+          | map(select(.body | test($re)))
+          | sort_by(.submittedAt)
+          | last) as $latest_review
+        | (.comments // []
+          | map(select(.body | startswith($prefix)))
+          | sort_by(.createdAt)
+          | last) as $latest_devcomment
+        | if $latest_review == null then "none\tno"
+          else
+            ($latest_review.body | match($re).captures[0].string) as $verdict
+            | if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"
+              elif ($latest_devcomment == null
+                    or $latest_review.submittedAt > $latest_devcomment.createdAt) then
+                "\($verdict)\tyes"
+              else "\($verdict)\tno"
+              end
+          end
+      end
       ' 2>/dev/null
   ); then
     echo "?"

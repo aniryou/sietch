@@ -106,15 +106,24 @@ STUB
   grep -qF 'lib/gh_helpers.sh' "$LOOP_ROOT/runners/run-developer.sh"
 }
 
-@test "run-developer.sh: four best-effort sites use gh_best_effort" {
-  # GH#99 enumerates exactly four sites: 2 × `gh pr ready --undo` and
+@test "run-developer.sh: best-effort sites use gh_best_effort" {
+  # GH#99 originally enumerated four sites: 2 × `gh pr ready --undo` and
   # 2 × `gh pr comment` (Mode 3 triage-untractable draft, Mode 3 hard-fail
   # draft + comment, Mode 2 follow-up hard-fail comment).
+  #
+  # After GH#111 the two PR-comment sites were folded into a single shared
+  # `_dev_hardfail_post` helper, and the at-cap escalation branch was further
+  # delegated to `hard_failure_idempotent_escalate` (GH#108 / PR #119), which
+  # does its own raw `|| true` internally. So today the wrapper has 2 ×
+  # `gh_best_effort gh pr ready --undo` (still inline, both per-trigger
+  # circuit breakers) and ≥ 1 × `gh_best_effort gh pr comment` (the shared
+  # under-cap stub). The remaining at-cap apply lives in the helper, not
+  # this file.
   local n_ready n_comment
   n_ready=$(grep -cE 'gh_best_effort gh pr ready --undo' "$LOOP_ROOT/runners/run-developer.sh")
   n_comment=$(grep -cE 'gh_best_effort gh pr comment' "$LOOP_ROOT/runners/run-developer.sh")
   [ "$n_ready" -ge 2 ]
-  [ "$n_comment" -ge 2 ]
+  [ "$n_comment" -ge 1 ]
 }
 
 @test "run-developer.sh: no remaining single-line gh pr comment/ready with raw '|| true'" {

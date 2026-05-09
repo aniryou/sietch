@@ -481,9 +481,13 @@ loop_dispatcher_conflicts() {
         event_emit "dispatch:conflicts" dispatch_skip kind=conflicts pr="$pr" reason=mkdir-failed
       fi
     done < <(
+      # GH#111: `labels` is added to the field set so the conflicts predicate
+      # can drop PRs carrying ${BLOCKED_HUMAN_LABEL} after the Mode 3 wrapper
+      # escalates DEV_CONFLICTS_FAILURE_RETRY_LIMIT consecutive hard-failures.
+      # Single extra field on the existing call — no extra round-trip.
       gh pr list --repo "$REPO_SLUG" --state open \
-        --json number,headRefName,mergeable,isDraft \
-        --jq "$(_dispatch_conflicts_jq "$BRANCH_PREFIX")" \
+        --json number,headRefName,mergeable,isDraft,labels \
+        --jq "$(_dispatch_conflicts_jq "$BRANCH_PREFIX" "${BLOCKED_HUMAN_LABEL:-blocked:human}")" \
         2>/dev/null
     )
 

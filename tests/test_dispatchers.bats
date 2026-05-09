@@ -81,6 +81,61 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# GH#111: per-PR cap predicate exclusion. After the wrapper escalates a Mode 3
+# hard-failure cap, it applies BLOCKED_HUMAN_LABEL to the PR. The conflicts
+# dispatcher's predicate must drop those PRs so the loop stops re-firing the
+# LLM until a human removes the label. Mirrors the BLOCKED_HUMAN_LABEL pattern
+# in eligibility_dev_count and the REVIEWER_ESCALATION_LABEL pattern in
+# eligibility_review_pending (GH#94).
+# ---------------------------------------------------------------------------
+
+@test "conflicts filter: 2nd-arg label excludes PRs carrying that label (GH#111)" {
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent" "blocked:human")
+  # Two CONFLICTING + non-draft dev-agent PRs; one carries the label.
+  nums=$(jq -r "$filter" <<<'[
+    {"number":1,"headRefName":"dev-agent/gh-1-x","mergeable":"CONFLICTING","isDraft":false,"labels":[{"name":"blocked:human"}]},
+    {"number":2,"headRefName":"dev-agent/gh-2-y","mergeable":"CONFLICTING","isDraft":false,"labels":[{"name":"enhancement"}]}
+  ]' | tr '\n' ' ')
+  [ "$nums" = "2 " ]
+}
+
+@test "conflicts filter: 2nd-arg label empty disables filter (backward-compat)" {
+  # Tests / older callers can omit the label arg and get the original behavior.
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent" "")
+  nums=$(jq -r "$filter" <<<'[
+    {"number":1,"headRefName":"dev-agent/gh-1-x","mergeable":"CONFLICTING","isDraft":false,"labels":[{"name":"blocked:human"}]}
+  ]' | tr '\n' ' ')
+  [ "$nums" = "1 " ]
+}
+
+@test "conflicts filter: missing labels field on a PR defaults to INCLUDED (GH#111)" {
+  # Defensive: PRs returned by gh that don't carry a labels field (or it's
+  # null) must fall through to "no escalation label" and stay eligible.
+  local filter nums
+  filter=$(_dispatch_conflicts_jq "dev-agent" "blocked:human")
+  nums=$(jq -r "$filter" <<<'[
+    {"number":1,"headRefName":"dev-agent/gh-1-x","mergeable":"CONFLICTING","isDraft":false}
+  ]' | tr '\n' ' ')
+  [ "$nums" = "1 " ]
+}
+
+@test "run-loop.sh: conflicts dispatcher --json field set includes labels (GH#111)" {
+  # Without `labels` in the field set the predicate's exclusion filter never
+  # sees the label and the cap-escalation has no effect at the dispatcher.
+  awk '/^loop_dispatcher_conflicts\(\)/,/^}/' "$LOOP_ROOT/runners/run-loop.sh" \
+    > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qE -- '--json[[:space:]]+[A-Za-z,]*labels' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "run-loop.sh: conflicts dispatcher passes BLOCKED_HUMAN_LABEL to _dispatch_conflicts_jq (GH#111)" {
+  awk '/^loop_dispatcher_conflicts\(\)/,/^}/' "$LOOP_ROOT/runners/run-loop.sh" \
+    > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'BLOCKED_HUMAN_LABEL' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+# ---------------------------------------------------------------------------
 # merger dispatcher: dev-agent/* PRs that are not draft (verdict + CI gating
 # happens later, in eligibility_merge_pr — this filter is just the candidate
 # scan, mirroring _dispatch_followup_jq).

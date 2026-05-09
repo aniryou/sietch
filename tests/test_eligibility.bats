@@ -1436,24 +1436,28 @@ JSON
 # inject the scenario-specific verdict / timestamp ordering.
 # ---------------------------------------------------------------------------
 FOLLOWUP_FILTER='
-  (.reviews // []
-    | map(select(.body | test($re)))
-    | sort_by(.submittedAt)
-    | last) as $latest_review
-  | (.comments // []
-    | map(select(.body | startswith($prefix)))
-    | sort_by(.createdAt)
-    | last) as $latest_devcomment
-  | if $latest_review == null then "none\tno"
-    else
-      ($latest_review.body | match($re).captures[0].string) as $verdict
-      | if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"
-        elif ($latest_devcomment == null
-              or $latest_review.submittedAt > $latest_devcomment.createdAt) then
-          "\($verdict)\tyes"
-        else "\($verdict)\tno"
-        end
-    end
+  if ((.labels // [] | map(.name)) | index($blocked_label)) != null then
+    "blocked-by-label\tno"
+  else
+    (.reviews // []
+      | map(select(.body | test($re)))
+      | sort_by(.submittedAt)
+      | last) as $latest_review
+    | (.comments // []
+      | map(select(.body | startswith($prefix)))
+      | sort_by(.createdAt)
+      | last) as $latest_devcomment
+    | if $latest_review == null then "none\tno"
+      else
+        ($latest_review.body | match($re).captures[0].string) as $verdict
+        | if ($verdict == "clean" or $verdict == "nits") then "\($verdict)\tno"
+          elif ($latest_devcomment == null
+                or $latest_review.submittedAt > $latest_devcomment.createdAt) then
+            "\($verdict)\tyes"
+          else "\($verdict)\tno"
+          end
+      end
+  end
 '
 
 # Helper: rewrite the latest review body in the fixture to a given verdict
@@ -1478,7 +1482,7 @@ _with_review_older_than_devcomment() {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local prefix='🤖 Developer agent'
   local out
-  out=$(_with_verdict clean | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  out=$(_with_verdict clean | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'clean\tno' ]
 }
 
@@ -1486,7 +1490,7 @@ _with_review_older_than_devcomment() {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local prefix='🤖 Developer agent'
   local out
-  out=$(_with_verdict nits | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  out=$(_with_verdict nits | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'nits\tno' ]
 }
 
@@ -1494,7 +1498,7 @@ _with_review_older_than_devcomment() {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local prefix='🤖 Developer agent'
   local out
-  out=$(_with_verdict changes | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  out=$(_with_verdict changes | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'changes\tyes' ]
 }
 
@@ -1502,7 +1506,7 @@ _with_review_older_than_devcomment() {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local prefix='🤖 Developer agent'
   local out
-  out=$(_with_verdict comment | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  out=$(_with_verdict comment | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'comment\tyes' ]
 }
 
@@ -1510,7 +1514,7 @@ _with_review_older_than_devcomment() {
   local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
   local prefix='🤖 Developer agent'
   local out
-  out=$(_with_verdict blocked | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+  out=$(_with_verdict blocked | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'blocked\tyes' ]
 }
 
@@ -1519,7 +1523,7 @@ _with_review_older_than_devcomment() {
   local prefix='🤖 Developer agent'
   local out
   out=$(_with_review_older_than_devcomment \
-        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+        | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'changes\tno' ]
 }
 
@@ -1528,7 +1532,7 @@ _with_review_older_than_devcomment() {
   local prefix='🤖 Developer agent'
   local out
   out=$(jq '.reviews = []' "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" \
-        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+        | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'none\tno' ]
 }
 
@@ -1537,8 +1541,65 @@ _with_review_older_than_devcomment() {
   local prefix='🤖 Developer agent'
   local out
   out=$(jq '.comments = []' "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" \
-        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+        | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'changes\tyes' ]
+}
+
+# ---------------------------------------------------------------------------
+# GH#111: eligibility_followup_pr must exclude PRs carrying the blocked-human
+# label so the wrapper stops invoking Mode 2 on a PR the dev-agent has already
+# escalated to a human after DEV_FOLLOWUP_FAILURE_RETRY_LIMIT consecutive
+# hard-failures. Removing the label re-makes the PR eligible (no other state
+# change needed). Mirrors the BLOCKED_HUMAN_LABEL precedent in
+# eligibility_dev_count and the REVIEWER_ESCALATION_LABEL precedent in
+# eligibility_review_pending (GH#94).
+# ---------------------------------------------------------------------------
+
+@test "followup filter: PR with BLOCKED_HUMAN_LABEL is filtered OUT (GH#111)" {
+  # Fresh review + no dev-comment would normally INCLUDE this PR (changes\tyes),
+  # but the blocked-human label takes precedence — the dev-agent has given up
+  # after the cap.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(jq '.labels = [{"name": "blocked:human"}]' \
+        "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" \
+      | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
+  [ "$out" = $'blocked-by-label\tno' ]
+}
+
+@test "followup filter: PR without BLOCKED_HUMAN_LABEL is INCLUDED (GH#111 regression guard)" {
+  # Same fixture without the label must remain dispatchable — the changes
+  # verdict half votes INCLUDE and no other gate fires.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(jq '.labels = [{"name": "enhancement"}]' \
+        "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" \
+      | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
+  [ "$out" = $'changes\tyes' ]
+}
+
+@test "followup filter: PR with missing labels field defaults to INCLUDED (GH#111)" {
+  # Defensive: existing fixtures don't carry a labels field; the filter
+  # must fall through to "no escalation" rather than crashing or silently
+  # excluding.
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER" \
+        < "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json")
+  [ "$out" = $'changes\tyes' ]
+}
+
+@test "eligibility_followup_pr: --json field set requests labels (GH#111)" {
+  awk '/^eligibility_followup_pr\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'labels' "$BATS_TEST_TMPDIR/fn.sh"
+}
+
+@test "eligibility_followup_pr: filter excludes BLOCKED_HUMAN_LABEL (GH#111)" {
+  awk '/^eligibility_followup_pr\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'BLOCKED_HUMAN_LABEL' "$BATS_TEST_TMPDIR/fn.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -1575,7 +1636,7 @@ _with_failure_marker_after_review() {
   local prefix='🤖 Developer agent'
   local out
   out=$(_with_failure_marker_after_review \
-        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+        | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'changes\tno' ]
 }
 
@@ -1593,7 +1654,7 @@ _with_failure_marker_after_review() {
               "body": "[reviewer-agent: changes] still need fixes",
               "submittedAt": "2026-05-07T14:00:00Z"
             }]' \
-        | jq -r --arg re "$re" --arg prefix "$prefix" "$FOLLOWUP_FILTER")
+        | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
   [ "$out" = $'changes\tyes' ]
 }
 
@@ -1730,6 +1791,21 @@ STUB
     run bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup
   [ "$status" -eq 2 ]
   [ "$output" = "?" ]
+}
+
+@test "eligibility_followup_pr: PR with BLOCKED_HUMAN_LABEL → exits 1 (skip), prints 'blocked-by-label' (GH#111)" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/blocked-by-label.json"
+  jq '.labels = [{"name": "blocked:human"}]' \
+    "$LOOP_ROOT/tests/fixtures/gh/pr-followup.json" > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 1 ]
+  [ "$output" = "blocked-by-label" ]
 }
 
 @test "eligibility_followup_pr: failure-marker is the latest dev-comment → exit 1 (GH#49)" {

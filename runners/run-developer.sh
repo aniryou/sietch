@@ -536,6 +536,55 @@ if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
   unset _retry_blocked_label _retry_limit
 fi
 
+# GH#111 — per-PR cap wrapper for Mode 2 / Mode 3 hard-failures.
+#
+# Counts existing PR comments matching $marker_substring; under cap posts the
+# stub body via gh_best_effort, at-cap delegates the apply (label create +
+# add-label + comment) and the has-label idempotency short-circuit to
+# hard_failure_idempotent_escalate (GH#108 / PR #119). Mirrors the GH#94
+# reviewer pattern. The count-and-decide stays local to this wrapper —
+# Mode 1 (issue-scoped) keeps its own dev-failed:N escalation path because
+# it has no PR target to count comments against.
+#
+# Args:
+#   $1 = PR number
+#   $2 = marker substring to count (e.g. '🤖 Mode 3 conflict resolution — aborted')
+#   $3 = retry cap (e.g. $DEV_FOLLOWUP_FAILURE_RETRY_LIMIT)
+#   $4 = stub body (posted when count < cap)
+#   $5 = escalation body (posted at-cap, alongside the label)
+_dev_hardfail_post() {
+  local pr="$1" marker="$2" cap="$3" stub_body="$4" escalation_body="$5"
+  local pr_data count
+  pr_data=$(
+    PAGER=cat GIT_PAGER=cat gh pr view "$pr" \
+      --repo "$REPO_SLUG" --json comments 2>/dev/null
+  ) || pr_data=""
+  count=0
+  if [ -n "$pr_data" ]; then
+    count=$(
+      printf '%s' "$pr_data" \
+        | jq --arg m "$marker" \
+          '[.comments // [] | .[] | select((.body // "") | contains($m))] | length' \
+          2>/dev/null
+    ) || count=0
+  fi
+  count="${count:-0}"
+  if [ "$count" -ge "$cap" ]; then
+    echo "[wrapper] PR #$pr has $count hard-failure markers (cap=$cap); escalating to human via $BLOCKED_HUMAN_LABEL" >&2
+    # Delegate the apply-side (label create + add-label + comment) and the
+    # has-label idempotency short-circuit to the shared helper from
+    # GH#108 / PR #119. Keeps the count-and-decide logic local while
+    # reusing the escalation primitive — same migration shape as PR #125
+    # (Mode 1) and PR #130 (reviewer wrapper).
+    hard_failure_idempotent_escalate pr "$pr" \
+      "$BLOCKED_HUMAN_LABEL" "$escalation_body"
+  else
+    gh_best_effort gh pr comment "$pr" \
+      --repo "$REPO_SLUG" \
+      --body "$stub_body"
+  fi
+}
+
 # GH#48 — Mode 3 hard-failure fallback. The prompt's three graceful Mode 3
 # abort blocks (templates/developer.md: ambiguous-intent, post-resolution
 # test failure, post-force-push CI failure) each draft the PR themselves so
@@ -550,13 +599,26 @@ fi
 # even when the LLM crashed. Mirror the abort-block fix at the wrapper
 # level so ungraceful aborts also draft. Precedent: the triage-untractable
 # wrapper-side draft above.
+#
+# GH#111 — wraps the comment in a per-PR cap. After
+# DEV_CONFLICTS_FAILURE_RETRY_LIMIT consecutive abort markers (matched by
+# substring against both the LLM's graceful-abort comments and this wrapper-
+# side stub), escalate to a human via BLOCKED_HUMAN_LABEL + one explanation
+# comment instead of yet another stub. The drafting (`gh pr ready --undo`)
+# still fires unconditionally — it's a per-trigger circuit breaker so the
+# next cycle's `isDraft == false` filter excludes the PR; the cap closes
+# the per-PR loop on top of that.
 if [ "$MODE" = "resolve-conflicts" ] && [ "$LLM_EXIT" -ne 0 ]; then
+  : "${DEV_CONFLICTS_FAILURE_RETRY_LIMIT:=3}"
+  : "${BLOCKED_HUMAN_LABEL:=blocked:human}"
   # Pre-build the comment body in a variable rather than `--body "$(cat <<EOF...)"`
   # because bash's $(...) parser tokenizes the heredoc body up-front and trips
   # on unbalanced apostrophes ("won't"). Using a plain heredoc-into-var is the
-  # well-known workaround. The body MUST start with the same '🤖 Mode 3
+  # well-known workaround. The stub body MUST start with the same '🤖 Mode 3
   # conflict resolution — aborted' marker prefix the prompt's graceful aborts
-  # use, so log-scrapers / dashboards keyed on that prefix pick this up too.
+  # use, so log-scrapers / dashboards keyed on that prefix pick this up too —
+  # AND the per-PR cap counter (_dev_hardfail_post above) uses that same
+  # substring as its count-marker.
   HARD_FAIL_BODY=$(
     cat <<EOF
 🤖 Mode 3 conflict resolution — aborted (agent run failed mid-flow, exit=${LLM_EXIT}).
@@ -564,9 +626,23 @@ if [ "$MODE" = "resolve-conflicts" ] && [ "$LLM_EXIT" -ne 0 ]; then
 The dev-agent did not reach a graceful abort block (likely max-turns exceeded, claude API failure, or OOM kill). Drafting this PR so the conflicts dispatcher will not re-fire the LLM on the next cycle. Please resolve manually or re-attempt after investigation.
 EOF
   )
-  gh_best_effort gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$HARD_FAIL_BODY"
+  # Escalation body deliberately AVOIDS the count-marker substring "🤖 Mode 3
+  # conflict resolution — aborted" so subsequent cycles don't count it as
+  # another abort and re-trigger the at-cap branch. The has-label idempotency
+  # guard makes that safe even if the substring did appear, but belt-and-
+  # suspenders.
+  ESCALATION_BODY="🤖 Mode 3 conflict resolution has hard-failed ${DEV_CONFLICTS_FAILURE_RETRY_LIMIT} or more consecutive times on this PR. Likely a deterministic failure (intractable conflicts, racing pushes, post-resolution test/CI breakage). Human attention required; the conflicts dispatcher will not re-fire on this PR until the \`${BLOCKED_HUMAN_LABEL}\` label is removed."
+  _dev_hardfail_post "$TARGET_PR" \
+    '🤖 Mode 3 conflict resolution — aborted' \
+    "$DEV_CONFLICTS_FAILURE_RETRY_LIMIT" \
+    "$HARD_FAIL_BODY" \
+    "$ESCALATION_BODY"
+  # Drafting still fires unconditionally — per-trigger circuit breaker for
+  # the next cycle's `isDraft == false` filter. Routed through gh_best_effort
+  # (GH#99) so a transient gh failure leaves a stderr breadcrumb.
   gh_best_effort gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG"
   event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
+  unset HARD_FAIL_BODY ESCALATION_BODY
 fi
 
 # GH#49: hard-failure marker for Mode 2 (follow-up). When `claude` exits
@@ -586,9 +662,33 @@ fi
 # already handled by the resolve-conflicts block above (GH#48) plus the
 # LLM's `gh pr ready --undo` paths (GH#44), which the conflicts dispatcher's
 # `isDraft == false` filter then excludes.
+#
+# GH#111 — wraps the stub in a per-PR cap. After
+# DEV_FOLLOWUP_FAILURE_RETRY_LIMIT consecutive failure-marker stubs (matched
+# by 'follow-up failed mid-flow' substring — mode-specific so it doesn't
+# conflate with Mode 3's '🤖 Mode 3 conflict resolution — aborted (agent run
+# failed mid-flow, …)' wrapper marker), escalate to a human via
+# BLOCKED_HUMAN_LABEL + one explanation comment instead of yet another stub.
+# eligibility_followup_pr drops PRs carrying that label so the loop stops.
 if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
-  gh_best_effort gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle."
+  : "${DEV_FOLLOWUP_FAILURE_RETRY_LIMIT:=3}"
+  : "${BLOCKED_HUMAN_LABEL:=blocked:human}"
+  STUB_BODY="🤖 Developer agent — follow-up failed mid-flow (exit=${LLM_EXIT}). The dev-agent did not reach a graceful exit (likely max-turns exceeded, claude API failure, or OOM). The follow-up dispatcher will not re-fire on the current reviewer-agent review (this comment supersedes its timestamp). Please re-trigger by adding a fresh reviewer-agent review or requesting a new review cycle."
+  # Escalation body deliberately AVOIDS the count-marker substring 'follow-up
+  # failed mid-flow' so subsequent cycles don't count it as another stub.
+  # (Per the has-label idempotency guard inside hard_failure_idempotent_escalate
+  # the PR is dropped from dispatch anyway, but belt-and-suspenders.) Also
+  # retains the DEV_AGENT_COMMENT_PREFIX so eligibility_followup_pr's
+  # existing prefix filter still picks it up before the new label-exclusion
+  # kicks in.
+  ESCALATION_BODY="🤖 Developer agent — follow-up has hard-failed ${DEV_FOLLOWUP_FAILURE_RETRY_LIMIT} or more consecutive times on this PR. Likely a deterministic failure (oversized diff, broken test environment, cyclic reviewer feedback). Human attention required; the follow-up dispatcher will not re-fire on this PR until the \`${BLOCKED_HUMAN_LABEL}\` label is removed."
+  _dev_hardfail_post "$TARGET_PR" \
+    'follow-up failed mid-flow' \
+    "$DEV_FOLLOWUP_FAILURE_RETRY_LIMIT" \
+    "$STUB_BODY" \
+    "$ESCALATION_BODY"
   event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
+  unset STUB_BODY ESCALATION_BODY
 fi
 
 exit "$LLM_EXIT"
