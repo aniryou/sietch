@@ -288,10 +288,6 @@ STUB
 @test "eligibility_dev_candidates: prints id-ascending one-per-line, exits 0 (GH#113)" {
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks"
-  mkdir -p "$lock_dir"
-  # Override LOCK_DIR in the consumer config so the predicate sees an empty lock dir.
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local tmpbin
   tmpbin=$(_make_gh_dev_stub \
     "$LOOP_ROOT/tests/fixtures/gh/issues-high.json" \
@@ -314,9 +310,6 @@ STUB
   # must emit "7\n50\n80\n" and exit 0.
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-id-asc"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local high="$BATS_TEST_TMPDIR/id-asc-high.json"
   local med="$BATS_TEST_TMPDIR/id-asc-med.json"
   echo '[{"number":50,"assignees":[],"labels":[{"name":"severity:high"}]}]' > "$high"
@@ -374,9 +367,6 @@ STUB
 @test "eligibility_dev_candidates: empty fixtures → empty output, exit 1" {
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks2"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local empty="$BATS_TEST_TMPDIR/empty.json"
   echo '[]' > "$empty"
   local tmpbin
@@ -413,9 +403,6 @@ STUB
   # exits — the exact rediscovery loop GH#28 closed for the count path.
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-blocked"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   # High fixture: 991 has blocked:human, 992 is eligible.
   # Medium fixture: 993 has blocked:human, 994 is eligible.
   # Expected output: 992 (high), then 994 (medium).
@@ -449,9 +436,6 @@ JSON
   # and without spawning the LLM.
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-all-blocked"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local high="$BATS_TEST_TMPDIR/all-blocked-high.json"
   local med="$BATS_TEST_TMPDIR/all-blocked-med.json"
   echo '[{"number":991,"assignees":[],"labels":[{"name":"severity:high"},{"name":"blocked:human"}]}]' > "$high"
@@ -516,9 +500,6 @@ STUB
 @test "dev-candidates: filters out issues with open dev-agent PR (GH#65)" {
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-pr"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   # PR list: an open dev-agent PR for issue 102. Issues 101 and 103 stay eligible.
   local prs="$BATS_TEST_TMPDIR/dev-prs.json"
   cat > "$prs" <<'JSON'
@@ -541,9 +522,6 @@ JSON
 @test "dev-candidates: every candidate has open dev-agent PR → empty output, exit 1 (GH#65)" {
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-allpr"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local prs="$BATS_TEST_TMPDIR/all-pr.json"
   cat > "$prs" <<'JSON'
 [
@@ -572,9 +550,6 @@ JSON
   # intersection with our candidate set, not by union.
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-feat"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local prs="$BATS_TEST_TMPDIR/feature-prs.json"
   cat > "$prs" <<'JSON'
 [
@@ -598,9 +573,6 @@ JSON
 @test "dev-count: filters out issues with open dev-agent PR (GH#65)" {
   local repo
   repo=$(make_repo)
-  local lock_dir="$BATS_TEST_TMPDIR/empty-locks-count-pr"
-  mkdir -p "$lock_dir"
-  echo "LOCK_DIR=\"$lock_dir\"" >> "$repo/.loop/loop.config"
   local prs="$BATS_TEST_TMPDIR/count-pr.json"
   cat > "$prs" <<'JSON'
 [
