@@ -182,14 +182,14 @@ if [ "$LLM_EXIT" -eq 0 ]; then
       STUB_COUNT=$(
         printf '%s' "$PR_DATA" \
           | jq --arg marker "$STUB_MARKER" \
-              '[.reviews // [] | .[] | select((.body // "") | contains($marker))] | length' \
-          2>/dev/null
+            '[.reviews // [] | .[] | select((.body // "") | contains($marker))] | length' \
+            2>/dev/null
       ) || STUB_COUNT=0
       HAS_LABEL=$(
         printf '%s' "$PR_DATA" \
           | jq --arg label "$REVIEWER_ESCALATION_LABEL" \
-              'if ((.labels // []) | map(.name) | index($label)) != null then 1 else 0 end' \
-          2>/dev/null
+            'if ((.labels // []) | map(.name) | index($label)) != null then 1 else 0 end' \
+            2>/dev/null
       ) || HAS_LABEL=0
     fi
     STUB_COUNT="${STUB_COUNT:-0}"
