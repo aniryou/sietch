@@ -72,6 +72,34 @@ HEAD_SHA=$(gh pr view "$PR" --repo ${REPO_SLUG} --json headRefOid -q .headRefOid
 # Full diff with file paths
 gh pr diff "$PR" --repo ${REPO_SLUG} > /tmp/pr-${PR}.diff
 
+# One-shot dump of the post-PR file contents (GH#136). Materialises every
+# Added/Modified file at $HEAD_SHA into /tmp/pr-${PR}-files/<path>, so
+# Step 1's "read changed files in full context" can use `Read` against a
+# stable on-disk path instead of re-shelling `git show` per file. Without
+# this, the median reviewer run burns ~2.1M cache_read tokens to repeat the
+# same blobs 10–16 times in a single review.
+REPO="${REPO_ROOT:-.}"
+BASE_SHA=$(gh pr view "$PR" --repo ${REPO_SLUG} --json baseRefOid -q .baseRefOid)
+git -C "$REPO" fetch --quiet origin "$HEAD_SHA" 2>/dev/null || true
+mkdir -p /tmp/pr-${PR}-files
+# Read paths into an array, then expand quoted. Unquoted `$CHANGED_AM`
+# would have worked in bash but silently fails in zsh (Claude Code's
+# Bash tool runs commands under /bin/zsh on macOS) — zsh does not word-
+# split unquoted parameter expansions by default, so the multi-line
+# string ends up as one bogus pathspec and `git archive` errors with no
+# files extracted. Loop variable is `f`, not `path`, to avoid clobbering
+# zsh's `path` (an array tied to `PATH` via `export -T`).
+CHANGED_AM=()
+while IFS= read -r f; do
+  [ -n "$f" ] && CHANGED_AM+=("$f")
+done < <(git -C "$REPO" diff --name-only --diff-filter=AM "$BASE_SHA".."$HEAD_SHA")
+if [ "${#CHANGED_AM[@]}" -gt 0 ]; then
+  git -C "$REPO" archive "$HEAD_SHA" -- "${CHANGED_AM[@]}" | tar -x -C /tmp/pr-${PR}-files
+  # Sanity: surface silent archive failures so the agent doesn't silently
+  # fall back to per-file `git show` for everything (defeats GH#136).
+  [ -n "$(ls /tmp/pr-${PR}-files 2>/dev/null)" ] || echo "[reviewer template] archive dump produced no files at $HEAD_SHA"
+fi
+
 # PR metadata
 gh pr view "$PR" --repo ${REPO_SLUG} --json title,body,headRefName,baseRefName,additions,deletions,changedFiles,files
 
@@ -86,7 +114,7 @@ gh issue view <n> --repo ${REPO_SLUG}
 
 The acceptance criteria in the issue are your **most important reference**. A PR that passes CI but doesn't satisfy the issue's stated criteria has a P0 finding.
 
-**Read changed files in their full context, not just the diff hunks.** A 3-line diff inside a 200-line file may look fine in isolation but break callers above and below. Use `Read` on each modified file at its post-PR state (`git show <head_sha>:<path>` if needed).
+**Read changed files in their full context, not just the diff hunks.** A 3-line diff inside a 200-line file may look fine in isolation but break callers above and below. Step 1 already dumped every Added/Modified file at `$HEAD_SHA` into `/tmp/pr-${PR}-files/<path>` — `Read` from there. Use `git show <head_sha>:<path>` only as a fallback for paths not in the dump (e.g., renames or deletes that the `--diff-filter=AM` archive call skips), and at most once per `<sha>:<path>` pair.
 
 For test files specifically: read them carefully and ask:
 - Do the assertions actually verify behavior, or are they smoke tests (`assert True`, `assert result is not None`)?
@@ -261,6 +289,7 @@ CI has already validated the runtime. Tests, lint, docker build, image health �
 - **Never** download external resources — no `curl`, `wget` to fetch arbitrary URLs. (Local file reads via `Read`, plus `gh`/`git` queries on this repo, are fine.)
 - **Never** modify the working tree, run a test suite, or execute the project's code. If you find yourself thinking "let me just run pytest to check" — stop. CI ran pytest already.
 - **Investigation guidance: use ~${REVIEWER_BASH_CALL_GUIDANCE} Bash tool calls per review as your soft target — go over only when the review genuinely needs it.** If you've blown well past that and haven't formed a verdict, you're fishing — stop, post a `[reviewer-agent: blocked]` review explaining what's unclear, and return. (For reference: a normal review uses ~5-15 Bash calls: PR meta, diff, CI status, comments, plus a few `Read`s on changed files. The wrapper logs an overshoot event when you exceed the guidance, but does not interrupt the run.)
+- **Do not invoke `git show` more than once for the same `<sha>:<path>` in a review.** Step 1's archive dump put every Added/Modified file at `$HEAD_SHA` under `/tmp/pr-${PR}-files/<path>` — use `Read` against that path. `git show` is the rare-fallback for renames/deletes only. Each repeated `git show` re-feeds the full file body into a tool_result and the model pays the cache_read for it again — that's the GH#136 root cause.
 
 ### Workflow constraints
 
