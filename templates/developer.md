@@ -434,7 +434,7 @@ Count prior follow-up cycles for this PR via beads memory:
 CYCLES=$(bd memories "developer-agent follow-up:PR#$PR" 2>/dev/null | grep -c "developer-agent follow-up:PR#$PR" || echo 0)
 ```
 
-If `CYCLES >= ${DEV_FOLLOWUP_CYCLE_LIMIT}`: **give up.** Post a follow-up comment listing the ${DEV_FOLLOWUP_CYCLE_LIMIT} cycle attempts and the unresolved findings, mark the parent beads issue blocked, flag for human. Then exit.
+If `CYCLES >= ${DEV_FOLLOWUP_CYCLE_LIMIT}`: **give up.** Post a follow-up comment listing the ${DEV_FOLLOWUP_CYCLE_LIMIT} cycle attempts and the unresolved findings, mark the parent beads issue blocked, flag for human, **and draft the PR** so the follow-up dispatcher (and reviewer-orchestrator, which already filters `-is:draft`) stop re-firing on the same stuck PR. Then exit.
 
 ```bash
 gh pr comment "$PR" --body "$(cat <<'EOF'
@@ -456,6 +456,14 @@ EOF
 )"
 bd update <PARENT> --status=blocked --notes="follow-up gave up after ${DEV_FOLLOWUP_CYCLE_LIMIT} cycles on PR #$PR"
 bd human <PARENT>
+# GH#134: draft the PR so the follow-up dispatcher's `_dispatch_followup_jq`
+# `isDraft == false` filter excludes it next cycle, AND so
+# `eligibility_review_pending`'s `-is:draft` search clause stops the
+# reviewer-orchestrator from posting a fresh `[reviewer-agent: comment]`
+# review that would otherwise re-arm the cycle counter. Mirrors the
+# Mode 3 give-up paths (R4 ambiguous-intent, R5 test-failure,
+# R8 CI-failure aborts) which all draft for the same reason.
+gh pr ready --undo "$PR" || true
 ```
 
 Print `[developer-agent] result=follow-up-gave-up pr=#<num> cycle=3` and exit.

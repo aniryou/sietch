@@ -1,5 +1,6 @@
 {
   ".": "object",
+  "..isDraft": "boolean",
   "..comments": "array",
   "..comments[]": "object",
   "..comments[].author": "object",

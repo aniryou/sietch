@@ -1,4 +1,5 @@
 {
+  "isDraft": false,
   "reviews": [
     {
       "author": {"login": "claude"},

@@ -204,7 +204,7 @@ HELP
     # rate-limit, etc.) without aborting the whole refresh under `set -e`. The
     # union-merge ensures the existing on-disk schema survives untouched.
     gen_schema pr-followup.json \
-      pr view "$pr_view_num" --json reviews,comments \
+      pr view "$pr_view_num" --json reviews,comments,isDraft \
       || echo "[refresh] pr-followup.json gen failed; schema left untouched" >&2
     gen_schema pr-merger.json \
       pr view "$pr_view_num" --json reviews,comments,commits,mergeable,mergeStateStatus,headRefOid,isDraft \
