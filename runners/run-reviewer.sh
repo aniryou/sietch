@@ -20,6 +20,12 @@ REPO="$REPO_ROOT"
 # existing human-readable echoes.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/event_log.sh"
+# Shared idempotent-escalate helper (GH#108). Sourced ahead of any wrapper
+# code that could hard-fail; the existing inline escalation block at
+# run-reviewer.sh:198-220 is left in place for now (sub-issue 3 swaps it
+# for a one-line call).
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/hard_failure.sh"
 
 # Preflight: skip the LLM if no dev-agent PR needs review at its current
 # headRefOid. Exit code 2 lets run-loop.sh distinguish "skipped, no work"
