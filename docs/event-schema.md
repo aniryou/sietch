@@ -40,14 +40,16 @@ caller-defined; consumers should treat unknown extras as forward-compatible.
 
 ### Loop lifecycle (emitted by `runners/run-loop.sh`)
 
-| event         | role(s)        | extra fields                                       | when |
-|---------------|----------------|----------------------------------------------------|------|
-| `cycle_start` | all loops      | `cycle_id`                                         | top of every per-role iteration |
-| `cycle_end`   | all loops      | `cycle_id`, `exit_code`, `duration_s`              | after the wrapper / inner work returns 0 or non-zero (non-2) |
-| `cycle_skip`  | all loops      | `cycle_id`, `reason`, `streak`, `sleep_s`          | after the wrapper returns 2 (no-work / predicate failed); `streak` is the consecutive-empty count, `sleep_s` is the next backoff |
+| event         | role(s)        | extra fields                                                  | when |
+|---------------|----------------|---------------------------------------------------------------|------|
+| `cycle_start` | all loops      | `cycle_id`                                                    | top of every per-role iteration |
+| `cycle_end`   | all loops      | `cycle_id`, `exit_code`, `duration_s`, `dispatched` (dispatcher loops only) | after the wrapper / inner work returns 0 or non-zero (non-2); for dispatcher loops `exit_code` is always `0` and `dispatched` is the count of `dispatch_fired` events emitted this cycle |
+| `cycle_skip`  | all loops      | `cycle_id`, `reason`, `streak`, `sleep_s`                     | after the wrapper returns 2 (no-work / predicate failed) or, for dispatcher loops, after a cycle that fired zero dispatches; `streak` is the consecutive-empty count (always `0` for `dispatch:followup` which has no backoff), `sleep_s` is the next backoff |
 
 `cycle_id` is `${PID}-${counter}` so the tower can pair start/end/skip events
-even when several panes interleave their output.
+even when several panes interleave their output. Every per-role iteration
+emits exactly one `cycle_start` and exactly one of `cycle_end` / `cycle_skip`,
+so tower consumers can assume the file grows on every cycle of every pane.
 
 ### Wrapper eligibility (emitted by `run-developer.sh` and `run-reviewer.sh`)
 

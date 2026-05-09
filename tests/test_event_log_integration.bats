@@ -152,7 +152,7 @@ _events() {
 # Mode 1 — claude exits non-zero
 # ---------------------------------------------------------------------------
 
-@test "wrapper: claude exits 1 → llm_exited{exit_code:1} (Mode 1; hard_failure not required for Mode 1)" {
+@test "wrapper: claude exits 1 → llm_exited{exit_code:1} + Mode 1 hard_failure event" {
   local empty="$BATS_TEST_TMPDIR/empty.json"
   echo '[]' > "$empty"
   local high="$BATS_TEST_TMPDIR/single.json"
@@ -167,6 +167,9 @@ _events() {
   local f="$root/state/events.jsonl"
   jq -e 'select(.event == "llm_exited" and .exit_code == 1)' "$f" >/dev/null
   jq -e 'select(.event == "lock_acquired")' "$f" >/dev/null
+  # Mode 1 hard_failure is unconditional on LLM_EXIT != 0 (run-developer.sh's
+  # dev-failed:N retry-counter block) — pin it so a future drop is caught.
+  jq -e 'select(.event == "hard_failure" and .mode == "default" and .exit_code == 1 and (.retry_count | type == "number"))' "$f" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -202,4 +205,15 @@ _events() {
   grep -qE 'event_emit[^#]+dispatch_fired' "$LOOP_ROOT/runners/run-loop.sh"
   grep -qE 'event_emit[^#]+dispatch_skip' "$LOOP_ROOT/runners/run-loop.sh"
   grep -qE 'event_emit[^#]+dispatch_at_cap' "$LOOP_ROOT/runners/run-loop.sh"
+}
+
+@test "run-loop.sh emits cycle_start in every dispatcher loop" {
+  # Per-loop pin — guards against regressions where one of the three
+  # dispatcher loops loses its cycle_start while the others still emit it
+  # (the all-loops grep above would still pass in that case).
+  for role in 'dispatch:followup' 'dispatch:conflicts' 'merger'; do
+    grep -qE "event_emit[[:space:]]+(\"${role}\"|${role})[[:space:]]+cycle_start" \
+      "$LOOP_ROOT/runners/run-loop.sh" \
+      || { echo "missing cycle_start emit for role=${role}"; return 1; }
+  done
 }
