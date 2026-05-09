@@ -111,13 +111,10 @@ STUB
   chmod +x "$tmpbin/gh"
 }
 
-# Common harness: produce a make_repo'd consumer dir with LOCK_DIR pointing
-# inside BATS_TEST_TMPDIR so the wrapper's lock acquisition doesn't pollute
-# /tmp/dev-agent/locks across test runs.
+# Common harness: produce a make_repo'd consumer dir.
 _setup_consumer_repo() {
   local repo
   repo=$(make_repo)
-  echo "LOCK_DIR=\"$BATS_TEST_TMPDIR/locks\"" >>"$repo/.loop/loop.config"
   echo "$repo"
 }
 

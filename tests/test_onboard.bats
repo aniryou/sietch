@@ -81,7 +81,6 @@ jobs:
 YAML
   mkdir -p "$REPO/tests"
   : > "$REPO/tests/test_foo.py"
-  printf '\nWORKTREE_BASE="%s"\n' "$BATS_TEST_TMPDIR/wb" >> "$REPO/.loop/loop.config"
 }
 
 # ---------------------------------------------------------------------------
@@ -247,8 +246,6 @@ YAML
 # ---------------------------------------------------------------------------
 
 @test "check_worktree_base: passes when WORKTREE_BASE can be created" {
-  # Override the loop.config default so the path is unique per test run.
-  printf '\nWORKTREE_BASE="%s"\n' "$BATS_TEST_TMPDIR/wb-fresh" >> "$REPO/.loop/loop.config"
   run bash "$ONBOARD_LIB" check_worktree_base
   [ "$status" -eq 0 ]
 }
