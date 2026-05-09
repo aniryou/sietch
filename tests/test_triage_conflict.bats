@@ -86,13 +86,13 @@ count_conflict_lines() {
   [ "$n" -eq 2 ]
 }
 
-@test "counter: TRIAGE_LINE_LIMIT=10 means 5+5 sits exactly at threshold" {
-  # Documents the intentional semantics — a symmetric 5-vs-5 hits the cap
-  # rather than being treated as 5 lines of "real" change.
+@test "counter: 5+5 conflict stays within TRIAGE_LINE_LIMIT" {
+  # The "counts both sides" semantic (n=10 for a 5-vs-5 conflict) is already
+  # asserted at lines 77-81. Here we only assert it sits below the
+  # configured cap, so this test stays valid as TRIAGE_LINE_LIMIT moves.
   local n
   n=$(count_conflict_lines "$LOOP_ROOT/tests/fixtures/conflict-symmetric-5x5.txt")
   [ "$n" -le "$TRIAGE_LINE_LIMIT" ]
-  [ "$n" -eq "$TRIAGE_LINE_LIMIT" ]
 }
 
 # ---------------------------------------------------------------------------

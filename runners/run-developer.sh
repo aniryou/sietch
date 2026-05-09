@@ -348,7 +348,7 @@ if [ "$MODE" = "resolve-conflicts" ]; then
 
 The triage rules deemed these merge conflicts not safe for autonomous resolution. Please resolve manually.
 
-For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ 10.
+For the rules: \`st triage <PR>\`. Strict-mode policy: test files / CI / secrets / core code files (eval.py, Dockerfile, .pre-commit-config.yaml) never auto-resolve, and total conflict lines must be ≤ ${TRIAGE_LINE_LIMIT}.
 EOF
       )" >/dev/null 2>&1 || true
       gh_best_effort gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG"
