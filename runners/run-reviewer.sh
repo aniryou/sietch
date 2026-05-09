@@ -198,6 +198,26 @@ wait "$PIPELINE_PID"
 LLM_EXIT=$?
 event_emit reviewer llm_exited mode=default pr="$TARGET_PR" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))"
 
+# GH#127: count Bash tool_use events from the raw stream-json and emit a
+# `bash_overshoot` event when the count exceeds REVIEWER_BASH_CALL_GUIDANCE.
+# The guidance is *soft* — the wrapper does not interrupt the run, change
+# exit code, or post a stub based on the count. The signal exists so we can
+# tune the prompt or threshold over time without breaking flowing reviews.
+# Default if the consumer's loop.config predates GH#127 (was *_BUDGET).
+: "${REVIEWER_BASH_CALL_GUIDANCE:=25}"
+if [ -f "$RAW" ]; then
+  BASH_CALL_COUNT=$(
+    jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Bash") | .id' \
+      "$RAW" 2>/dev/null | wc -l | tr -d ' '
+  ) || BASH_CALL_COUNT=0
+  BASH_CALL_COUNT="${BASH_CALL_COUNT:-0}"
+  if [ "$BASH_CALL_COUNT" -gt "$REVIEWER_BASH_CALL_GUIDANCE" ]; then
+    echo "[wrapper] reviewer used $BASH_CALL_COUNT Bash calls (guidance ~$REVIEWER_BASH_CALL_GUIDANCE)" >&2
+    event_emit reviewer bash_overshoot count="$BASH_CALL_COUNT" guidance="$REVIEWER_BASH_CALL_GUIDANCE" pr="$TARGET_PR"
+  fi
+  unset BASH_CALL_COUNT
+fi
+
 # GH#55 + GH#94 (re-applied to the flattened invocation, GH#117): when the
 # LLM exits 0 but never reaches its final `[reviewer-agent] result=...` line
 # (typical failure modes: claude max-turns mid-review, context exhaustion,

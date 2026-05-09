@@ -260,7 +260,7 @@ CI has already validated the runtime. Tests, lint, docker build, image health �
 - **Never** install packages — no `pip install`, `npm install`, `brew install`, `apt-get install`. The repo's deps are declared; if a PR's deps are wrong, that's a finding to flag, not something to remediate.
 - **Never** download external resources — no `curl`, `wget` to fetch arbitrary URLs. (Local file reads via `Read`, plus `gh`/`git` queries on this repo, are fine.)
 - **Never** modify the working tree, run a test suite, or execute the project's code. If you find yourself thinking "let me just run pytest to check" — stop. CI ran pytest already.
-- **Investigation budget: cap yourself at ~${REVIEWER_BASH_CALL_BUDGET} Bash tool calls per review.** If you've blown past that and haven't formed a verdict, you're fishing — stop, post a `[reviewer-agent: blocked]` review explaining what's unclear, and return. (For reference: a normal review uses ~5-15 Bash calls: PR meta, diff, CI status, comments, plus a few `Read`s on changed files.)
+- **Investigation guidance: use ~${REVIEWER_BASH_CALL_GUIDANCE} Bash tool calls per review as your soft target — go over only when the review genuinely needs it.** If you've blown well past that and haven't formed a verdict, you're fishing — stop, post a `[reviewer-agent: blocked]` review explaining what's unclear, and return. (For reference: a normal review uses ~5-15 Bash calls: PR meta, diff, CI status, comments, plus a few `Read`s on changed files. The wrapper logs an overshoot event when you exceed the guidance, but does not interrupt the run.)
 
 ### Workflow constraints
 
