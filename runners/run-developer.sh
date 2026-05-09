@@ -122,6 +122,11 @@ if [ "$MODE" = "default" ]; then
 fi
 
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
+# Caller-overridable root for wrapper LOG/RAW paths (GH#126). Production
+# default `/tmp` keeps existing log-mining tooling and operator muscle memory
+# unchanged; bats sets LOOP_LOG_DIR to a per-test path via tests/helpers.bash
+# so fixture-driven runs don't accumulate beside production logs.
+: "${LOOP_LOG_DIR:=/tmp}"
 # $$ suffix keeps log paths unique when two wrappers start in the same second.
 TS="$(date +%Y%m%d-%H%M%S)-$$"
 
@@ -137,16 +142,16 @@ unset _run_ts
 # references $LOG / $RAW under `set -u`, so an INT/TERM arriving before the
 # preflight finished would otherwise hit an unbound-variable error in cleanup.
 if [ "$MODE" = "follow-up" ]; then
-  LOG="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.log"
-  RAW="/tmp/dev-agent-followup-pr${TARGET_PR}-${TS}.jsonl"
+  LOG="${LOOP_LOG_DIR}/dev-agent-followup-pr${TARGET_PR}-${TS}.log"
+  RAW="${LOOP_LOG_DIR}/dev-agent-followup-pr${TARGET_PR}-${TS}.jsonl"
   KICKOFF="Run the developer agent in FOLLOW-UP MODE on PR #${TARGET_PR}. Skip the issue scan. Begin the follow-up workflow defined in Mode 2 of your system prompt now."
 elif [ "$MODE" = "resolve-conflicts" ]; then
-  LOG="/tmp/dev-agent-conflicts-pr${TARGET_PR}-${TS}.log"
-  RAW="/tmp/dev-agent-conflicts-pr${TARGET_PR}-${TS}.jsonl"
+  LOG="${LOOP_LOG_DIR}/dev-agent-conflicts-pr${TARGET_PR}-${TS}.log"
+  RAW="${LOOP_LOG_DIR}/dev-agent-conflicts-pr${TARGET_PR}-${TS}.jsonl"
   KICKOFF="Run the developer agent in MODE 3 (resolve merge conflicts) on PR #${TARGET_PR}. Triage already validated this conflict as tractable — proceed directly to the Mode 3 workflow defined in your system prompt now."
 else
-  LOG="/tmp/dev-agent-${TS}.log"   # human-readable live log (this is what you tail)
-  RAW="/tmp/dev-agent-${TS}.jsonl" # raw stream-json (full fidelity, for debugging)
+  LOG="${LOOP_LOG_DIR}/dev-agent-${TS}.log"   # human-readable live log (this is what you tail)
+  RAW="${LOOP_LOG_DIR}/dev-agent-${TS}.jsonl" # raw stream-json (full fidelity, for debugging)
   KICKOFF="Run the developer agent workflow defined in your system prompt. Begin the single-pass scan now."
 fi
 

@@ -58,10 +58,15 @@ case "$EL_RC" in
 esac
 unset EL_COUNT EL_RC
 
+# Caller-overridable root for wrapper LOG/RAW paths (GH#126). Production
+# default `/tmp` keeps existing log-mining tooling and operator muscle memory
+# unchanged; bats sets LOOP_LOG_DIR to a per-test path via tests/helpers.bash
+# so fixture-driven runs don't accumulate beside production logs.
+: "${LOOP_LOG_DIR:=/tmp}"
 # $$ suffix keeps log paths unique when two wrappers start in the same second.
 TS="$(date +%Y%m%d-%H%M%S)-$$"
-LOG="/tmp/reviewer-agent-${TS}.log"
-RAW="/tmp/reviewer-agent-${TS}.jsonl"
+LOG="${LOOP_LOG_DIR}/reviewer-agent-${TS}.log"
+RAW="${LOOP_LOG_DIR}/reviewer-agent-${TS}.jsonl"
 
 # Pipeline state — the cleanup trap forwards SIGTERM/SIGINT to PIPELINE_PGID
 # so an external `kill <wrapper-pid>` actually tears down claude/tee/jq.

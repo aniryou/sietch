@@ -5,6 +5,18 @@
 LOOP_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 export LOOP_ROOT
 
+# Re-route wrapper LOG/RAW paths under bats' tmp tree so fixture runs (which
+# invoke run-developer.sh / run-reviewer.sh many times via stub-claude) don't
+# pile fixture log files into /tmp alongside real production logs (GH#126).
+# Mirrors the WORKTREE_BASE hermeticity pattern from GH#105 — set unconditionally
+# at load time so every test inherits the redirect via `export`, including
+# tests that pass env through `run env PATH=... bash ...`.
+#
+# BATS_FILE_TMPDIR is created per .bats file before tests run (bats >= 1.7),
+# so it's available at load time. Per-test isolation isn't required for log
+# files; per-file is enough to keep /tmp clean.
+export LOOP_LOG_DIR="${BATS_FILE_TMPDIR:-${BATS_RUN_TMPDIR:-/tmp}}"
+
 # Make a throwaway consumer-repo dir under $BATS_TEST_TMPDIR and echo its path.
 # loop.config is a copy of templates/loop.config.example with placeholders
 # rewritten to test-owner/test-repo so REPO_SLUG is well-formed.
