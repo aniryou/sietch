@@ -57,6 +57,38 @@ install_precommit() {
 }
 install_precommit
 
+# Warn if locally installed shellcheck/shfmt versions don't match what CI
+# pins. The hooks in .pre-commit-config.yaml use `language: system`, so they
+# invoke whatever's on $PATH — a version mismatch lets a green `git commit`
+# ship a red CI lint, which GH#167 exists to prevent. Source of truth is
+# the SHELLCHECK_VERSION / SHFMT_VERSION lines in .github/workflows/ci.yml,
+# parsed below so install.sh doesn't become a third place for the version.
+check_lint_tool_versions() {
+  local ci="$LOOP_HOME/.github/workflows/ci.yml"
+  [ -f "$ci" ] || return 0
+  local pinned_shellcheck pinned_shfmt
+  pinned_shellcheck=$(awk -F= '/^[[:space:]]*SHELLCHECK_VERSION=/ {sub(/^v/, "", $2); gsub(/[[:space:]]/, "", $2); print $2; exit}' "$ci")
+  pinned_shfmt=$(awk -F= '/^[[:space:]]*SHFMT_VERSION=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$ci")
+
+  if [ -n "$pinned_shellcheck" ] && command -v shellcheck >/dev/null 2>&1; then
+    local installed_sc
+    installed_sc=$(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2; exit}')
+    if [ -n "$installed_sc" ] && [ "$installed_sc" != "$pinned_shellcheck" ]; then
+      echo "[install] WARN: shellcheck $installed_sc installed but CI pins v$pinned_shellcheck (see .github/workflows/ci.yml). Local pre-commit may diverge from CI lint — install matching version to close the gap."
+    fi
+  fi
+
+  if [ -n "$pinned_shfmt" ] && command -v shfmt >/dev/null 2>&1; then
+    local installed_sf
+    installed_sf=$(shfmt --version 2>/dev/null | head -1 | tr -d '[:space:]')
+    if [ -n "$installed_sf" ] && [ "$installed_sf" != "$pinned_shfmt" ]; then
+      echo "[install] WARN: shfmt $installed_sf installed but CI pins $pinned_shfmt (see .github/workflows/ci.yml). Local pre-commit may diverge from CI lint — install matching version to close the gap."
+    fi
+  fi
+  return 0
+}
+check_lint_tool_versions
+
 case ":$PATH:" in
   *":$TARGET_DIR:"*) ;;
   *) echo "[install] WARN: $TARGET_DIR is not on \$PATH. Add it to your shell rc." ;;

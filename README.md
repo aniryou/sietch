@@ -102,6 +102,13 @@ missing it skips with a one-line note — install it manually with
 `pip install pre-commit && pre-commit install` to enable lint checks at
 commit time.
 
+The hooks call whatever `shellcheck` / `shfmt` you have on `$PATH`, so
+versions still need to match CI to avoid local-vs-CI drift. `install.sh`
+parses the pinned versions out of `.github/workflows/ci.yml` and prints a
+`[install] WARN: ...` line if the binaries on your path disagree. To pin
+locally on macOS: `brew install shellcheck shfmt` and check `shellcheck
+--version` / `shfmt --version` against the same lines in `ci.yml`.
+
 ## Onboard a repo
 
 ```bash

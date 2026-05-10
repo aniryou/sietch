@@ -47,6 +47,60 @@ STUB
   export STUB_PATH="$stub_dir:$PATH"
 }
 
+# Stage a minimal .github/workflows/ci.yml so check_lint_tool_versions can
+# parse SHELLCHECK_VERSION / SHFMT_VERSION (matches the format in the real
+# ci.yml: leading whitespace + `=` separator).
+_write_fake_ci_yml() {
+  local sc_ver="$1" sf_ver="$2"
+  mkdir -p "$REPO/.github/workflows"
+  cat >"$REPO/.github/workflows/ci.yml" <<CI
+name: ci
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          SHELLCHECK_VERSION=v${sc_ver}
+          SHFMT_VERSION=v${sf_ver}
+CI
+}
+
+# Stub for shellcheck: prints the matching `--version` block format
+# (`version: X.Y.Z`) so the installer's awk parse picks up the right line.
+_install_shellcheck_stub() {
+  local version="$1" stub_dir="$BATS_TEST_TMPDIR/lint-stubs"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/shellcheck" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: %s\nlicense: GPL-3\n' "$version"
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$stub_dir/shellcheck"
+  STUB_PATH="$stub_dir:${STUB_PATH:-$PATH}"
+  export STUB_PATH
+}
+
+# Stub for shfmt: prints exactly `vX.Y.Z\n` from `--version`, mirroring
+# the upstream binary's output format that install.sh parses.
+_install_shfmt_stub() {
+  local version="$1" stub_dir="$BATS_TEST_TMPDIR/lint-stubs"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/shfmt" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then
+  printf '%s\n' "$version"
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$stub_dir/shfmt"
+  STUB_PATH="$stub_dir:${STUB_PATH:-$PATH}"
+  export STUB_PATH
+}
+
 @test "install.sh: installs pre-commit hook when pre-commit on PATH and config present" {
   : >"$REPO/.pre-commit-config.yaml"
   _install_pre_commit_stub
@@ -118,4 +172,39 @@ STUB
   ! grep -qi 'example hook script' "$REPO/.git/hooks/pre-commit"
   # Stub was invoked with --overwrite.
   grep -q -- '--overwrite' "$PRE_COMMIT_LOG"
+}
+
+@test "install.sh: warns when installed shellcheck version differs from CI pin" {
+  : >"$REPO/.pre-commit-config.yaml"
+  _write_fake_ci_yml "0.11.0" "3.13.1"
+  _install_pre_commit_stub
+  _install_shellcheck_stub "0.10.0"  # mismatched
+  cd "$REPO"
+  run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF '[install] WARN: shellcheck 0.10.0 installed but CI pins v0.11.0'
+}
+
+@test "install.sh: warns when installed shfmt version differs from CI pin" {
+  : >"$REPO/.pre-commit-config.yaml"
+  _write_fake_ci_yml "0.11.0" "3.13.1"
+  _install_pre_commit_stub
+  _install_shfmt_stub "v3.12.0"  # mismatched
+  cd "$REPO"
+  run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF '[install] WARN: shfmt v3.12.0 installed but CI pins v3.13.1'
+}
+
+@test "install.sh: silent when shellcheck and shfmt versions match CI pin" {
+  : >"$REPO/.pre-commit-config.yaml"
+  _write_fake_ci_yml "0.11.0" "3.13.1"
+  _install_pre_commit_stub
+  _install_shellcheck_stub "0.11.0"
+  _install_shfmt_stub "v3.13.1"
+  cd "$REPO"
+  run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
+  [ "$status" -eq 0 ]
+  # No version-mismatch warning when both tools match.
+  ! echo "$output" | grep -qF '[install] WARN:'
 }
