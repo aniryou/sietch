@@ -17,15 +17,38 @@ set -o pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  st dev                            # Mode 1: scan issues, claim one
-  st dev follow-up <PR#>            # Mode 2: address review on a PR
-  st dev resolve <PR#>              # Mode 3: resolve merge conflicts (triage-gated)
+  st dev                                # Mode 1: scan issues, claim one (headless)
+  st dev --interactive <issue#>         # Mode 1: human-driven on a specific issue
+  st dev follow-up <PR#>                # Mode 2: address review on a PR (headless)
+  st dev follow-up <PR#> --interactive  # Mode 2: human-driven
+  st dev resolve <PR#>                  # Mode 3: resolve merge conflicts (headless, triage-gated)
+  st dev resolve <PR#> --interactive    # Mode 3: human-driven (skips triage)
 EOF
 }
+
+# GH#147 — strip `--interactive` from anywhere in the argv before mode
+# parsing. Operators may write the flag before the PR# (`st dev follow-up
+# --interactive 31`) or after (`st dev follow-up 31 --interactive`); both
+# parse the same way.
+INTERACTIVE=0
+_args=()
+for _a in "$@"; do
+  case "$_a" in
+    --interactive) INTERACTIVE=1 ;;
+    *) _args+=("$_a") ;;
+  esac
+done
+if [ "${#_args[@]}" -gt 0 ]; then
+  set -- "${_args[@]}"
+else
+  set --
+fi
+unset _args _a
 
 # Parse args — pick the mode and the kickoff prompt.
 MODE="default"
 TARGET_PR=""
+INTERACTIVE_ISSUE=""
 case "${1:-}" in
   "")
     : # Mode 1, no args
@@ -39,7 +62,7 @@ case "${1:-}" in
       exit 2
     fi
     ;;
-  resolve-conflicts)
+  resolve | resolve-conflicts)
     MODE="resolve-conflicts"
     TARGET_PR="${2:-}"
     if ! [[ "$TARGET_PR" =~ ^[0-9]+$ ]]; then
@@ -49,11 +72,30 @@ case "${1:-}" in
     fi
     ;;
   *)
-    echo "[wrapper] unknown mode: $1" >&2
-    usage
-    exit 2
+    # Under --interactive, a bare numeric first arg is shorthand for Mode 1
+    # on a specific issue. Without --interactive, an unknown keyword stays
+    # an error (preserves the existing "unknown mode" contract for Modes
+    # 2/3 typos).
+    if [ "$INTERACTIVE" -eq 1 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+      MODE="default"
+      INTERACTIVE_ISSUE="$1"
+    else
+      echo "[wrapper] unknown mode: $1" >&2
+      usage
+      exit 2
+    fi
     ;;
 esac
+
+# Mode 1 + --interactive requires an explicit issue#. The wrapper does
+# not scan eligibility under --interactive, so there's nothing to fall
+# back on if the operator forgot to specify one.
+if [ "$INTERACTIVE" -eq 1 ] && [ "$MODE" = "default" ] && [ -z "$INTERACTIVE_ISSUE" ]; then
+  echo "[wrapper] --interactive (Mode 1) requires a numeric <issue#>" >&2
+  usage
+  exit 2
+fi
+export INTERACTIVE
 
 : "${REPO_ROOT:?REPO_ROOT must be set; invoke via the loop CLI}"
 : "${LOOP_HOME:?LOOP_HOME must be set; invoke via the loop CLI}"
@@ -95,7 +137,9 @@ REPO="$REPO_ROOT"
 # Modes 2/3 already arrive with a specific PR number and don't scan.
 # Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
 # so run-loop.sh can apply exponential backoff to consecutive empty cycles.
-if [ "$MODE" = "default" ]; then
+# Skipped under --interactive (GH#147): the operator's explicit issue# is
+# authoritative.
+if [ "$MODE" = "default" ] && [ "$INTERACTIVE" -ne 1 ]; then
   EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" dev)
   EL_RC=$?
   case "$EL_RC" in
@@ -172,6 +216,14 @@ PIPELINE_PGID=""
 # shellcheck disable=SC2329 # invoked via `trap cleanup EXIT INT TERM` below
 cleanup() {
   local exit_code=$?
+  # GH#147: under --interactive, leave worktrees, locks, and branches
+  # untouched — the operator likely wants to inspect or retry. `exec`
+  # below replaces the wrapper process so this trap rarely fires under
+  # --interactive in practice; this guard is belt-and-suspenders for the
+  # case where exec itself fails (claude binary not found, etc).
+  if [ "${INTERACTIVE:-0}" = 1 ]; then
+    exit "$exit_code"
+  fi
   echo "[wrapper] agent exited with code $exit_code; cleaning up..." >&2
 
   # If the pipeline is still running (we got here via SIGTERM/SIGINT, not
@@ -248,7 +300,13 @@ trap cleanup EXIT INT TERM
 # Modes 2/3 already arrive with a specific PR number and don't scan.
 # Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
 # so run-loop.sh can apply exponential backoff to consecutive empty cycles.
-if [ "$MODE" = "default" ]; then
+# Skipped under --interactive (GH#147): no lock acquired; the operator's
+# explicit issue# becomes DEV_AGENT_TARGET_ISSUE directly.
+if [ "$MODE" = "default" ] && [ "$INTERACTIVE" = 1 ]; then
+  export DEV_AGENT_TARGET_ISSUE="$INTERACTIVE_ISSUE"
+  export WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"
+  echo "[wrapper] interactive: Mode 1 on issue #${DEV_AGENT_TARGET_ISSUE} (lock skipped)"
+elif [ "$MODE" = "default" ]; then
   CANDIDATES=$("$LOOP_HOME/runners/lib/eligibility.sh" dev-candidates)
   EL_RC=$?
   case "$EL_RC" in
@@ -327,7 +385,9 @@ fi
 # "auto-resolution declined" comment. Same architectural shape as the rc=2
 # leak GH#27 fixed for eligibility predicates — transient infra failures must
 # not commit to permanent PR-state mutations.
-if [ "$MODE" = "resolve-conflicts" ]; then
+if [ "$MODE" = "resolve-conflicts" ] && [ "$INTERACTIVE" = 1 ]; then
+  echo "[wrapper] interactive: Mode 3 on PR #${TARGET_PR} (triage skipped)"
+elif [ "$MODE" = "resolve-conflicts" ]; then
   echo "[wrapper] running triage for PR #$TARGET_PR..."
   TRIAGE_OUTPUT=$("$LOOP_HOME/runners/run-conflict-triage.sh" "$TARGET_PR" 2>&1)
   TRIAGE_RC=$?
@@ -434,6 +494,22 @@ if [ -n "$TARGET_PR" ]; then
 elif [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
   _llm_target_kv=(issue="$DEV_AGENT_TARGET_ISSUE")
 fi
+
+# GH#147: --interactive replaces the headless `claude -p ... | tee | jq |
+# tee` pipeline with an `exec claude ...` so the wrapper hands its TTY
+# to claude. `exec` naturally bypasses the post-LLM blocks below
+# (process replacement) and the cleanup trap (bash skips EXIT trap on
+# successful exec). No log/raw JSONL files are written. The operator
+# handles failures themselves — none of the wrapper-side dispatcher
+# guard rails apply.
+if [ "$INTERACTIVE" = 1 ]; then
+  echo "[wrapper] interactive: handing off to claude (mode=$MODE${TARGET_PR:+ pr=#$TARGET_PR}${DEV_AGENT_TARGET_ISSUE:+ issue=#$DEV_AGENT_TARGET_ISSUE})"
+  exec env PAGER=cat GIT_PAGER=cat \
+    claude "$KICKOFF" \
+    --append-system-prompt "$("$LOOP_HOME/runners/lib/render-prompt.sh" "$LOOP_HOME/templates/developer.md")" \
+    --permission-mode bypassPermissions
+fi
+
 event_emit dev llm_started mode="$MODE" run_id="$DEV_AGENT_RUN_ID" "${_llm_target_kv[@]}"
 _llm_start_s=$(date +%s)
 set -m
