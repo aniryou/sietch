@@ -84,3 +84,6 @@ load 'lib/template_rules'
 @test "[GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md]" {
   run_rule_registry_check "GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md"
 }
+@test "[GH#135: no phantom 'beads memory tag' claim mechanism — developer.md]" {
+  run_rule_registry_check "GH#135: no phantom 'beads memory tag' claim mechanism — developer.md"
+}
