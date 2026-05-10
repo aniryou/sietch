@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#133: parity-doc bookkeeping for G2 (predicate ↔ prompt body-tag fallback).
 #
 # G2's resolution: drop the body-tag OR fallback from `templates/reviewer.md`

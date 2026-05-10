@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#78: Tell the dev-agent to save test output once with `tee` and re-grep
 # the saved file, not re-invoke the test runner to slice the same output
 # differently.

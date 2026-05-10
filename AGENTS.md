@@ -31,6 +31,23 @@ Other interactive commands to harden:
 - `apt-get` — `-y`
 - `brew` — `HOMEBREW_NO_AUTO_UPDATE=1`
 
+## Test tiers
+
+The bats suite is split into two tiers via the `regression` file-tag:
+
+- **Untagged (PR-blocking, live behavior)** — eligibility, dispatchers, wrappers, locks, event log, merger, etc. Runs on every push and pull request.
+- **`regression` (nightly pins)** — one-shot guards over template, registry, and parity-doc text. They exist to catch a specific past regression and rarely fire usefully on day-to-day feature work; during a major refactor they all break together. Runs nightly on `main` and on manual `workflow_dispatch`, not on PRs.
+
+Tag a whole file by adding `# bats file_tags=regression` immediately under the shebang. Do **not** tag individual `@test` blocks; whole-file tagging is the supported granularity here.
+
+Local runs:
+
+```bash
+bats --filter-tags '!regression' tests/   # what PR CI runs
+bats --filter-tags regression tests/      # what the nightly job runs
+bats tests/                               # everything (no filter)
+```
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 

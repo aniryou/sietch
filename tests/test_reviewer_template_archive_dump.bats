@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#136: Reviewer sub-agent re-fetches the same files via repeated `git show`.
 #
 # Across 66 reviewer sub-agent transcripts, six runs invoke

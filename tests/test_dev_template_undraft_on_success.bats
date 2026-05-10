@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#88: Stop leaving PRs stuck as draft after follow-up cycle resolves them.
 #
 # Six dev-agent paths call `gh pr ready --undo` (drafting). Pre-#88, zero

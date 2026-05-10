@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly regression-pin run (06:17 UTC). Catches drift in templates,
+    # registries, and parity docs without blocking PRs on mass re-pins.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
 
 # Single source of truth for the shell files we lint.
 # Keep in sync with the local commands documented in CONTRIBUTING / issue #21.
@@ -59,6 +64,7 @@ jobs:
         run: shfmt -d $SHFMT_FLAGS $SHELL_FILES
 
   bats:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -78,4 +84,27 @@ jobs:
         run: brew install bats-core gettext jq parallel
 
       - name: Run bats suite
-        run: bats --jobs 4 tests/
+        run: bats --jobs 4 --filter-tags '!regression' tests/
+
+  bats-regression:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bats gettext-base jq parallel
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core gettext jq parallel
+
+      - name: Run regression bats suite
+        run: bats --jobs 4 --filter-tags regression tests/

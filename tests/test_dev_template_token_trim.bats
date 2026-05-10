@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#82: Trim long inline PR bodies and unused flag bloat from dev-agent.
 #
 # Three guidance shifts in templates/developer.md, each tied to a per-run

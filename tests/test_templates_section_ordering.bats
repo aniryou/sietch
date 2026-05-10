@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#47: section-ordering invariants for the user-facing templates.
 #
 # The plain-English/TL;DR contract requires `## TL;DR` to appear before the
