@@ -65,7 +65,6 @@ require_repo_root() {
 cmd_init() {
   local dest="$PWD/.loop"
   local config="$dest/loop.config"
-  local wrote_config=0
 
   if [ ! -f "$config" ]; then
     mkdir -p "$dest"
@@ -93,15 +92,122 @@ From anywhere inside this repo:
     st help         # full command list
 EOF
     echo "[st init] created $config"
-    wrote_config=1
   else
     echo "[st init] $config already exists; preserving."
   fi
 
-  cmd_init_claude_md_block
+  cmd_init_autofill_config "$config"
+  cmd_init_claude_md_block || true
+  cmd_init_bootstrap_beads
+  cmd_init_bootstrap_precommit
 
-  if [ "$wrote_config" -eq 1 ]; then
-    echo "[st init] edit $config to set REPO_OWNER, REPO_NAME, etc."
+  echo ""
+  echo "[st init] running embedded onboard..."
+  # LOOP_HOME is already exported by the trampoline at the top of this
+  # file; only REPO_ROOT needs to be set per-invocation here.
+  REPO_ROOT="$PWD" bash "$LOOP_HOME/runners/lib/onboard.sh" run
+}
+
+# Auto-fill placeholder values in loop.config from repo state. Idempotent:
+# only rewrites a KEY="value" line whose current value is the exact template
+# placeholder, so any user-edit survives a re-run of `st init`.
+cmd_init_autofill_config() {
+  local config="$1"
+
+  local origin_url owner="" name="" default_branch="" test_cmd=""
+  if origin_url=$(git -C "$PWD" remote get-url origin 2>/dev/null); then
+    # Match both forms:
+    #   git@github.com:owner/repo(.git)?
+    #   https://github.com/owner/repo(.git)?(/)?
+    # Capture the name greedily so dotted names (socket.io, next.js) parse,
+    # then strip trailing `/` and `.git` after the match.
+    if [[ "$origin_url" =~ github\.com[:/]+([^/]+)/(.+)$ ]]; then
+      owner="${BASH_REMATCH[1]}"
+      name="${BASH_REMATCH[2]%/}"
+      name="${name%.git}"
+    fi
+  fi
+
+  if default_branch=$(git -C "$PWD" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); then
+    default_branch="${default_branch#origin/}"
+  fi
+  if [ -z "$default_branch" ]; then
+    default_branch=$(git -C "$PWD" branch --show-current 2>/dev/null || true)
+  fi
+
+  if [ -f "$PWD/pyproject.toml" ] || compgen -G "$PWD/requirements*.txt" >/dev/null; then
+    test_cmd="pytest -q"
+  elif [ -f "$PWD/package.json" ]; then
+    test_cmd="npm test"
+  elif [ -f "$PWD/go.mod" ]; then
+    test_cmd="go test ./..."
+  elif compgen -G "$PWD/tests/*.bats" >/dev/null; then
+    test_cmd="bats tests/"
+  fi
+
+  [ -n "$owner" ] && _replace_placeholder "$config" REPO_OWNER 'your-github-org-or-user' "$owner"
+  [ -n "$name" ] && _replace_placeholder "$config" REPO_NAME 'your-repo-name' "$name"
+  [ -n "$default_branch" ] && _replace_placeholder "$config" DEFAULT_BRANCH 'main' "$default_branch"
+  [ -n "$test_cmd" ] && _replace_placeholder "$config" TEST_CMD 'pytest -q' "$test_cmd"
+  return 0
+}
+
+# Rewrite a single KEY="..." line in $file iff its current value is exactly
+# $placeholder. Skips when the user has already edited the line (any other
+# value, or any whitespace/quote variation). Uses awk for value-literal
+# matching so we don't have to escape sed metacharacters in $newval.
+_replace_placeholder() {
+  local file="$1" key="$2" placeholder="$3" newval="$4"
+  if [ "$placeholder" = "$newval" ]; then
+    return 0 # no-op: detected value matches the placeholder
+  fi
+  local tmp
+  tmp=$(mktemp "${file}.XXXXXX") || return 1
+  awk -v key="$key" -v ph="$placeholder" -v nv="$newval" '
+    {
+      if ($0 == key "=\"" ph "\"") {
+        print key "=\"" nv "\""
+      } else {
+        print
+      }
+    }
+  ' "$file" >"$tmp" && mv "$tmp" "$file"
+}
+
+# `bd init` if .beads/ is missing AND bd is on $PATH. Silent no-op
+# otherwise — onboard's check_beads will report the missing tool case.
+cmd_init_bootstrap_beads() {
+  if [ -d "$PWD/.beads" ]; then
+    return 0
+  fi
+  if ! command -v bd >/dev/null 2>&1; then
+    return 0
+  fi
+  if (cd "$PWD" && bd init >/dev/null 2>&1); then
+    echo "[st init] ran 'bd init' (no .beads/ found)"
+  else
+    echo "[st init] 'bd init' failed; embedded onboard will report the failure" >&2
+  fi
+}
+
+# `pre-commit install` if .pre-commit-config.yaml exists AND the hook is
+# missing or doesn't carry the pre-commit framework marker. Silent no-op
+# when pre-commit is not on $PATH — onboard's check_pre_commit_hook reports.
+cmd_init_bootstrap_precommit() {
+  if [ ! -f "$PWD/.pre-commit-config.yaml" ] && [ ! -f "$PWD/.pre-commit-config.yml" ]; then
+    return 0
+  fi
+  local hook="$PWD/.git/hooks/pre-commit"
+  if [ -f "$hook" ] && grep -qi 'pre-commit' "$hook"; then
+    return 0
+  fi
+  if ! command -v pre-commit >/dev/null 2>&1; then
+    return 0
+  fi
+  if (cd "$PWD" && pre-commit install >/dev/null 2>&1); then
+    echo "[st init] ran 'pre-commit install'"
+  else
+    echo "[st init] 'pre-commit install' failed; embedded onboard will report the failure" >&2
   fi
 }
 
