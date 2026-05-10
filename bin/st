@@ -142,10 +142,10 @@ cmd_init_autofill_config() {
     test_cmd="bats tests/"
   fi
 
-  [ -n "$owner" ]          && _replace_placeholder "$config" REPO_OWNER     'your-github-org-or-user' "$owner"
-  [ -n "$name" ]           && _replace_placeholder "$config" REPO_NAME      'your-repo-name'          "$name"
-  [ -n "$default_branch" ] && _replace_placeholder "$config" DEFAULT_BRANCH 'main'                    "$default_branch"
-  [ -n "$test_cmd" ]       && _replace_placeholder "$config" TEST_CMD       'pytest -q'               "$test_cmd"
+  [ -n "$owner" ] && _replace_placeholder "$config" REPO_OWNER 'your-github-org-or-user' "$owner"
+  [ -n "$name" ] && _replace_placeholder "$config" REPO_NAME 'your-repo-name' "$name"
+  [ -n "$default_branch" ] && _replace_placeholder "$config" DEFAULT_BRANCH 'main' "$default_branch"
+  [ -n "$test_cmd" ] && _replace_placeholder "$config" TEST_CMD 'pytest -q' "$test_cmd"
   return 0
 }
 
@@ -156,7 +156,7 @@ cmd_init_autofill_config() {
 _replace_placeholder() {
   local file="$1" key="$2" placeholder="$3" newval="$4"
   if [ "$placeholder" = "$newval" ]; then
-    return 0  # no-op: detected value matches the placeholder
+    return 0 # no-op: detected value matches the placeholder
   fi
   local tmp
   tmp=$(mktemp "${file}.XXXXXX") || return 1
@@ -180,7 +180,7 @@ cmd_init_bootstrap_beads() {
   if ! command -v bd >/dev/null 2>&1; then
     return 0
   fi
-  if ( cd "$PWD" && bd init >/dev/null 2>&1 ); then
+  if (cd "$PWD" && bd init >/dev/null 2>&1); then
     echo "[st init] ran 'bd init' (no .beads/ found)"
   else
     echo "[st init] 'bd init' failed; embedded onboard will report the failure" >&2
@@ -201,7 +201,7 @@ cmd_init_bootstrap_precommit() {
   if ! command -v pre-commit >/dev/null 2>&1; then
     return 0
   fi
-  if ( cd "$PWD" && pre-commit install >/dev/null 2>&1 ); then
+  if (cd "$PWD" && pre-commit install >/dev/null 2>&1); then
     echo "[st init] ran 'pre-commit install'"
   else
     echo "[st init] 'pre-commit install' failed; embedded onboard will report the failure" >&2
