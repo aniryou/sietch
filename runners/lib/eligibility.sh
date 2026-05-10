@@ -526,7 +526,16 @@ eligibility_review_pending_list() {
 #                                   would re-do work).
 #   - no reviewer-agent review yet → skip (nothing to follow-up on).
 #
-# Prints the verdict (or "none" / "?") on stdout for log visibility.
+# GH#134: drafted PRs are skipped unconditionally. Mode 2's 3-cycle give-up
+# (templates/developer.md F2) drafts the PR — mirroring Mode 3's abort paths
+# — so the dispatcher's `_dispatch_followup_jq` `isDraft == false` pre-filter
+# already excludes them in production. The check here is defense-in-depth
+# for direct `bash eligibility.sh followup <PR#>` invocations and any other
+# caller that bypasses the dispatcher (which the wrapper preflight does).
+# Without this, the predicate would still answer "dispatch=yes" for a stuck
+# post-give-up PR, defeating the give-up handshake.
+#
+# Prints the verdict (or "none" / "drafted" / "?") on stdout for log visibility.
 # ---------------------------------------------------------------------------
 eligibility_followup_pr() {
   local pr="${1:-}"
@@ -544,15 +553,16 @@ eligibility_followup_pr() {
   if ! data=$(
     PAGER=cat GIT_PAGER=cat gh pr view "$pr" \
       --repo "$REPO_SLUG" \
-      --json reviews,comments,labels 2>/dev/null
+      --json reviews,comments,labels,isDraft 2>/dev/null
   ); then
     echo "?"
     return 2
   fi
 
-  # One pass of jq: short-circuit when BLOCKED_HUMAN_LABEL is present, else
-  # classify the latest reviewer-agent review and the ordering vs the latest
-  # dev-agent comment, emit a TAB-separated "<verdict>\t<dispatch?>" string.
+  # One pass of jq: short-circuit when BLOCKED_HUMAN_LABEL is present (GH#111)
+  # or when the PR is drafted (GH#134 — Mode 2 give-up state), else classify
+  # the latest reviewer-agent review and the ordering vs the latest dev-agent
+  # comment, emit a TAB-separated "<verdict>\t<dispatch?>" string.
   local result
   if ! result=$(
     echo "$data" | jq -r \
@@ -561,6 +571,7 @@ eligibility_followup_pr() {
       --arg blocked_label "$BLOCKED_HUMAN_LABEL" '
       if ((.labels // [] | map(.name)) | index($blocked_label)) != null then
         "blocked-by-label\tno"
+      elif (.isDraft // false) then "drafted\tno"
       else
         (.reviews // []
           | map(select(.body | test($re)))
@@ -751,9 +762,9 @@ Modes:
                    oldest updatedAt). Same filter as 'review'; consumed by the
                    reviewer dispatcher in run-loop.sh (GH#117).
   followup <PR#>   Should the follow-up dispatcher dispatch a Mode 2 dev-agent
-                   for PR <PR#>? Skips clean/nits verdicts unconditionally;
-                   dispatches changes/comment/blocked iff the review is newer
-                   than the latest dev-agent comment.
+                   for PR <PR#>? Skips drafted PRs (GH#134), clean/nits verdicts
+                   unconditionally; dispatches changes/comment/blocked iff the
+                   review is newer than the latest dev-agent comment.
   merge <PR#>      Should the merger dispatcher squash-merge PR <PR#>? Returns
                    merge iff the latest reviewer-agent verdict is in
                    $MERGER_VERDICTS_ALLOWED (default: clean nits), the review

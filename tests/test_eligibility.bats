@@ -1653,6 +1653,7 @@ _with_extra_review() {
 FOLLOWUP_FILTER='
   if ((.labels // [] | map(.name)) | index($blocked_label)) != null then
     "blocked-by-label\tno"
+  elif (.isDraft // false) then "drafted\tno"
   else
     (.reviews // []
       | map(select(.body | test($re)))
@@ -1873,6 +1874,22 @@ _with_failure_marker_after_review() {
   [ "$out" = $'changes\tyes' ]
 }
 
+# GH#134: Mode 2's 3-cycle give-up path drafts the PR (mirroring Mode 3 aborts).
+# The predicate must short-circuit on isDraft=true so a fresh `[reviewer-agent:
+# comment]` posted after the give-up doesn't re-arm dispatch on the same
+# stuck PR — without this, the dispatcher's own `isDraft == false` pre-filter
+# in `_dispatch_followup_jq` is the only gate, and direct invocations of
+# `bash eligibility.sh followup <PR#>` would still answer dispatch=yes.
+@test "followup filter: drafted PR is skipped regardless of verdict" {
+  local re='\[reviewer-agent: (clean|nits|comment|changes|blocked)\]'
+  local prefix='🤖 Developer agent'
+  local out
+  out=$(_with_verdict changes \
+        | jq '.isDraft = true' \
+        | jq -r --arg re "$re" --arg prefix "$prefix" --arg blocked_label "blocked:human" "$FOLLOWUP_FILTER")
+  [ "$out" = $'drafted\tno' ]
+}
+
 # ---------------------------------------------------------------------------
 # eligibility_followup_pr (function-level): exercises the predicate
 # end-to-end via PATH-mocked gh, confirming exit-code semantics match
@@ -1880,7 +1897,7 @@ _with_failure_marker_after_review() {
 # ---------------------------------------------------------------------------
 _make_gh_stub() {
   # Args: <fixture-json-path>. Writes a gh shim that returns the fixture for
-  # any `pr view ... --json reviews,comments` invocation.
+  # any `pr view ... --json reviews,comments,isDraft` invocation (GH#134).
   local fixture="$1"
   local tmpbin="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$tmpbin"
@@ -1966,6 +1983,25 @@ STUB
     bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
   [ "$status" -eq 0 ]
   [ "$output" = "blocked" ]
+}
+
+# GH#134: post-give-up state. After Mode 2 hits the 3-cycle cap, the prompt
+# drafts the PR (mirroring Mode 3 aborts). The predicate must report
+# dispatch=no for a drafted PR — otherwise direct `bash eligibility.sh
+# followup <PR#>` invocations and any non-dispatcher caller would still
+# answer "yes" and re-fire Mode 2 on a PR a human is supposed to triage.
+@test "eligibility_followup_pr: drafted PR exits 1 (skip), prints 'drafted'" {
+  local repo
+  repo=$(make_repo)
+  local synth="$BATS_TEST_TMPDIR/drafted.json"
+  _with_verdict changes | jq '.isDraft = true' > "$synth"
+  local tmpbin
+  tmpbin=$(_make_gh_stub "$synth")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" followup 42
+  [ "$status" -eq 1 ]
+  [ "$output" = "drafted" ]
 }
 
 @test "eligibility_followup_pr: changes verdict but dev-comment newer exits 1" {
