@@ -120,6 +120,20 @@ rule "GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md
 rule "GH#135: no phantom 'beads memory tag' claim mechanism — developer.md" \
      "developer.md" forbid 'beads memory tag .developer-agent:claimed'
 
+# GH#137: nudge the dev-agent away from the "8–34 sequential Edits to one big
+# file" anti-pattern. The literal opener anchors the rule, the trigger
+# condition (>5 regions, >300 lines) makes it actionable, and the cache-cost
+# rationale lets the agent generalise from "templates/developer.md" to other
+# big runner/template files. The cluster-placement check (rule must sit with
+# the test-output/body-file paragraphs, not at the bottom) needs line-number
+# arithmetic and so lives in tests/test_templates_section_ordering.bats.
+rule "GH#137: Prefer Write over Edit opener — developer.md" \
+     "developer.md" require 'Prefer one `Write` over many `Edit`s'
+rule "GH#137: Write-over-Edit trigger condition — developer.md" \
+     "developer.md" require_all $'more than ~5 regions\t>300 lines'
+rule "GH#137: Write-over-Edit cache-cost rationale — developer.md" \
+     "developer.md" require 'cache-read|cache.*token|re-?pulls.*context'
+
 # --- Helpers ----------------------------------------------------------------
 
 template_rule_index() {

@@ -257,6 +257,8 @@ The PR title and body are read first by maintainers, contributors, and the user 
 
 **Compose the body in a file, pass it via `--body-file` — never inline the body via a `cat`-heredoc inside `--body`.** The inline form echoes the full ~3 000-char body into your tool-call message and bloats every subsequent turn's input context. Write the body to `/tmp/pr-body-<num>.md` first (use the `Write` tool — preferred, since the body is multi-paragraph markdown — or `cat <<'EOF' > /tmp/pr-body-<num>.md ... EOF`), then point `gh pr create` at the file. Step 7a's CI-checkbox flip then `Edit`s the same file and re-runs `gh pr edit --body-file /tmp/pr-body-<num>.md`, so the body content sits in your context exactly once.
 
+**Prefer one `Write` over many `Edit`s when rewriting most of a file.** This is the same "minimise context bloat" rule as the test-output `tee` rule in Step 3, the pre-commit `tee` rule in Step 4, and the `--body-file` rule above — applied to file editing. If a change touches more than ~5 regions of a file >300 lines, draft the full new contents in one shot and `Write` it once. Each `Edit` re-pulls the file's surrounding turn context — 8–34 small Edits on a 30 KB file (e.g., a runner or template) silently burns several million cache-read tokens before the suite even runs. Use `Edit` for surgical, single-region fixes; use `Write` for rewrites.
+
 The body content uses this template (a complete, final PR description — Step 7a only flips the unchecked CI checkbox and appends any retry commits to `## Commits`; do not change the section structure or add ad-hoc sections):
 
 ```markdown

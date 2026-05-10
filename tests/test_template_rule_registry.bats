@@ -87,3 +87,12 @@ load 'lib/template_rules'
 @test "[GH#135: no phantom 'beads memory tag' claim mechanism — developer.md]" {
   run_rule_registry_check "GH#135: no phantom 'beads memory tag' claim mechanism — developer.md"
 }
+@test "[GH#137: Prefer Write over Edit opener — developer.md]" {
+  run_rule_registry_check "GH#137: Prefer Write over Edit opener — developer.md"
+}
+@test "[GH#137: Write-over-Edit trigger condition — developer.md]" {
+  run_rule_registry_check "GH#137: Write-over-Edit trigger condition — developer.md"
+}
+@test "[GH#137: Write-over-Edit cache-cost rationale — developer.md]" {
+  run_rule_registry_check "GH#137: Write-over-Edit cache-cost rationale — developer.md"
+}
