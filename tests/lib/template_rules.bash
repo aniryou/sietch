@@ -100,6 +100,17 @@ rule "GH#47: PR title plain-English rules (70-char + plain-English) — develope
 rule "GH#47: ## Test plan heading anchors Step 7a CI flip — developer.md" \
      "developer.md" require '^## Test plan$'
 
+# GH#133: drop the body-tag OR fallback from the reviewer prompt so the
+# prompt and `eligibility_review_pending` (which filters strictly on
+# `head:${BRANCH_PREFIX}/`) agree. The two reviewer.md sites that used to
+# carry the OR clause: the sanity-check bullet ("its body contains
+# ${DEV_AGENT_PR_BODY_TAG}") and the Hard-Rules parenthetical ("or PRs
+# without the agent marker in the body").
+rule "GH#133: no body-tag OR fallback (sanity check) — reviewer.md" \
+     "reviewer.md" forbid 'body contains.*DEV_AGENT_PR_BODY_TAG'
+rule "GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md" \
+     "reviewer.md" forbid 'agent marker in the body'
+
 # --- Helpers ----------------------------------------------------------------
 
 template_rule_index() {
