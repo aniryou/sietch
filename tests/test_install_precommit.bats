@@ -49,9 +49,13 @@ STUB
 
 # Stage a minimal .github/workflows/ci.yml so check_lint_tool_versions can
 # parse SHELLCHECK_VERSION / SHFMT_VERSION (matches the format in the real
-# ci.yml: leading whitespace + `=` separator).
+# ci.yml: leading whitespace + `=` separator). The optional 3rd/4th args let
+# a test omit the `v` prefix on either pin to assert install.sh tolerates
+# the asymmetry — the real ci.yml prefixes both today, but stripping the
+# prefix from either should not change the warn outcome.
 _write_fake_ci_yml() {
   local sc_ver="$1" sf_ver="$2"
+  local sc_prefix="${3-v}" sf_prefix="${4-v}"
   mkdir -p "$REPO/.github/workflows"
   cat >"$REPO/.github/workflows/ci.yml" <<CI
 name: ci
@@ -60,8 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          SHELLCHECK_VERSION=v${sc_ver}
-          SHFMT_VERSION=v${sf_ver}
+          SHELLCHECK_VERSION=${sc_prefix}${sc_ver}
+          SHFMT_VERSION=${sf_prefix}${sf_ver}
 CI
 }
 
@@ -182,7 +186,7 @@ STUB
   cd "$REPO"
   run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF '[install] WARN: shellcheck 0.10.0 installed but CI pins v0.11.0'
+  echo "$output" | grep -qF '[install] WARN: shellcheck v0.10.0 installed but CI pins v0.11.0'
 }
 
 @test "install.sh: warns when installed shfmt version differs from CI pin" {
@@ -209,4 +213,39 @@ STUB
   # tool-specific WARN prefix so the unrelated `LOOP_INSTALL_DIR not on
   # $PATH` warning (which always fires in bats) doesn't trip the assertion.
   ! echo "$output" | grep -qE '^\[install\] WARN: (shellcheck|shfmt) '
+}
+
+@test "install.sh: silent when CI pins drop the v prefix and installed versions match" {
+  # Regression for the v-prefix asymmetry foot-gun: if a future ci.yml edit
+  # drops the leading `v` on SHFMT_VERSION (or SHELLCHECK_VERSION), the
+  # parser must still match the installed tool's printed version. The fake
+  # ci.yml here writes both pins WITHOUT a `v`, while the stubs print the
+  # upstream-native formats (shellcheck unprefixed, shfmt v-prefixed).
+  : >"$REPO/.pre-commit-config.yaml"
+  _write_fake_ci_yml "0.11.0" "3.13.1" "" ""
+  _install_pre_commit_stub
+  _install_shellcheck_stub "0.11.0"
+  _install_shfmt_stub "v3.13.1"
+  cd "$REPO"
+  run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -qE '^\[install\] WARN: (shellcheck|shfmt) '
+}
+
+@test "install.sh: warn message uses v-prefix symmetrically across both tools" {
+  # Lock in the symmetric display: both shellcheck and shfmt warn lines
+  # render the installed version with a `v` prefix (the parsed pin already
+  # gets re-prefixed too). Earlier the shellcheck warn omitted `v` on the
+  # installed side because shellcheck's --version output happened to lack
+  # one — that asymmetry is what the reviewer-agent flagged on PR #168.
+  : >"$REPO/.pre-commit-config.yaml"
+  _write_fake_ci_yml "0.11.0" "3.13.1"
+  _install_pre_commit_stub
+  _install_shellcheck_stub "0.10.0"
+  _install_shfmt_stub "v3.12.0"
+  cd "$REPO"
+  run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF '[install] WARN: shellcheck v0.10.0 installed but CI pins v0.11.0'
+  echo "$output" | grep -qF '[install] WARN: shfmt v3.12.0 installed but CI pins v3.13.1'
 }
