@@ -749,14 +749,22 @@ start_session() {
 
   # Send the loop command to each pane. Don't `exec` — keeps the shell
   # alive after the loop dies (e.g., from Ctrl+C), so the user sees output.
-  tmux send-keys -t "$TOP1" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-review $COMMON_ARGS" Enter
-  tmux send-keys -t "$TOP2" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-followup $COMMON_ARGS" Enter
-  tmux send-keys -t "$TOP3" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-conflicts $COMMON_ARGS" Enter
+  #
+  # Each payload re-exports REPO_ROOT and LOOP_HOME (GH#162). Panes spawned
+  # inside `tmux new-session` inherit env from the existing tmux server,
+  # NOT from this run-loop.sh process. Without an explicit export the
+  # per-pane run-loop.sh re-exec sees whatever the server was started
+  # with — silently targeting the wrong repo when a fleet is started from
+  # a different repo than the one that first launched the tmux server.
+  ENV_EXPORT="export REPO_ROOT='$REPO' LOOP_HOME='$LOOP_HOME'"
+  tmux send-keys -t "$TOP1" "cd '$REPO' && $ENV_EXPORT && '$SCRIPT' --internal-role=dispatch-review $COMMON_ARGS" Enter
+  tmux send-keys -t "$TOP2" "cd '$REPO' && $ENV_EXPORT && '$SCRIPT' --internal-role=dispatch-followup $COMMON_ARGS" Enter
+  tmux send-keys -t "$TOP3" "cd '$REPO' && $ENV_EXPORT && '$SCRIPT' --internal-role=dispatch-conflicts $COMMON_ARGS" Enter
   if [ "$ENABLE_MERGER" -eq 1 ]; then
-    tmux send-keys -t "$TOP4" "cd '$REPO' && '$SCRIPT' --internal-role=dispatch-merge $COMMON_ARGS" Enter
+    tmux send-keys -t "$TOP4" "cd '$REPO' && $ENV_EXPORT && '$SCRIPT' --internal-role=dispatch-merge $COMMON_ARGS" Enter
   fi
   for ((i = 1; i <= DEV_INSTANCES; i++)); do
-    tmux send-keys -t "${DEV_PANES[$((i - 1))]}" "cd '$REPO' && '$SCRIPT' --internal-role=dev-$i $COMMON_ARGS" Enter
+    tmux send-keys -t "${DEV_PANES[$((i - 1))]}" "cd '$REPO' && $ENV_EXPORT && '$SCRIPT' --internal-role=dev-$i $COMMON_ARGS" Enter
   done
 
   # Focus the first dev pane (most likely place for action).
