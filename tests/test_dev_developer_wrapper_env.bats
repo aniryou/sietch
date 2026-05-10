@@ -15,7 +15,12 @@
 #      PAGER/GIT_PAGER/GH_REPO are already in its env (don't re-prepend
 #      `PAGER=cat GIT_PAGER=cat ` or pass `--repo …`).
 #
-# These tests pin both halves so a regression that drops either fails CI.
+# This file pins the wrapper-export half (lines about run-developer.sh) and
+# the section-scoped narrative half (lines that read the body of Mode 1
+# Step 1). The pure regex rules (`gh … --repo` forbid in the template,
+# `cd "$WORKTREE"` count_max, `--repo` require) live in the template-rule
+# registry alongside the GH#67/#71 rules — see
+# tests/test_template_rule_registry.bats and tests/lib/template_rules.bash.
 
 load 'helpers'
 
@@ -100,53 +105,4 @@ section_body() {
   # The rule must explicitly forbid passing `--repo` on gh commands.
   echo "$body" | grep -qE -- '--repo' \
     || { echo "Step 1 missing the '--repo' anti-pattern" >&2; false; }
-}
-
-# --- Template sweep: no in-template `gh … --repo …` examples -----------------
-#
-# The "trust inherited env" rule must not be contradicted by the template's
-# own `gh` example commands. Across Modes 1/2/3 the agent will mirror what
-# the template shows; if examples still pass `--repo …`, the agent re-emits
-# the prefix and blows the GH#80 acceptance criteria.
-#
-# Test 36 is the load-bearing assertion: no `gh … --repo` invocation
-# anywhere in the template. Test 35 is a thin sanity check that the rule
-# call-out still exists (≥ 1 narrative `--repo` mention); we deliberately
-# don't pin the count to exactly 1, because a future legitimate addition
-# (e.g., a bullet "the wrapper's own `gh ... --repo` calls in `runners/`")
-# is not a regression. Test 36 catches the only thing that actually harms
-# agent runs.
-
-@test "templates/developer.md: rule call-out for --repo still present" {
-  count=$(grep -cE -- '--repo' "$DEV_TPL")
-  [ "$count" -ge 1 ] \
-    || { echo "Expected ≥ 1 '--repo' mention (the Step 1 rule call-out); found $count" >&2; false; }
-}
-
-@test "templates/developer.md: no gh examples pass --repo (would contradict the rule)" {
-  # Match `gh <subcommand> … --repo …` invocations anywhere in the template,
-  # whether at line-start or inside a `$(...)` command substitution. The
-  # Step 1 rule mentions `--repo` in narrative prose with `gh` wrapped in
-  # backticks (`gh\``), so the `gh[[:space:]]+[a-z]+` segment doesn't match
-  # the rule call-out itself.
-  if grep -nE 'gh[[:space:]]+[a-z]+[^|]*--repo' "$DEV_TPL"; then
-    echo "Found in-template 'gh … --repo …' example(s) above. The rule at line ~210 says the agent should not pass --repo; examples must match." >&2
-    false
-  fi
-}
-
-# --- Template sweep: legitimate `cd "$WORKTREE"` only at worktree creation ---
-#
-# The CWD-persistence rule says exactly one cd per worktree creation. There
-# are three creation points: Mode 1 Step 1, Mode 2 F3, Mode 3 R1. Any extra
-# `cd "$WORKTREE"` line in the template is a redundant prefix — the same
-# pattern the agent would mirror.
-
-@test "templates/developer.md: at most 3 'cd \"\$WORKTREE\"' lines (one per mode worktree creation)" {
-  # Count lines that ARE the cd command (not narrative prose mentioning it).
-  # The narrative mentions it inside backticks (`cd "$WORKTREE"`) on the
-  # same line as other text; those don't match `^[[:space:]]*cd "...`.
-  count=$(grep -cE '^[[:space:]]*cd[[:space:]]+"\$WORKTREE"[[:space:]]*$' "$DEV_TPL")
-  [ "$count" -le 3 ] \
-    || { echo "Expected ≤ 3 standalone 'cd \"\$WORKTREE\"' lines (one per worktree creation: Mode 1 Step 1, Mode 2 F3, Mode 3 R1); found $count" >&2; false; }
 }
