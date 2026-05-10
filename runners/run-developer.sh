@@ -133,41 +133,13 @@ REPO="$REPO_ROOT"
 # even if the user hasn't re-rendered loop.config.example.
 : "${LOCK_NAME_PREFIX:=$(loop_sanitize_id "${REPO_NAME:-}")-}"
 
-# Mode 1 only — preflight: skip the LLM if there are no eligible issues.
-# Modes 2/3 already arrive with a specific PR number and don't scan.
-# Exit code 2 distinguishes "skipped, no work" from "ran successfully" (0)
-# so run-loop.sh can apply exponential backoff to consecutive empty cycles.
-# Skipped under --interactive (GH#147): the operator's explicit issue# is
-# authoritative.
-if [ "$MODE" = "default" ] && [ "$INTERACTIVE" -ne 1 ]; then
-  EL_COUNT=$("$LOOP_HOME/runners/lib/eligibility.sh" dev)
-  EL_RC=$?
-  case "$EL_RC" in
-    0)
-      echo "[wrapper] eligibility: $EL_COUNT candidate issue(s); proceeding"
-      event_emit dev eligibility result=proceeding count="$EL_COUNT" mode="$MODE"
-      ;;
-    1)
-      echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
-      echo "[wrapper] result=no-work mode=$MODE"
-      event_emit dev eligibility result=no-work mode="$MODE"
-      exit 2
-      ;;
-    *)
-      # GH#27: any non-{0,1} rc means the predicate itself failed (gh outage,
-      # jq error, GraphQL schema drift, ...). The previous "proceed to be safe"
-      # policy turned every persistent failure into a per-cycle token leak —
-      # the LLM was spawned each poll while doing nothing useful. Skip + exit 2
-      # so run-loop.sh applies the same exponential backoff it uses for rc=1.
-      # Operators see the failure on stderr and can intervene.
-      echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM invocation and backing off" >&2
-      echo "[wrapper] result=no-work mode=$MODE reason=predicate-failed"
-      event_emit dev eligibility result=predicate-failed mode="$MODE" rc="$EL_RC"
-      exit 2
-      ;;
-  esac
-  unset EL_COUNT EL_RC
-fi
+# GH#129: the Mode 1 preflight used to call eligibility.sh twice per cycle
+# (`dev` for the fast skip, `dev-candidates` for the lock loop), each issuing
+# the same 3 `gh issue list` + 1 `gh pr list` queries. The lock-acquisition
+# block below is now the single preflight; its rc=1/rc=2 paths produce the
+# same `result=no-work` / event-log shape the deleted block did, and its rc=0
+# path emits `eligibility result=proceeding` before the mkdir loop so the
+# event-order contract (eligibility before lock_acquired) is preserved.
 
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-1}"
 # Caller-overridable root for wrapper LOG/RAW paths (GH#126). Production
@@ -311,6 +283,14 @@ elif [ "$MODE" = "default" ]; then
   EL_RC=$?
   case "$EL_RC" in
     0)
+      # GH#129: emit the eligibility/proceeding event before the lock loop
+      # so structured-event consumers (and the test_event_log_integration
+      # contract) keep seeing eligibility before lock_acquired. Pre-GH#129
+      # this fired from the now-deleted dev-count preflight block.
+      _proceeding_count=$(printf '%s\n' "$CANDIDATES" | grep -c .)
+      echo "[wrapper] eligibility: $_proceeding_count candidate issue(s); proceeding"
+      event_emit dev eligibility result=proceeding count="$_proceeding_count" mode="$MODE"
+      unset _proceeding_count
       # Iterate candidates in id-ascending order (per dev-candidates contract,
       # GH#113). The first mkdir that succeeds is our lock; mkdir is the
       # atomic primitive — exactly one caller wins under contention.

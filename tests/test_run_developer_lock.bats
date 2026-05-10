@@ -52,9 +52,12 @@ _setup_env() {
   git -C "$repo" -c user.email=t@t -c user.name=t commit --allow-empty -q -m init
 
   # gh stub: respond to `issue list --label LABEL` with the right fixture.
+  # GH#129: also record every invocation (subcommand only) to state/gh-calls
+  # so the call-count contract can be pinned without rebuilding the stub.
   cat > "$bin/gh" <<STUB
 #!/usr/bin/env bash
 # Minimal gh stub for run-developer.sh preflight.
+echo "\$1 \$2" >> '$state/gh-calls'
 label=""
 while [ \$# -gt 0 ]; do
   if [ "\$1" = "--label" ]; then label="\$2"; shift 2
@@ -232,6 +235,56 @@ _run_wrapper() {
     0:2|2:0) : ;;
     *) printf 'unexpected (rc1, rc2) = (%s, %s)\n' "$rc1" "$rc2" >&2; return 1 ;;
   esac
+}
+
+@test "wrapper: Mode 1 cycle issues gh issue list 3x and gh pr list 1x (GH#129)" {
+  # Pre-fix: the wrapper called eligibility.sh dev (3 issue list + 1 pr list)
+  # AND eligibility.sh dev-candidates (3 issue list + 1 pr list) on every
+  # productive cycle — eight gh API calls where four would do. After GH#129
+  # only dev-candidates is invoked. With one candidate, the contract is
+  # exactly 3 issue list (one per label) + 1 pr list.
+  local empty="$BATS_TEST_TMPDIR/empty.json"
+  echo '[]' > "$empty"
+  local high="$BATS_TEST_TMPDIR/single.json"
+  echo '[{"number":101,"assignees":[]}]' > "$high"
+  local root
+  root=$(_setup_env "$high" "$empty")
+
+  local rc=0
+  _run_wrapper "$root" || rc=$?
+  [ "$rc" -eq 0 ]
+
+  [ -f "$root/state/gh-calls" ]
+  local issue_list_count pr_list_count
+  issue_list_count=$(grep -c '^issue list$' "$root/state/gh-calls" || true)
+  pr_list_count=$(grep -c '^pr list$' "$root/state/gh-calls" || true)
+  [ "$issue_list_count" -eq 3 ] \
+    || { echo "expected 3 'issue list' calls, got $issue_list_count: $(cat "$root/state/gh-calls")" >&2; false; }
+  [ "$pr_list_count" -eq 1 ] \
+    || { echo "expected 1 'pr list' call, got $pr_list_count: $(cat "$root/state/gh-calls")" >&2; false; }
+}
+
+@test "wrapper: Mode 1 no-eligible cycle issues gh issue list 3x and gh pr list 0x (GH#129)" {
+  # Pre-fix: an empty cycle still issued 6 gh calls (3 + 3 for the two
+  # predicate calls). Post-fix: 3 calls — three label-scoped issue list
+  # queries; pr list is skipped because there are no candidates to filter.
+  local empty="$BATS_TEST_TMPDIR/empty.json"
+  echo '[]' > "$empty"
+  local root
+  root=$(_setup_env "$empty" "$empty")
+
+  local rc=0
+  _run_wrapper "$root" || rc=$?
+  [ "$rc" -eq 2 ]
+
+  [ -f "$root/state/gh-calls" ]
+  local issue_list_count pr_list_count
+  issue_list_count=$(grep -c '^issue list$' "$root/state/gh-calls" || true)
+  pr_list_count=$(grep -c '^pr list$' "$root/state/gh-calls" || true)
+  [ "$issue_list_count" -eq 3 ] \
+    || { echo "expected 3 'issue list' calls, got $issue_list_count: $(cat "$root/state/gh-calls")" >&2; false; }
+  [ "$pr_list_count" -eq 0 ] \
+    || { echo "expected 0 'pr list' calls, got $pr_list_count: $(cat "$root/state/gh-calls")" >&2; false; }
 }
 
 @test "wrapper: exports WORKTREE=\${WORKTREE_BASE}/gh-\${DEV_AGENT_TARGET_ISSUE} for claude (GH#82)" {

@@ -786,13 +786,13 @@ JSON
   [ "$(printf '%s' "$nums" | tr '\n' ' ')" = "101 202 303" ]
 }
 
-# Source-of-truth: regression guard — both predicates must consume `gh pr list`
-# and reference BRANCH_PREFIX, so a future refactor can't silently drop the
-# filter and reopen the redundant-claim window.
-@test "eligibility_dev_count: filters open dev-agent PRs via gh pr list (GH#65)" {
+# Source-of-truth: regression guard — eligibility_dev_candidates owns the
+# filter set (gh pr list + BRANCH_PREFIX), and eligibility_dev_count delegates
+# to it (GH#129). One place to maintain so a future refactor can't silently
+# drop the filter on one path and reopen the redundant-claim window.
+@test "eligibility_dev_count: delegates to eligibility_dev_candidates (GH#129)" {
   awk '/^eligibility_dev_count\(\)/,/^}/' "$LOOP_ROOT/runners/lib/eligibility.sh" > "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'gh pr list' "$BATS_TEST_TMPDIR/fn.sh"
-  grep -qF 'BRANCH_PREFIX' "$BATS_TEST_TMPDIR/fn.sh"
+  grep -qF 'eligibility_dev_candidates' "$BATS_TEST_TMPDIR/fn.sh"
 }
 
 @test "eligibility_dev_candidates: filters open dev-agent PRs via gh pr list (GH#65)" {
