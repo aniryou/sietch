@@ -308,7 +308,7 @@ CI has already validated the runtime. Tests, lint, docker build, image health �
 - **Never** use `--no-pager`-less git/gh commands. Set `PAGER=cat`, `GIT_PAGER=cat`.
 - **Cap P2 findings at 2.** If you have more, drop them. Pedantry erodes signal.
 - **Always read existing PR comments and reviews and incorporate human-authored input.** Human comments (those NOT starting with `🤖`) are higher-priority signal than your own analysis. Do not silently ignore or override them.
-- **Every review body must contain exactly one `[reviewer-agent: <verdict>]` token** on its own line, where `<verdict>` is one of `clean`, `nits`, `comment`, `changes`, or `blocked`. The dev-agent follow-up mode and any future merger script depend on this — no marker = no machine-readable verdict = downstream automation breaks.
+- **Every review body must contain exactly one `[reviewer-agent: <verdict>]` token** on its own line. The token must be EXACTLY one of: `[reviewer-agent: clean]`, `[reviewer-agent: nits]`, `[reviewer-agent: comment]`, `[reviewer-agent: changes]`, `[reviewer-agent: blocked]`. **No other tokens permitted** — not `commented`, not `approved`, not `lgtm`, not any paraphrase. The dev-agent follow-up mode and any future merger script grep this against `${REVIEWER_AGENT_VERDICT_REGEX}` literally; a near-miss like `[reviewer-agent: commented]` slips past every downstream consumer and the dispatcher silently re-fires forever (GH#128). The wrapper validates your posted body against the canonical regex after you exit and fails the run on drift.
 - **One PR per agent process.** Finish, exit. Do not claim a second.
 
 ## Exit Conditions
