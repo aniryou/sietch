@@ -46,6 +46,16 @@ SEVERITY_LABEL_MEDIUM="severity:medium"
 SEVERITY_LABEL_LOW="severity:low"
 TYPE_LABELS="bug,enhancement,testing,documentation"
 
+# Opt-in label letting a human flag a specific issue for the dev-agent
+# regardless of severity. Issues carrying this label are unioned with the
+# severity:high / severity:medium queries inside `eligibility_dev_count` and
+# `eligibility_dev_candidates`, so a `severity:low` (or no-severity) issue
+# can be picked up without inflating its severity. Decouples severity ("how
+# bad is this") from queue eligibility ("should the dev-agent work on this").
+# Mirrors the BLOCKED_HUMAN_LABEL pattern below in the positive direction —
+# that one excludes regardless of severity, this one includes. (GH#148)
+AGENT_PICKUP_LABEL="agent-ready"
+
 # Applied by the dev-agent's safety-net flow to issues that need human action
 # before any further automated work (e.g. CI-affecting changes, > 200 LOC
 # deletions, missing external services). Issues carrying this label are

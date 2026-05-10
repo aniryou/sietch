@@ -260,6 +260,16 @@ STUB
 _make_gh_dev_stub() {
   local high="$1"
   local med="$2"
+  # GH#148: optional third fixture for the AGENT_PICKUP_LABEL opt-in query.
+  # Existing 2-arg callers continue to get an empty `agent-ready` response,
+  # which dedupes harmlessly against high+medium results.
+  local agent="${3:-}"
+  local agent_cmd
+  if [ -n "$agent" ]; then
+    agent_cmd="cat '$agent'"
+  else
+    agent_cmd="echo '[]'"
+  fi
   local tmpbin="$BATS_TEST_TMPDIR/bin-dev"
   mkdir -p "$tmpbin"
   cat > "$tmpbin/gh" <<STUB
@@ -277,6 +287,7 @@ done
 case "\$label" in
   severity:high)   cat '$high' ;;
   severity:medium) cat '$med' ;;
+  agent-ready)     $agent_cmd ;;
   *) echo '[]' ;;
 esac
 exit 0
@@ -442,6 +453,122 @@ JSON
   echo '[{"number":992,"assignees":[],"labels":[{"name":"severity:medium"},{"name":"blocked:human"}]}]' > "$med"
   local tmpbin
   tmpbin=$(_make_gh_dev_stub "$high" "$med")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# eligibility_dev_candidates: AGENT_PICKUP_LABEL opt-in (GH#148)
+# Decouples severity from "should the dev-agent work on this." A human can
+# attach ${AGENT_PICKUP_LABEL} (default: agent-ready) to surface a low-
+# severity issue without inflating its severity. Mirrors BLOCKED_HUMAN_LABEL
+# precedent (GH#28), in the positive direction — that one says "skip even if
+# eligible," this one says "include even if low."
+# ---------------------------------------------------------------------------
+
+@test "eligibility_dev_candidates: severity:low + agent-ready surfaces (GH#148)" {
+  # Acceptance: a human-flagged severity:low issue is included in the queue
+  # via the third agent-ready query. Without the opt-in this issue would be
+  # invisible (the predicate never queries severity:low).
+  local repo
+  repo=$(make_repo)
+  local high="$BATS_TEST_TMPDIR/empty-high.json"
+  local med="$BATS_TEST_TMPDIR/empty-med.json"
+  local agent="$BATS_TEST_TMPDIR/agent-low.json"
+  echo '[]' > "$high"
+  echo '[]' > "$med"
+  echo '[{"number":700,"assignees":[],"labels":[{"name":"severity:low"},{"name":"agent-ready"}]}]' > "$agent"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med" "$agent")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "700" ]
+}
+
+@test "eligibility_dev_candidates: severity:low without opt-in stays invisible (GH#148)" {
+  # Acceptance: severity:low alone (no opt-in) is NOT surfaced. The predicate
+  # never queries --label severity:low, so an issue tagged only severity:low
+  # never appears in any of the three result sets — output is empty, exit 1.
+  local repo
+  repo=$(make_repo)
+  local high="$BATS_TEST_TMPDIR/empty-h2.json"
+  local med="$BATS_TEST_TMPDIR/empty-m2.json"
+  local agent="$BATS_TEST_TMPDIR/empty-a2.json"
+  echo '[]' > "$high"
+  echo '[]' > "$med"
+  echo '[]' > "$agent"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med" "$agent")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "eligibility_dev_candidates: severity:high + agent-ready dedupes to one (GH#148)" {
+  # Acceptance: an issue tagged BOTH severity:high and agent-ready surfaces in
+  # both the severity:high and agent-ready query results, but `sort -un`
+  # collapses to a single entry. Critical for any roll-out that opts existing
+  # high-severity issues into the queue without doubling their dispatch.
+  local repo
+  repo=$(make_repo)
+  local high="$BATS_TEST_TMPDIR/dup-high.json"
+  local med="$BATS_TEST_TMPDIR/dup-med.json"
+  local agent="$BATS_TEST_TMPDIR/dup-agent.json"
+  echo '[{"number":702,"assignees":[],"labels":[{"name":"severity:high"},{"name":"agent-ready"}]}]' > "$high"
+  echo '[]' > "$med"
+  echo '[{"number":702,"assignees":[],"labels":[{"name":"severity:high"},{"name":"agent-ready"}]}]' > "$agent"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med" "$agent")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "702" ]
+}
+
+@test "eligibility_dev_candidates: agent-ready alone (no severity) surfaces (GH#148)" {
+  # Acceptance: agent-ready works as a standalone signal. A no-severity issue
+  # carrying only the opt-in label is still picked up — the label is the
+  # orthogonal "include in queue" signal, not a severity-modifier.
+  local repo
+  repo=$(make_repo)
+  local high="$BATS_TEST_TMPDIR/none-high.json"
+  local med="$BATS_TEST_TMPDIR/none-med.json"
+  local agent="$BATS_TEST_TMPDIR/only-agent.json"
+  echo '[]' > "$high"
+  echo '[]' > "$med"
+  echo '[{"number":704,"assignees":[],"labels":[{"name":"agent-ready"}]}]' > "$agent"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med" "$agent")
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    run env PATH="$tmpbin:$PATH" \
+    bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | tr '\n' ' ')" = "704" ]
+}
+
+@test "eligibility_dev_candidates: blocked:human still wins over agent-ready (GH#148)" {
+  # Acceptance: the safety-net BLOCKED_HUMAN_LABEL filter retains precedence
+  # over the opt-in. Without this guarantee, a human flipping a blocked issue
+  # to agent-ready would silently re-eligibility it — but blocked:human means
+  # "do not work on this regardless," and that signal must dominate.
+  local repo
+  repo=$(make_repo)
+  local high="$BATS_TEST_TMPDIR/blk-high.json"
+  local med="$BATS_TEST_TMPDIR/blk-med.json"
+  local agent="$BATS_TEST_TMPDIR/blk-agent.json"
+  echo '[]' > "$high"
+  echo '[]' > "$med"
+  echo '[{"number":703,"assignees":[],"labels":[{"name":"severity:low"},{"name":"agent-ready"},{"name":"blocked:human"}]}]' > "$agent"
+  local tmpbin
+  tmpbin=$(_make_gh_dev_stub "$high" "$med" "$agent")
   REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
     run env PATH="$tmpbin:$PATH" \
     bash "$LOOP_ROOT/runners/lib/eligibility.sh" dev-candidates
