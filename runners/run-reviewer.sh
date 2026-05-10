@@ -247,6 +247,7 @@ fi
 # invocation has no orchestrator layer — instead, a successfully-completed
 # review prints `[reviewer-agent] result=...` per templates/reviewer.md, so
 # the absence of that marker after exit 0 is the equivalent failure signal.
+VERDICT_DRIFT_DETECTED=0
 if [ "$LLM_EXIT" -eq 0 ]; then
   HAS_RESULT_LINE=0
   for src in "$LOG" "$RAW"; do
@@ -302,9 +303,63 @@ if [ "$LLM_EXIT" -eq 0 ]; then
         --body "🤖 [reviewer-agent: blocked] Sub-agent run failed before posting a review (likely context exhaustion or API failure). The reviewer dispatcher will not re-fire on this head SHA. Please push a new commit or request a fresh review." \
         >/dev/null 2>&1 || true
     fi
+  else
+    # GH#128: verdict-drift detection. The LLM emitted a result line (so it
+    # thinks it succeeded) and the stub-fallback path didn't fire — but the
+    # actual review body posted on the PR may carry an off-spec marker (one
+    # observed in the wild: `[reviewer-agent: commented]` instead of the
+    # canonical `comment`). Downstream consumers of
+    # REVIEWER_AGENT_VERDICT_REGEX (the eligibility predicate's
+    # "review covers head" half, dev-agent follow-up mode, future merger
+    # scripts) match the regex literally — an off-spec token slips through
+    # silently and the dispatcher re-fires forever. Validate the actual
+    # review body against the canonical regex and exit non-zero on drift so
+    # the orchestrator's existing backoff / GH#94 cap escalation can take
+    # over. Out-of-scope per GH#128: forcing a retry from inside the wrapper.
+    PR_DRIFT_DATA=$(
+      PAGER=cat GIT_PAGER=cat gh pr view "$TARGET_PR" \
+        --repo "$REPO_SLUG" \
+        --json reviews,headRefOid 2>/dev/null
+    ) || PR_DRIFT_DATA=""
+
+    if [ -n "$PR_DRIFT_DATA" ]; then
+      # Pick the most recent reviewer-agent review on the CURRENT head SHA
+      # only. Scoping to head matches the eligibility predicate's "review
+      # covers head" semantic — a stale review on an older SHA is irrelevant
+      # and shouldn't drive a drift verdict on this run. Filter on the
+      # `🤖 Reviewer agent` body prefix to ignore the wrapper's own
+      # `🤖 [reviewer-agent: blocked] Sub-agent run failed...` stub bodies
+      # (they intentionally use a different prefix).
+      DRIFT_VERDICT=$(
+        printf '%s' "$PR_DRIFT_DATA" | jq -r \
+          --arg re "$REVIEWER_AGENT_VERDICT_REGEX" \
+          --arg prefix "$REVIEWER_AGENT_COMMENT_PREFIX" '
+          (.headRefOid // "") as $head
+          | (.reviews // []
+             | map(select(((.body // "") | startswith($prefix))
+                          and ((.commit.oid // "") == $head)))
+             | sort_by(.submittedAt) | reverse | .[0]) as $latest
+          | if $latest == null then "no-agent-review-at-head"
+            elif (($latest.body // "") | test($re)) then "canonical"
+            else "drift"
+            end
+        ' 2>/dev/null
+      ) || DRIFT_VERDICT=""
+
+      if [ "$DRIFT_VERDICT" = "drift" ]; then
+        echo "[wrapper] verdict-drift detected on PR #${TARGET_PR}: latest reviewer-agent review body does not match REVIEWER_AGENT_VERDICT_REGEX (canonical token set: clean|nits|comment|changes|blocked)" >&2
+        event_emit reviewer verdict_drift pr="$TARGET_PR"
+        VERDICT_DRIFT_DETECTED=1
+      fi
+    fi
+    unset PR_DRIFT_DATA DRIFT_VERDICT
   fi
 fi
 
 unset PR_DATA ELIG_DECISION
+
+if [ "$VERDICT_DRIFT_DETECTED" -eq 1 ]; then
+  exit 1
+fi
 
 exit "$LLM_EXIT"
