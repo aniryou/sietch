@@ -144,6 +144,18 @@ cleanup() {
   echo "[wrapper] raw json: $RAW" >&2
   exit "$exit_code"
 }
+# Signal-forwarding helpers (pipeline_capture_pgid, pipeline_kill_pgroup_if_alive).
+# MUST be sourced BEFORE `trap cleanup EXIT INT TERM` below (GH#160). The
+# reviewer wrapper has no explicit early exits between the trap and the
+# (former) source line, but a SIGINT/SIGTERM arriving in the ~10-line gap
+# (jq_filter source, source itself) would fire the cleanup trap and call
+# pipeline_kill_pgroup_if_alive — undefined yet — printing
+# `command not found` to stderr. The helper has no side effects (only
+# function definitions plus the canonical preamble already enabled above),
+# so the early source is safe. See the lib file for why foreground
+# pipelines hang on `kill <pid>`.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
 trap cleanup EXIT INT TERM
 
 # jq filter: same stream-json → human-readable filter as run-developer.sh,
@@ -151,11 +163,6 @@ trap cleanup EXIT INT TERM
 # ANSI colors. Honors NO_COLOR.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
-
-# Signal-forwarding helpers — see runners/lib/pipeline_signal.sh for the
-# full explanation of why foreground pipelines hang on `kill <pid>`.
-# shellcheck disable=SC1091
-. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
 
 cd "$REPO" || exit 1
 

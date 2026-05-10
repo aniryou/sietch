@@ -255,6 +255,20 @@ cleanup() {
   echo "[wrapper] raw json: $RAW" >&2
   exit "$exit_code"
 }
+# Signal-forwarding helpers (pipeline_capture_pgid, pipeline_kill_pgroup_if_alive).
+# MUST be sourced BEFORE `trap cleanup EXIT INT TERM` below (GH#160). Otherwise
+# any of the early `exit` paths between the trap and the (former) source line
+# (no-work, predicate-failed, lock-race-loss, triage-no-conflict,
+# triage-untractable, triage-failed) fires the trap, which calls
+# pipeline_kill_pgroup_if_alive — undefined yet — and bash prints
+# `pipeline_kill_pgroup_if_alive: command not found` to stderr on every such
+# cycle. The helper file has no side effects (only function definitions, plus
+# the canonical `set -u`/`set -o pipefail`/unalias preamble — already enabled
+# at the top of this script), so the early source is safe. See the lib file
+# for the full rationale on why foreground pipelines defer the trap.
+# shellcheck disable=SC1091
+. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
+
 # Install the trap BEFORE the lock-acquisition mkdir below, so a SIGINT/SIGTERM
 # arriving in the gap between mkdir and the (former) trap-registration line
 # still releases our lock. Pre-fix the gap was ~135 lines of wrapper setup
@@ -436,14 +450,6 @@ fi
 # emit identical event tags and ANSI colors. Honors NO_COLOR.
 # shellcheck disable=SC1091
 . "$LOOP_HOME/runners/lib/jq_filter.sh"
-
-# Signal-forwarding helpers (pipeline_capture_pgid, pipeline_kill_pgroup_if_alive).
-# See the lib file for the full rationale; in short: the bash `wait` builtin is
-# signal-interruptible, but only when the pipeline is asynchronous. Foreground
-# pipelines defer the trap. So we background the pipeline below and forward
-# signals here.
-# shellcheck disable=SC1091
-. "$LOOP_HOME/runners/lib/pipeline_signal.sh"
 
 cd "$REPO" || exit 1
 

@@ -235,3 +235,136 @@ EOSH
 @test "run-reviewer.sh: trap registers EXIT, INT, and TERM" {
   grep -qE '^trap cleanup EXIT INT TERM' "$LOOP_ROOT/runners/run-reviewer.sh"
 }
+
+# ---------------------------------------------------------------------------
+# Trap/source ordering (GH#160) — pipeline_signal.sh MUST be sourced BEFORE
+# `trap cleanup EXIT INT TERM` is installed. Otherwise any early-exit path
+# (no-work, predicate-failed, lock-race-loss, triage-no-conflict,
+# triage-untractable, triage-failed) fires the cleanup trap, which calls
+# pipeline_kill_pgroup_if_alive — undefined yet, because the helper is
+# sourced ~180 lines later — and bash prints
+# `pipeline_kill_pgroup_if_alive: command not found` to stderr on every
+# such cycle. Functionally a no-op (PIPELINE_PGID is empty pre-pipeline
+# and `set -e` is off so the rest of cleanup runs), but the spurious
+# error contaminates wrapper logs that operators tail under empty queues.
+# ---------------------------------------------------------------------------
+
+@test "run-developer.sh: pipeline_signal.sh sourced BEFORE trap (GH#160)" {
+  local sh="$LOOP_ROOT/runners/run-developer.sh"
+  local source_line trap_line
+  source_line=$(grep -nF 'pipeline_signal.sh' "$sh" | head -1 | cut -d: -f1)
+  trap_line=$(grep -nE '^trap cleanup EXIT INT TERM' "$sh" | head -1 | cut -d: -f1)
+  [ -n "$source_line" ]
+  [ -n "$trap_line" ]
+  [ "$source_line" -lt "$trap_line" ] \
+    || { echo "pipeline_signal.sh source ($source_line) must precede trap registration ($trap_line)" >&2; false; }
+}
+
+@test "run-reviewer.sh: pipeline_signal.sh sourced BEFORE trap (GH#160)" {
+  local sh="$LOOP_ROOT/runners/run-reviewer.sh"
+  local source_line trap_line
+  source_line=$(grep -nF 'pipeline_signal.sh' "$sh" | head -1 | cut -d: -f1)
+  trap_line=$(grep -nE '^trap cleanup EXIT INT TERM' "$sh" | head -1 | cut -d: -f1)
+  [ -n "$source_line" ]
+  [ -n "$trap_line" ]
+  [ "$source_line" -lt "$trap_line" ] \
+    || { echo "pipeline_signal.sh source ($source_line) must precede trap registration ($trap_line)" >&2; false; }
+}
+
+# Behavioral coverage: invoke the wrappers on early-exit paths and assert
+# stderr is free of "command not found". Pre-fix these reproduced reliably;
+# post-fix they remain a regression guard.
+
+# Mode 1 no-work: empty issue lists → eligibility rc=1 → wrapper exit 2.
+@test "run-developer.sh: Mode 1 no-work exit emits no 'command not found' (GH#160)" {
+  local repo bin work state
+  repo="$BATS_TEST_TMPDIR/repo"
+  bin="$BATS_TEST_TMPDIR/bin"
+  work="$BATS_TEST_TMPDIR/work"
+  state="$BATS_TEST_TMPDIR/state"
+  mkdir -p "$repo/.loop" "$bin" "$work" "$state"
+  awk -v wb="$work" '
+    /^REPO_OWNER=/   { print "REPO_OWNER=\"test-owner\""; next }
+    /^REPO_NAME=/    { print "REPO_NAME=\"test-repo\""; next }
+    /^WORKTREE_BASE=/ { print "WORKTREE_BASE=\"" wb "\""; next }
+    /^LOCK_DIR=/     { print "LOCK_DIR=\"" wb "/locks\""; next }
+    { print }
+  ' "$LOOP_ROOT/templates/loop.config.example" >"$repo/.loop/loop.config"
+  git -C "$repo" init -q -b main
+  git -C "$repo" -c user.email=t@t -c user.name=t commit --allow-empty -q -m init
+
+  cat >"$bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo '[]'
+exit 0
+STUB
+  chmod +x "$bin/gh"
+  cat >"$bin/claude" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$bin/claude"
+
+  REPO_ROOT="$repo" LOOP_HOME="$LOOP_ROOT" \
+    PATH="$bin:$PATH" KEEP_ON_FAIL=0 \
+    bash "$LOOP_ROOT/runners/run-developer.sh" \
+    >"$state/wrapper.out" 2>"$state/wrapper.err" || true
+
+  ! grep -qF 'command not found' "$state/wrapper.err" \
+    || { echo "stderr contained 'command not found':" >&2; cat "$state/wrapper.err" >&2; false; }
+  ! grep -qF 'pipeline_kill_pgroup_if_alive' "$state/wrapper.err" \
+    || { echo "stderr referenced helper by name (likely not-found error):" >&2; cat "$state/wrapper.err" >&2; false; }
+}
+
+# Mode 3 triage rc=0 reason=no-conflict: the wrapper short-circuits on a
+# healthy PR (no LLM, no draft) — but the cleanup trap still fires on exit
+# and previously hit the undefined helper.
+@test "run-developer.sh: Mode 3 triage-no-conflict exit emits no 'command not found' (GH#160)" {
+  local repo fake bin state
+  repo=$(make_repo)
+  bin="$BATS_TEST_TMPDIR/bin"
+  state="$BATS_TEST_TMPDIR/state"
+  mkdir -p "$bin" "$state"
+
+  fake="$BATS_TEST_TMPDIR/loop-home"
+  rm -rf "$fake"
+  mkdir -p "$fake/runners/lib" "$fake/templates"
+  for f in "$LOOP_ROOT"/runners/*.sh; do
+    [ -f "$f" ] || continue
+    ln -sf "$f" "$fake/runners/$(basename "$f")"
+  done
+  for f in "$LOOP_ROOT"/runners/lib/*; do
+    [ -e "$f" ] || continue
+    ln -sf "$f" "$fake/runners/lib/$(basename "$f")"
+  done
+  for f in "$LOOP_ROOT"/templates/*; do
+    [ -e "$f" ] || continue
+    ln -sf "$f" "$fake/templates/$(basename "$f")"
+  done
+  rm -f "$fake/runners/run-conflict-triage.sh"
+  cat >"$fake/runners/run-conflict-triage.sh" <<'TRG'
+#!/usr/bin/env bash
+echo '[triage] result=tractable reason=no-conflict issue=#7 conflict_files= conflict_lines=0'
+exit 0
+TRG
+  chmod +x "$fake/runners/run-conflict-triage.sh"
+
+  cat >"$bin/claude" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$bin/claude"
+  cat >"$bin/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$bin/gh"
+
+  REPO_ROOT="$repo" LOOP_HOME="$fake" KEEP_ON_FAIL=0 \
+    PATH="$bin:$PATH" \
+    bash "$LOOP_ROOT/runners/run-developer.sh" resolve-conflicts 7 \
+    >"$state/wrapper.out" 2>"$state/wrapper.err" || true
+
+  ! grep -qF 'command not found' "$state/wrapper.err" \
+    || { echo "stderr contained 'command not found':" >&2; cat "$state/wrapper.err" >&2; false; }
+}
