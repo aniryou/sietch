@@ -12,6 +12,10 @@ on:
 
 # Single source of truth for the shell files we lint.
 # Keep in sync with the local commands documented in CONTRIBUTING / issue #21.
+# IMPORTANT: also kept in sync with the `files:` regex in
+# .pre-commit-config.yaml (both shellcheck and shfmt hooks). Editing this
+# list without updating .pre-commit-config.yaml will drift CI from local —
+# see GH#167.
 env:
   SHELL_FILES: >-
     install.sh

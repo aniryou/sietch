@@ -1,0 +1,32 @@
+# Mirrors the CI lint steps in .github/workflows/ci.yml. See GH#167.
+#
+# CRITICAL: the `files:` regex in each hook below MUST stay in sync with the
+# SHELL_FILES env var in .github/workflows/ci.yml:11-29 — they are the
+# canonical list of shell scripts we lint. Editing one without the other
+# will drift CI from local; both files carry a cross-reference comment.
+#
+# Tool versions are pinned to match .github/workflows/ci.yml:43-50:
+#   shellcheck v0.11.0
+#   shfmt      v3.13.1 (with flags `-i 2 -ci -bn`, matching SHFMT_FLAGS)
+# install.sh wires `pre-commit install` into the local hook, but you must
+# install matching tool versions yourself (e.g. `brew install shellcheck shfmt`).
+# CI remains the source of truth for the lint contract; this file is a local
+# fast-feedback layer.
+
+repos:
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck (v0.11.0 — keep in sync with ci.yml)
+        language: system
+        entry: shellcheck
+        require_serial: true
+        # Keep in sync with SHELL_FILES in .github/workflows/ci.yml:11-29.
+        files: ^(install\.sh|bin/st|runners/run-conflict-triage\.sh|runners/run-developer\.sh|runners/run-issue-author\.sh|runners/run-loop\.sh|runners/run-reviewer\.sh|runners/lib/_preamble\.sh|runners/lib/dispatcher\.sh|runners/lib/eligibility\.sh|runners/lib/event_log\.sh|runners/lib/gh_helpers\.sh|runners/lib/jitter\.sh|runners/lib/jq_filter\.sh|runners/lib/onboard\.sh|runners/lib/pipeline_signal\.sh|runners/lib/render-prompt\.sh|tests/helpers\.bash)$
+      - id: shfmt
+        name: shfmt -d -i 2 -ci -bn (v3.13.1 — keep in sync with ci.yml)
+        language: system
+        entry: shfmt -d -i 2 -ci -bn
+        require_serial: true
+        # Keep in sync with SHELL_FILES in .github/workflows/ci.yml:11-29.
+        files: ^(install\.sh|bin/st|runners/run-conflict-triage\.sh|runners/run-developer\.sh|runners/run-issue-author\.sh|runners/run-loop\.sh|runners/run-reviewer\.sh|runners/lib/_preamble\.sh|runners/lib/dispatcher\.sh|runners/lib/eligibility\.sh|runners/lib/event_log\.sh|runners/lib/gh_helpers\.sh|runners/lib/jitter\.sh|runners/lib/jq_filter\.sh|runners/lib/onboard\.sh|runners/lib/pipeline_signal\.sh|runners/lib/render-prompt\.sh|tests/helpers\.bash)$
