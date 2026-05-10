@@ -200,16 +200,13 @@ _run_wrapper() {
 @test "rename: no production file still says REVIEWER_BASH_CALL_BUDGET" {
   # The whole point of the rename is to stop the prompt and the variable
   # name from disagreeing. If anything in production paths still uses the
-  # old name, the rename didn't land. Excludes tests/, which legitimately
+  # old name, the rename didn't land. Excludes tests/ (which legitimately
   # references the old name in historical-context comments and in negation
-  # assertions like `! grep ... 'REVIEWER_BASH_CALL_BUDGET'`. Also excludes
-  # .beads/, which stores issue records (the JSONL log of all bd issues)
-  # that legitimately quote pre-rename variable names — same historical-
-  # context rationale as the tests/ exclusion. (GH#147 follow-up: commit
-  # 18f800b regenerated .beads/issues.jsonl with such quoted text and
-  # broke this test on main without changing any production path.)
-  ! grep -rqF --exclude-dir=tests --exclude-dir=.beads \
-    'REVIEWER_BASH_CALL_BUDGET' "$LOOP_ROOT"
+  # assertions like `! grep ... 'REVIEWER_BASH_CALL_BUDGET'`) and .beads/
+  # (the issue tracker can carry past-tense narrative text mentioning the
+  # renamed identifier in memory records — that's not a production code
+  # path, so a hit there is a false positive, GH#148).
+  ! grep -rqF --exclude-dir=tests --exclude-dir=.beads 'REVIEWER_BASH_CALL_BUDGET' "$LOOP_ROOT"
 }
 
 @test "run-reviewer.sh: counter wiring is present (jq tool_use count + bash_overshoot event_emit)" {
