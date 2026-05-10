@@ -43,3 +43,49 @@ load 'lib/template_rules'
 @test "[GH#71: no conclusion field on gh pr checks — developer.md]" {
   run_rule_registry_check "GH#71: no conclusion field on gh pr checks — developer.md"
 }
+
+# GH#80: trim redundant `--repo` and `cd "$WORKTREE"` prefixes.
+@test "[GH#80: --repo rule call-out present — developer.md]" {
+  run_rule_registry_check "GH#80: --repo rule call-out present — developer.md"
+}
+@test "[GH#80: no in-template gh examples pass --repo — developer.md]" {
+  run_rule_registry_check "GH#80: no in-template gh examples pass --repo — developer.md"
+}
+@test "[GH#80: cd \"\$WORKTREE\" lines capped at 3 (one per worktree creation) — developer.md]" {
+  run_rule_registry_check "GH#80: cd \"\$WORKTREE\" lines capped at 3 (one per worktree creation) — developer.md"
+}
+
+# GH#47: plain-English/TL;DR contract for user-facing templates.
+@test "[GH#47: ## TL;DR section present — issue-author.md]" {
+  run_rule_registry_check "GH#47: ## TL;DR section present — issue-author.md"
+}
+@test "[GH#47: title-style rule (70-char + plain-English) — issue-author.md]" {
+  run_rule_registry_check "GH#47: title-style rule (70-char + plain-English) — issue-author.md"
+}
+@test "[GH#47: title warns against opaque acronyms — issue-author.md]" {
+  run_rule_registry_check "GH#47: title warns against opaque acronyms — issue-author.md"
+}
+@test "[GH#47: draft preview surfaces the title for plain-English review — issue-author.md]" {
+  run_rule_registry_check "GH#47: draft preview surfaces the title for plain-English review — issue-author.md"
+}
+@test "[GH#47: Title and TL;DR examples section present — issue-author.md]" {
+  run_rule_registry_check "GH#47: Title and TL;DR examples section present — issue-author.md"
+}
+@test "[GH#47: ## TL;DR section present in PR body — developer.md]" {
+  run_rule_registry_check "GH#47: ## TL;DR section present in PR body — developer.md"
+}
+@test "[GH#47: ## Changes section present in PR body — developer.md]" {
+  run_rule_registry_check "GH#47: ## Changes section present in PR body — developer.md"
+}
+@test "[GH#47: PR body no longer leads with ## Summary — developer.md]" {
+  run_rule_registry_check "GH#47: PR body no longer leads with ## Summary — developer.md"
+}
+@test "[GH#47: PR title still uses the Fix GH# prefix — developer.md]" {
+  run_rule_registry_check "GH#47: PR title still uses the Fix GH# prefix — developer.md"
+}
+@test "[GH#47: PR title plain-English rules (70-char + plain-English) — developer.md]" {
+  run_rule_registry_check "GH#47: PR title plain-English rules (70-char + plain-English) — developer.md"
+}
+@test "[GH#47: ## Test plan heading anchors Step 7a CI flip — developer.md]" {
+  run_rule_registry_check "GH#47: ## Test plan heading anchors Step 7a CI flip — developer.md"
+}

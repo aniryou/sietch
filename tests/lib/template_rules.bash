@@ -8,9 +8,12 @@
 # is a one-line dispatcher kept in sync by name).
 #
 # Rule kinds:
-#   require   — pattern must appear at least once in the named template.
-#   forbid    — pattern must not appear in the named template.
-#   count_max — pattern may appear at most $count_max times in the template.
+#   require     — pattern must appear at least once in the named template.
+#   forbid      — pattern must not appear in the named template.
+#   count_max   — pattern may appear at most $count_max times in the template.
+#   require_all — every tab-separated pattern must appear (independently)
+#                 at least once. Used for compound checks where two distinct
+#                 substrings must both be present somewhere in the file.
 
 TEMPLATE_RULE_NAMES=()
 TEMPLATE_RULE_FILES=()
@@ -57,6 +60,45 @@ rule "GH#71: gh pr checks --json state,bucket — developer.md" \
 rule "GH#71: no conclusion field on gh pr checks — developer.md" \
      "developer.md" forbid  'gh pr checks[^`]*--json state,conclusion'
 
+# GH#80: cut redundant `--repo …` and `cd "$WORKTREE"` prefixes from
+# dev-agent commands. The wrapper exports GH_REPO so `gh` reads it natively,
+# and the Claude Code Bash tool persists CWD across calls. Section-scoped
+# narrative checks (Mode 1 Step 1 mentions inheritance) live in
+# tests/test_dev_developer_wrapper_env.bats; the file-wide regex rules are
+# pinned here.
+rule "GH#80: --repo rule call-out present — developer.md" \
+     "developer.md" require '--repo'
+rule "GH#80: no in-template gh examples pass --repo — developer.md" \
+     "developer.md" forbid  'gh[[:space:]]+[a-z]+[^|]*--repo'
+rule "GH#80: cd \"\$WORKTREE\" lines capped at 3 (one per worktree creation) — developer.md" \
+     "developer.md" count_max '^[[:space:]]*cd[[:space:]]+"\$WORKTREE"[[:space:]]*$' 3
+
+# GH#47: plain-English/TL;DR contract for user-facing templates. Section
+# ordering (TL;DR before Problem/Changes) lives in
+# tests/test_templates_section_ordering.bats since that's not a regex match.
+rule "GH#47: ## TL;DR section present — issue-author.md" \
+     "issue-author.md" require '^## TL;DR$'
+rule "GH#47: title-style rule (70-char + plain-English) — issue-author.md" \
+     "issue-author.md" require_all $'70 ?char\t[Pp]lain[ -][Ee]nglish'
+rule "GH#47: title warns against opaque acronyms — issue-author.md" \
+     "issue-author.md" require '[Aa]cronym|[Jj]argon|[Ii]nsider'
+rule "GH#47: draft preview surfaces the title for plain-English review — issue-author.md" \
+     "issue-author.md" require '[Tt]itle.*([Pp]lain|[Rr]eads|[Rr]eview)'
+rule "GH#47: Title and TL;DR examples section present — issue-author.md" \
+     "issue-author.md" require 'Title and TL;DR examples|Title.*TL;DR'
+rule "GH#47: ## TL;DR section present in PR body — developer.md" \
+     "developer.md" require '^## TL;DR$'
+rule "GH#47: ## Changes section present in PR body — developer.md" \
+     "developer.md" require '^## Changes$'
+rule "GH#47: PR body no longer leads with ## Summary — developer.md" \
+     "developer.md" forbid '^## Summary$'
+rule "GH#47: PR title still uses the Fix GH# prefix — developer.md" \
+     "developer.md" require 'Fix GH#'
+rule "GH#47: PR title plain-English rules (70-char + plain-English) — developer.md" \
+     "developer.md" require_all $'70 ?char\t[Pp]lain[ -][Ee]nglish'
+rule "GH#47: ## Test plan heading anchors Step 7a CI flip — developer.md" \
+     "developer.md" require '^## Test plan$'
+
 # --- Helpers ----------------------------------------------------------------
 
 template_rule_index() {
@@ -89,14 +131,16 @@ run_rule_registry_check() {
 
   case "$kind" in
     require)
-      if ! grep -qE "$pattern" "$tpl"; then
+      # `grep -- "$pattern"` so patterns starting with `--` (e.g. literal
+      # `--repo`) aren't mis-parsed as flags.
+      if ! grep -qE -- "$pattern" "$tpl"; then
         echo "[$name]: required pattern not found in templates/$file" >&2
         echo "  pattern: $pattern" >&2
         return 1
       fi
       ;;
     forbid)
-      if grep -qE "$pattern" "$tpl"; then
+      if grep -qE -- "$pattern" "$tpl"; then
         echo "[$name]: forbidden pattern found in templates/$file" >&2
         echo "  pattern: $pattern" >&2
         return 1
@@ -108,15 +152,27 @@ run_rule_registry_check() {
         return 1
       fi
       local count
-      count=$(grep -cE "$pattern" "$tpl" 2>/dev/null || true)
+      count=$(grep -cE -- "$pattern" "$tpl" 2>/dev/null || true)
       if [ "$count" -gt "$count_max" ]; then
         echo "[$name]: pattern count $count exceeds max $count_max in templates/$file" >&2
         echo "  pattern: $pattern" >&2
         return 1
       fi
       ;;
+    require_all)
+      # Tab-separated patterns; every one must match independently.
+      local p IFS=$'\t'
+      for p in $pattern; do
+        [ -n "$p" ] || continue
+        if ! grep -qE -- "$p" "$tpl"; then
+          echo "[$name]: required pattern not found in templates/$file" >&2
+          echo "  pattern: $p" >&2
+          return 1
+        fi
+      done
+      ;;
     *)
-      echo "[$name]: unknown rule kind '$kind' (expected: require|forbid|count_max)" >&2
+      echo "[$name]: unknown rule kind '$kind' (expected: require|forbid|count_max|require_all)" >&2
       return 1
       ;;
   esac
