@@ -2,10 +2,11 @@
 # Registry of template-rule guards.
 #
 # Each rule pins a regex that must (or must not) appear in an agent template
-# file. New rules are added by appending one `rule ...` line below; the
-# corresponding @test wrapper lives in tests/test_template_rule_registry.bats
-# (bats 1.x doesn't support runtime-dynamic @test generation, so the wrapper
-# is a one-line dispatcher kept in sync by name).
+# file. Adding a new rule is one line: append a `rule …` entry below, then
+# run tests/lib/gen_template_rule_tests.sh to regenerate
+# tests/test_template_rule_registry.bats (the bats-discoverable surface).
+# CI fails via tests/test_template_rule_registry_sync.bats if the generated
+# file drifts from this registry, so forgetting to regenerate is loud.
 #
 # Rule kinds:
 #   require     — pattern must appear at least once in the named template.
