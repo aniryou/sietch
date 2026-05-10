@@ -106,70 +106,27 @@
 # wrapper-driven path bypasses that filter — fixing it here closes the gap.
 # ---------------------------------------------------------------------------
 eligibility_dev_count() {
-  # Use the REST list endpoint (--label) instead of --search: the search index
-  # silently drops freshly-created issues (minutes of lag) and issues hidden by
-  # GitHub's automated content filter (e.g. duplicate titles, code-dense bodies
-  # on new repos). REST list reflects current state immediately.
-  local label raw nums_all nums n filtered pr_json open_pr_issues
-  nums_all=""
-  # GH#148: AGENT_PICKUP_LABEL is unioned with the severity queries so a
-  # human-flagged severity:low (or no-severity) issue surfaces without
-  # bumping severity. Dedupe is handled by `sort -u` below — an issue tagged
-  # both severity:high and AGENT_PICKUP_LABEL counts once.
-  for label in "$SEVERITY_LABEL_HIGH" "$SEVERITY_LABEL_MEDIUM" "$AGENT_PICKUP_LABEL"; do
-    if ! raw=$(
-      PAGER=cat GIT_PAGER=cat gh issue list \
-        --repo "$REPO_SLUG" --state open \
-        --label "$label" \
-        --json number,assignees,labels \
-        --limit 50 2>/dev/null \
-        | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
-            .[]
-            | select(.assignees == [])
-            | select((.labels // [] | map(.name)) | index($blocked) | not)
-            | .number
-          ' 2>/dev/null
-    ); then
-      echo "?"
-      return 2
-    fi
-    nums_all+="${raw}"$'\n'
-  done
-  nums=$(printf '%s' "$nums_all" | sort -u | grep . || true)
-
-  # GH#65: build the set of issue numbers that already have an open dev-agent
-  # PR. Skip the network call when there are no candidates to filter.
-  open_pr_issues=""
-  if [ -n "$nums" ]; then
-    if ! pr_json=$(
-      PAGER=cat GIT_PAGER=cat gh pr list \
-        --repo "$REPO_SLUG" --state open \
-        --json number,headRefName \
-        --limit 100 2>/dev/null
-    ); then
-      echo "?"
-      return 2
-    fi
-    open_pr_issues=$(
-      printf '%s' "$pr_json" \
-        | jq -r --arg prefix "$BRANCH_PREFIX" '
-            .[] | (.headRefName // "")
-                | select(test("^" + $prefix + "/gh-[0-9]+-"))
-                | match("^" + $prefix + "/gh-([0-9]+)-").captures[0].string
-          ' 2>/dev/null
-    )
+  # GH#129: thin shim over eligibility_dev_candidates so the filter set has
+  # exactly one source of truth. Pre-GH#129 this function duplicated the same
+  # gh issue list + gh pr list + jq pipeline as eligibility_dev_candidates,
+  # and the wrapper called both predicates per cycle — 8 gh API calls per
+  # productive Mode 1 cycle where 4 would do. The CLI `dev` subcommand stays
+  # for backwards compatibility with the in-prompt fast eligibility gate
+  # (templates/developer.md) and direct `bash eligibility.sh dev` invocations.
+  local lines rc count
+  lines=$(eligibility_dev_candidates)
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "?"
+    return 2
   fi
-
-  filtered=0
-  for n in $nums; do
-    [ -d "${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock" ] && continue
-    if [ -n "$open_pr_issues" ] && printf '%s\n' "$open_pr_issues" | grep -qx "$n"; then
-      continue
-    fi
-    filtered=$((filtered + 1))
-  done
-  echo "$filtered"
-  [ "$filtered" -gt 0 ]
+  if [ -z "$lines" ]; then
+    count=0
+  else
+    count=$(printf '%s\n' "$lines" | grep -c .)
+  fi
+  echo "$count"
+  [ "$count" -gt 0 ]
 }
 
 # ---------------------------------------------------------------------------
