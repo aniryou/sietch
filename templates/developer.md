@@ -86,7 +86,7 @@ The unset-env steps below are the fallback path for direct `claude -p` invocatio
    - Pick the lowest-numbered eligible issue across both severities — lower-numbered issues are usually filed earlier and tend to be foundational, so claiming them first keeps the queue in dependency order. Severity is no longer a tiebreaker.
    - Skip issues that already have an assignee (likely being worked on by another agent or a human).
    - Skip issues that already have a linked open PR (search PRs that mention `#<issue-number>`).
-   - Skip issues that have a beads memory tag `developer-agent:claimed:<issue#>` (see "Concurrency safety" below).
+   - Skip issues whose filesystem lock at `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-<issue#>.lock` already exists (see "Concurrency safety" below — the wrapper has already acquired the lock for the issue named in `DEV_AGENT_TARGET_ISSUE`, so this filter only matters in the unwrapped-fallback path).
 3. **If nothing matches**: print a single-line message ("No eligible ${SEVERITY_LABEL_HIGH}, ${SEVERITY_LABEL_MEDIUM}, or ${AGENT_PICKUP_LABEL} issues found.") and **exit cleanly**. Do not sleep, do not retry, do not re-poll.
 4. **If a match is found**: claim and work it (see "Per-issue workflow" below). When the workflow finishes (success OR give-up), **exit**. Do not pick another issue.
 

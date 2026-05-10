@@ -40,7 +40,7 @@ The audit (filed as GH#114) had three goals:
 | `templates/developer.md:42-49`, `templates/developer.md:806` | Severity filter — only `severity:high\|medium`; ignore `severity:low` and unlabeled | `eligibility_dev_count` (`for label in "$SEVERITY_LABEL_HIGH" "$SEVERITY_LABEL_MEDIUM"`), `eligibility_dev_candidates` (`raw_h` + `raw_m` blocks, one per severity label) | Mirrored | `gh issue list --label "$SEVERITY_LABEL_HIGH"` and `--label "$SEVERITY_LABEL_MEDIUM"` are the only queries; no-label issues never surface |
 | `templates/developer.md:83` | Skip issues with an existing assignee | `eligibility_dev_count` and `eligibility_dev_candidates` (`select(.assignees == [])` in each `gh issue list \| jq` pipeline) | Mirrored | `select(.assignees == [])` |
 | `templates/developer.md:84` | Skip issues that already have a linked open dev-agent PR | `eligibility_dev_count` and `eligibility_dev_candidates` (open-PR set built from `gh pr list … --json number,headRefName`, applied via `printf '%s\n' "$open_pr_issues" \| grep -qx "$n"`) | Mirrored | GH#65 — built the open-PR set keyed by `${BRANCH_PREFIX}/gh-N-…` head ref |
-| `templates/developer.md:85` | "Skip issues that have a beads memory tag `developer-agent:claimed:<issue#>`" | `eligibility_dev_count` and `eligibility_dev_candidates` (`[ -d "${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock" ] && continue`) | **Gap (stale prompt rule)** | Prompt refers to a beads-memory mechanism that does not exist. Actual concurrency primitive is the filesystem lock at `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock` — see "Concurrency safety" section starting at developer.md:91. Predicate skips on the lock, prompt should be reworded. **Filed as follow-up.** |
+| `templates/developer.md:85` | Skip issues whose filesystem lock at `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-<issue#>.lock` already exists | `eligibility_dev_count` and `eligibility_dev_candidates` (`[ -d "${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock" ] && continue`) | Mirrored | **Resolved by GH#135**: the bullet now points at the real filesystem-lock primitive (matching the predicate snippet), and `tests/lib/template_rules.bash` carries a `forbid` rule against the old phantom `beads memory tag` phrasing so future readers can't reintroduce it. The "Concurrency safety" section starting at developer.md:91 documents the same lock |
 | `templates/developer.md:830-851` (Safety Net) | Apply `${BLOCKED_HUMAN_LABEL}` to the GH issue when tripping a safety-net rule | `eligibility_dev_count` and `eligibility_dev_candidates` (`select((.labels // [] \| map(.name)) \| index($blocked) \| not)` in each severity pipeline) | Mirrored | GH#28 — predicate's blocked-label filter drops labelled issues |
 | `templates/developer.md:91-143` (Concurrency safety) | Filesystem lock — if `mkdir` succeeds, this agent owns the issue | `eligibility_dev_count` and `eligibility_dev_candidates` (`[ -d "${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock" ] && continue`) | Mirrored | Predicate is advisory; agent's atomic mkdir is the actual claim |
 
@@ -106,11 +106,13 @@ Each gap is filed as a separate follow-up GitHub issue:
   did not draft the PR. **Resolved by GH#134**: F2 give-up now runs
   `gh pr ready --undo`, and `eligibility_followup_pr` short-circuits on
   `isDraft == true` so drafted PRs skip dispatch next cycle.
-- **G4** (`templates/developer.md:85`) — stale prompt rule references
+- **G4** (`templates/developer.md:85`) — stale prompt rule referenced
   a "beads memory tag `developer-agent:claimed:<issue#>`" mechanism
   that does not exist. Actual concurrency primitive is the filesystem
-  lock at `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock`. Filed as
-  GH#135 (documentation cleanup).
+  lock at `${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock`. **Resolved by
+  GH#135**: the bullet now points at the real filesystem lock, and
+  `tests/lib/template_rules.bash` carries a `forbid` rule against the
+  phantom `beads memory tag` phrasing.
 
 ## How to keep this in sync
 

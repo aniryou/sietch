@@ -111,6 +111,15 @@ rule "GH#133: no body-tag OR fallback (sanity check) — reviewer.md" \
 rule "GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md" \
      "reviewer.md" forbid 'agent marker in the body'
 
+# GH#135: the dev-agent's actual concurrency primitive is the filesystem lock
+# at ${LOCK_DIR}/${LOCK_NAME_PREFIX}gh-${n}.lock. An older bullet referenced a
+# `developer-agent:claimed:<issue#>` beads-memory tag mechanism that has never
+# existed; future readers risked attempting a `bd memories` lookup that never
+# resolves. Forbid the phantom phrasing so the bullet stays anchored to the
+# real lock.
+rule "GH#135: no phantom 'beads memory tag' claim mechanism — developer.md" \
+     "developer.md" forbid 'beads memory tag .developer-agent:claimed'
+
 # --- Helpers ----------------------------------------------------------------
 
 template_rule_index() {
