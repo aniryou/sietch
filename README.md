@@ -95,6 +95,13 @@ git clone git@github.com:aniryou/loop.git ~/code/loop
 
 Make sure `~/.local/bin` is on your `$PATH`.
 
+`install.sh` also wires up a local pre-commit hook (shellcheck + shfmt,
+matching the CI lint steps) when [`pre-commit`](https://pre-commit.com)
+is on `$PATH` and no custom hook is already installed. If pre-commit is
+missing it skips with a one-line note — install it manually with
+`pip install pre-commit && pre-commit install` to enable lint checks at
+commit time.
+
 ## Onboard a repo
 
 ```bash
