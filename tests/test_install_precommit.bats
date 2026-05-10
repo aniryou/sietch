@@ -205,6 +205,8 @@ STUB
   cd "$REPO"
   run env LOOP_INSTALL_DIR="$LOOP_INSTALL_DIR" PATH="$STUB_PATH" bash install.sh
   [ "$status" -eq 0 ]
-  # No version-mismatch warning when both tools match.
-  ! echo "$output" | grep -qF '[install] WARN:'
+  # No version-mismatch warning when both tools match. Match only the
+  # tool-specific WARN prefix so the unrelated `LOOP_INSTALL_DIR not on
+  # $PATH` warning (which always fires in bats) doesn't trip the assertion.
+  ! echo "$output" | grep -qE '^\[install\] WARN: (shellcheck|shfmt) '
 }
