@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#120: ensure tests/test_template_rule_registry.bats is in sync with the
 # registry. The .bats file is generated from tests/lib/template_rules.bash
 # by tests/lib/gen_template_rule_tests.sh; this guard catches the case where

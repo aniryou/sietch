@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#83: Tell the dev-agent template to trust wrapper-set state and to cache
 # the PR body once during Step 7a, instead of re-echoing env vars / re-`ls`ing
 # the lock dir / re-fetching a PR body that hasn't changed.

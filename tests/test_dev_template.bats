@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # Mode-invariant tests for templates/developer.md.
 #
 # GH#59: Mode 1's worktree-creation block historically did not run

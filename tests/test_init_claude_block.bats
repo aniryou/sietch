@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # st init — writes a LOOP marker-block into the consumer repo's CLAUDE.md.
 #
 # Marker contract (mirrors bd's CLAUDE.md block):

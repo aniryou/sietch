@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# bats file_tags=regression
 # GH#32 — wrapper log paths must be unique per invocation, not just per second.
 #
 # Bug: `runners/run-developer.sh` and `runners/run-reviewer.sh` both compute
