@@ -35,6 +35,11 @@
     "description": "Improvements or additions to documentation"
   },
   {
+    "name": "agent-ready",
+    "color": "bfd4f2",
+    "description": "Opt-in: human flag to include this issue in the dev-agent queue regardless of severity"
+  },
+  {
     "name": "dev-failed:1",
     "color": "fef2c0",
     "description": "Mode 1 dev-agent has hard-failed once on this issue (wrapper-managed retry counter, GH#56)"

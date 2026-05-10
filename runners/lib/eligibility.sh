@@ -51,6 +51,13 @@
 # up the new safety-net skip marker.
 : "${BLOCKED_HUMAN_LABEL:=blocked:human}"
 
+# Default for older loop.config files predating GH#148. Same default-if-unset
+# pattern as BLOCKED_HUMAN_LABEL — opt-in label that lets a human flag a
+# specific issue (typically severity:low) for the dev-agent without inflating
+# its severity. Mirrors the BLOCKED_HUMAN_LABEL precedent in the positive
+# direction: that one excludes regardless of severity, this one includes.
+: "${AGENT_PICKUP_LABEL:=agent-ready}"
+
 # Default for older loop.config files predating GH#94. Same default-if-unset
 # pattern. Applied to PRs by run-reviewer.sh after
 # REVIEWER_SUB_AGENT_FAILURE_CAP consecutive sub-agent failures, and consumed
@@ -105,7 +112,11 @@ eligibility_dev_count() {
   # on new repos). REST list reflects current state immediately.
   local label raw nums_all nums n filtered pr_json open_pr_issues
   nums_all=""
-  for label in "$SEVERITY_LABEL_HIGH" "$SEVERITY_LABEL_MEDIUM"; do
+  # GH#148: AGENT_PICKUP_LABEL is unioned with the severity queries so a
+  # human-flagged severity:low (or no-severity) issue surfaces without
+  # bumping severity. Dedupe is handled by `sort -u` below — an issue tagged
+  # both severity:high and AGENT_PICKUP_LABEL counts once.
+  for label in "$SEVERITY_LABEL_HIGH" "$SEVERITY_LABEL_MEDIUM" "$AGENT_PICKUP_LABEL"; do
     if ! raw=$(
       PAGER=cat GIT_PAGER=cat gh issue list \
         --repo "$REPO_SLUG" --state open \
@@ -188,7 +199,7 @@ eligibility_dev_count() {
 #   exit:   0 = at least one candidate, 1 = none, 2 = gh/jq failure
 # ---------------------------------------------------------------------------
 eligibility_dev_candidates() {
-  local raw_h raw_m all filtered_lines n filtered_count pr_json open_pr_issues
+  local raw_h raw_m raw_a all filtered_lines n filtered_count pr_json open_pr_issues
   # Filter set must mirror eligibility_dev_count exactly: assignees == [],
   # no BLOCKED_HUMAN_LABEL (GH#28), AND no open dev-agent PR (GH#65). Without
   # any one of these, the wrapper happily mkdir-locks an ineligible issue and
@@ -227,11 +238,33 @@ eligibility_dev_candidates() {
     echo "?"
     return 2
   fi
-  # GH#113: strict id-ascending across both severities. `sort -un` dedupes
-  # numerically (an issue tagged both severities surfaces once, in its id
-  # slot) and orders by integer value. `grep .` strips blank lines so the
-  # iteration loop below doesn't burn a cycle on an empty entry.
-  all=$(printf '%s\n%s\n' "$raw_h" "$raw_m" | sort -un | grep . || true)
+  # GH#148: third query for the AGENT_PICKUP_LABEL opt-in. Issues carrying
+  # this label surface alongside the severity queries so a human can flag a
+  # severity:low (or no-severity) issue for the dev-agent without inflating
+  # severity. Same blocked:human filter applies — the safety-net signal still
+  # dominates the opt-in.
+  if ! raw_a=$(
+    PAGER=cat GIT_PAGER=cat gh issue list \
+      --repo "$REPO_SLUG" --state open \
+      --label "$AGENT_PICKUP_LABEL" \
+      --json number,assignees,labels \
+      --limit 50 2>/dev/null \
+      | jq -r --arg blocked "$BLOCKED_HUMAN_LABEL" '
+          .[]
+          | select(.assignees == [])
+          | select((.labels // [] | map(.name)) | index($blocked) | not)
+          | .number
+        ' 2>/dev/null
+  ); then
+    echo "?"
+    return 2
+  fi
+  # GH#113 + GH#148: strict id-ascending across all three sources. `sort -un`
+  # dedupes numerically (an issue tagged both severity:high and
+  # AGENT_PICKUP_LABEL surfaces once, in its id slot) and orders by integer
+  # value. `grep .` strips blank lines so the iteration loop below doesn't
+  # burn a cycle on an empty entry.
+  all=$(printf '%s\n%s\n%s\n' "$raw_h" "$raw_m" "$raw_a" | sort -un | grep . || true)
 
   # GH#65: build the set of issue numbers that already have an open dev-agent
   # PR. Skip the network call when there are no candidates to filter.

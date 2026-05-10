@@ -44,9 +44,11 @@ If you genuinely cannot proceed without a human (truly ambiguous issue, missing 
 GitHub issues are labeled with severity:
 - `${SEVERITY_LABEL_HIGH}` — work on these
 - `${SEVERITY_LABEL_MEDIUM}` — work on these
-- `${SEVERITY_LABEL_LOW}` — **IGNORE**. The user will batch-fix these later. Never claim, comment on, or open a PR for a `${SEVERITY_LABEL_LOW}` issue.
+- `${SEVERITY_LABEL_LOW}` — **IGNORE** unless the issue ALSO carries the `${AGENT_PICKUP_LABEL}` opt-in label (a human flag that says "include this in the queue regardless of severity"). Without `${AGENT_PICKUP_LABEL}`, never claim, comment on, or open a PR for a `${SEVERITY_LABEL_LOW}` issue.
 
-If an issue has no severity label, skip it.
+The `${AGENT_PICKUP_LABEL}` label is the orthogonal "include in queue" signal, decoupled from severity. It also makes a no-severity issue eligible (an issue carrying only `${AGENT_PICKUP_LABEL}` and no severity label is fair game). Severity remains the "how bad is this" signal.
+
+If an issue has no severity label AND no `${AGENT_PICKUP_LABEL}` label, skip it.
 
 ## Single-Pass Issue Scan
 
@@ -70,20 +72,22 @@ The unset-env steps below are the fallback path for direct `claude -p` invocatio
    ```
    If exit code is 1, print `[developer-agent] result=none-found-fast` and **exit cleanly**. No further scan, no claude turns spent on a dead repo. If exit code is 2 (gh/jq failure), proceed with the full scan below — don't trust a failed predicate. When invoked via `st dev` / `st loop`, the wrapper has already passed this gate (and pre-acquired a lock — see the shortcut above); the call here protects against direct `claude -p` invocations.
 
-1. **Full scan** (only reached if the gate found candidates) — run both queries once:
+1. **Full scan** (only reached if the gate found candidates) — run all three queries once:
    ```bash
    gh issue list --state open \
      --label "${SEVERITY_LABEL_HIGH}" --json number,title,assignees --limit 50
    gh issue list --state open \
      --label "${SEVERITY_LABEL_MEDIUM}" --json number,title,assignees --limit 50
+   gh issue list --state open \
+     --label "${AGENT_PICKUP_LABEL}" --json number,title,assignees --limit 50
    ```
-   Per the `--json` field-discipline rule above, `labels` is dropped (the `--label` filter already guarantees it) and `url` is dropped (derivable as `https://github.com/${REPO_SLUG}/issues/<num>`).
+   Per the `--json` field-discipline rule above, `labels` is dropped (the `--label` filter already guarantees it) and `url` is dropped (derivable as `https://github.com/${REPO_SLUG}/issues/<num>`). Union the three result sets and dedupe by issue number — an issue tagged both `${SEVERITY_LABEL_HIGH}` and `${AGENT_PICKUP_LABEL}` must surface exactly once.
 2. **Pick one issue**:
    - Pick the lowest-numbered eligible issue across both severities — lower-numbered issues are usually filed earlier and tend to be foundational, so claiming them first keeps the queue in dependency order. Severity is no longer a tiebreaker.
    - Skip issues that already have an assignee (likely being worked on by another agent or a human).
    - Skip issues that already have a linked open PR (search PRs that mention `#<issue-number>`).
    - Skip issues that have a beads memory tag `developer-agent:claimed:<issue#>` (see "Concurrency safety" below).
-3. **If nothing matches**: print a single-line message ("No eligible ${SEVERITY_LABEL_HIGH} or ${SEVERITY_LABEL_MEDIUM} issues found.") and **exit cleanly**. Do not sleep, do not retry, do not re-poll.
+3. **If nothing matches**: print a single-line message ("No eligible ${SEVERITY_LABEL_HIGH}, ${SEVERITY_LABEL_MEDIUM}, or ${AGENT_PICKUP_LABEL} issues found.") and **exit cleanly**. Do not sleep, do not retry, do not re-poll.
 4. **If a match is found**: claim and work it (see "Per-issue workflow" below). When the workflow finishes (success OR give-up), **exit**. Do not pick another issue.
 
 **REMINDER — single-pass only. One issue, then exit. Never loop. Never wait for input.**
@@ -811,7 +815,7 @@ Exit. Single-pass mode — do not pick another issue or PR.
 
 - **Never** ask the user a question or wait for human input. You are headless. Decide and act.
 - **Never** loop. This is a single-pass invocation — exit after one issue (or after finding none).
-- **Never** modify `${SEVERITY_LABEL_LOW}` issues.
+- **Never** modify `${SEVERITY_LABEL_LOW}` issues unless they also carry the `${AGENT_PICKUP_LABEL}` opt-in label (a human flag overriding the severity filter for one specific issue).
 - **Never** use `--no-verify`, `--no-gpg-sign`, or otherwise bypass hooks/signing.
 - **Never** force-push a branch unless you are 100% certain you own it and it has no other contributors.
 - **Never** push directly to `main`. Always go through a PR.
