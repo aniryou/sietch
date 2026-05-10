@@ -131,6 +131,24 @@ _seed_template_config() {
   grep -qFx 'REPO_NAME="qux"' "$REPO/.loop/loop.config"
 }
 
+@test "autofill: ssh remote with dotted repo name git@github.com:vercel/next.js.git → REPO_NAME=next.js" {
+  _seed_template_config
+  _git_init_with_remote "git@github.com:vercel/next.js.git"
+  cd "$REPO"
+  run bash "$ST" init
+  grep -qFx 'REPO_OWNER="vercel"' "$REPO/.loop/loop.config"
+  grep -qFx 'REPO_NAME="next.js"' "$REPO/.loop/loop.config"
+}
+
+@test "autofill: https remote with dotted repo name https://github.com/socketio/socket.io → REPO_NAME=socket.io" {
+  _seed_template_config
+  _git_init_with_remote "https://github.com/socketio/socket.io"
+  cd "$REPO"
+  run bash "$ST" init
+  grep -qFx 'REPO_OWNER="socketio"' "$REPO/.loop/loop.config"
+  grep -qFx 'REPO_NAME="socket.io"' "$REPO/.loop/loop.config"
+}
+
 @test "autofill: no git remote → placeholders preserved, onboard reports check_loop_config ✗" {
   _seed_template_config
   _git_init_with_remote ""  # git init but no remote

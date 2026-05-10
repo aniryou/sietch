@@ -119,9 +119,12 @@ cmd_init_autofill_config() {
     # Match both forms:
     #   git@github.com:owner/repo(.git)?
     #   https://github.com/owner/repo(.git)?(/)?
-    if [[ "$origin_url" =~ github\.com[:/]+([^/]+)/([^/.]+)(\.git)?/?$ ]]; then
+    # Capture the name greedily so dotted names (socket.io, next.js) parse,
+    # then strip trailing `/` and `.git` after the match.
+    if [[ "$origin_url" =~ github\.com[:/]+([^/]+)/(.+)$ ]]; then
       owner="${BASH_REMATCH[1]}"
-      name="${BASH_REMATCH[2]}"
+      name="${BASH_REMATCH[2]%/}"
+      name="${name%.git}"
     fi
   fi
 
