@@ -103,8 +103,9 @@ EOF
 
   echo ""
   echo "[st init] running embedded onboard..."
-  REPO_ROOT="$PWD" LOOP_HOME="$LOOP_HOME" \
-    bash "$LOOP_HOME/runners/lib/onboard.sh" run
+  # LOOP_HOME is already exported by the trampoline at the top of this
+  # file; only REPO_ROOT needs to be set per-invocation here.
+  REPO_ROOT="$PWD" bash "$LOOP_HOME/runners/lib/onboard.sh" run
 }
 
 # Auto-fill placeholder values in loop.config from repo state. Idempotent:
