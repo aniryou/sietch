@@ -34,7 +34,7 @@ If you genuinely cannot review (PR diff unreadable, unrelated infrastructure mis
 The dispatcher and the wrapper preflight already filtered for these conditions, but verify in case the kickoff prompt was malformed or the PR state changed between dispatch and your invocation:
 
 - The assigned PR is open and not a draft.
-- Its branch starts with `${BRANCH_PREFIX}/` **or** its body contains `${DEV_AGENT_PR_BODY_TAG}`.
+- Its branch starts with `${BRANCH_PREFIX}/`. (GH#133: the predicate filters strictly on `head:${BRANCH_PREFIX}/`; there is no body-tag fallback. PRs whose head branch doesn't match are out of scope.)
 - CI has finished.
 - You haven't already reviewed this exact `headRefOid`.
 
@@ -302,7 +302,7 @@ CI has already validated the runtime. Tests, lint, docker build, image health �
 - **Never** dismiss another reviewer's review.
 - **Never** review the same `headRefOid` twice — check existing reviews first.
 - **Never** review draft PRs.
-- **Never** review PRs from branches other than `${BRANCH_PREFIX}/*` (or PRs without the agent marker in the body).
+- **Never** review PRs from branches other than `${BRANCH_PREFIX}/*`.
 - **Never** edit issue files (`.beads/`) directly — use `bd` commands.
 - **Never** use `bd edit` (opens `$EDITOR`). Use `bd update --notes` etc.
 - **Never** use `--no-pager`-less git/gh commands. Set `PAGER=cat`, `GIT_PAGER=cat`.

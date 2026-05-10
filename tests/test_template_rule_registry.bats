@@ -78,3 +78,9 @@ load 'lib/template_rules'
 @test "[GH#47: ## Test plan heading anchors Step 7a CI flip — developer.md]" {
   run_rule_registry_check "GH#47: ## Test plan heading anchors Step 7a CI flip — developer.md"
 }
+@test "[GH#133: no body-tag OR fallback (sanity check) — reviewer.md]" {
+  run_rule_registry_check "GH#133: no body-tag OR fallback (sanity check) — reviewer.md"
+}
+@test "[GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md]" {
+  run_rule_registry_check "GH#133: no body-tag OR fallback (Hard Rules parenthetical) — reviewer.md"
+}

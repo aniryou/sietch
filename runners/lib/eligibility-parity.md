@@ -60,7 +60,7 @@ The audit (filed as GH#114) had three goals:
 | Prompt rule (file:line) | Rule summary | Predicate (function + snippet) | Category | Notes |
 |---|---|---|---|---|
 | `templates/reviewer-orchestrator.md:24-33` | Fast eligibility gate — `bash $LOOP_HOME/runners/lib/eligibility.sh review`; exit on rc=1 | `eligibility_review_pending` (whole function) | Defense-in-depth | Prompt explicitly says "the call here protects against direct `claude -p` invocations" |
-| `templates/reviewer-orchestrator.md:49` | Eligible PR has `headRefName` starting with `${BRANCH_PREFIX}/` **OR** body contains `${DEV_AGENT_PR_BODY_TAG}` | `eligibility_review_pending` (`--search "head:${BRANCH_PREFIX}/ -is:draft"`) | **Gap** | Predicate uses `--search "head:${BRANCH_PREFIX}/ -is:draft"` only; the body-tag fallback is missing. False-negative window: PRs with the body tag but a non-prefix branch are silently un-reviewed. **Filed as follow-up.** |
+| `templates/reviewer.md:37` (sanity check) | Eligible PR has `headRefName` starting with `${BRANCH_PREFIX}/` | `eligibility_review_pending` (`--search "head:${BRANCH_PREFIX}/ -is:draft"`) | Mirrored | The orchestrator template was removed in GH#117; the sanity check now lives in `templates/reviewer.md`. The body-tag (`${DEV_AGENT_PR_BODY_TAG}`) OR fallback was dropped in GH#133, so prompt and predicate now agree on `head:${BRANCH_PREFIX}/` only. **Resolved by GH#133.** |
 | `templates/reviewer-orchestrator.md:50` | `isDraft == false` | `eligibility_review_pending` (`-is:draft` clause in `--search`) | Mirrored | The orchestrator-side filter is enforced via the `gh pr list --search` qualifier |
 | `templates/reviewer-orchestrator.md:51` | CI must be finished (no `IN_PROGRESS` / `PENDING` / `QUEUED` checks) | `eligibility_review_pending` (`statusCheckRollup` in `--json` field set + `($check_states \| index("IN_PROGRESS") \| not)` etc. in jq filter) | Defense-in-depth | GH#46 — predicate's `statusCheckRollup` filter and the prompt's defense-in-depth call-out are the model example for this pattern |
 | `templates/reviewer-orchestrator.md:52-58` | A review covers the current head iff its `submittedAt` is newer than the head commit's `committedDate` AND its body contains the `[reviewer-agent: …]` marker | `eligibility_review_pending` (per-oid GraphQL `committedDate` lookup → `$head_date == null or ($review_dates \| map(select(. != null and . > $head_date)) \| length == 0)`, where `$review_dates` is restricted to bodies matching `$REVIEWER_AGENT_VERDICT_REGEX`) | Mirrored | GH#26 — predicate resolves head's `committedDate` via per-oid GraphQL and applies the `submittedAt > head_date` filter, restricted to bodies matching `$REVIEWER_AGENT_VERDICT_REGEX` |
@@ -71,10 +71,10 @@ The audit (filed as GH#114) had three goals:
 
 | Prompt rule (file:line) | Rule summary | Predicate (function + snippet) | Category | Notes |
 |---|---|---|---|---|
-| `templates/reviewer.md:32-41` (Sanity check) | Verify PR is open + non-draft, branch matches prefix or body tag, CI done, headRefOid not already reviewed | `eligibility_review_pending` (whole function) | Defense-in-depth | Prompt's sanity check duplicates the orchestrator's filter — defense-in-depth for malformed kickoff or mid-flight PR state changes |
+| `templates/reviewer.md:32-41` (Sanity check) | Verify PR is open + non-draft, branch matches `${BRANCH_PREFIX}/`, CI done, headRefOid not already reviewed | `eligibility_review_pending` (whole function) | Defense-in-depth | Prompt's sanity check duplicates the predicate's filter — defense-in-depth for malformed kickoff or mid-flight PR state changes. (GH#133: body-tag OR fallback dropped from the prompt so predicate and prompt agree on `head:${BRANCH_PREFIX}/` only.) |
 | `templates/reviewer.md:274` | Never review the same `headRefOid` twice | `eligibility_review_pending` (per-oid GraphQL `committedDate` lookup → `submittedAt > $head_date` filter; same pipeline as the orchestrator's "review covers head" row above) | Mirrored | Predicate's review-covers-head logic surfaces only un-reviewed heads |
 | `templates/reviewer.md:275` | Never review draft PRs | `eligibility_review_pending` (`-is:draft` clause in `--search`) | Mirrored | Same `-is:draft` search clause as the orchestrator's `isDraft == false` row |
-| `templates/reviewer.md:276` | Never review PRs from non-`${BRANCH_PREFIX}/*` branches (or PRs without the body tag) | `eligibility_review_pending` (`head:${BRANCH_PREFIX}/` clause in `--search`) | **Gap (same as orchestrator G2)** | Same body-tag fallback gap. Sub-agent only runs on PRs the orchestrator already filtered, so the gap surfaces upstream |
+| `templates/reviewer.md:305` | Never review PRs from non-`${BRANCH_PREFIX}/*` branches | `eligibility_review_pending` (`head:${BRANCH_PREFIX}/` clause in `--search`) | Mirrored | GH#133: the body-tag fallback parenthetical was dropped from the prompt. Predicate's `--search "head:${BRANCH_PREFIX}/"` and the prompt's hard rule now agree exactly. **Resolved by GH#133.** |
 
 ### Merger dispatcher (no template — wrapper-only)
 
@@ -92,10 +92,15 @@ Each gap is filed as a separate follow-up GitHub issue:
 - **G1** (`templates/reviewer-orchestrator.md:59-61`) — predicate
   `eligibility_review_pending` does not honor the "human postdates
   agent review" override. Filed as GH#132.
-- **G2** (`templates/reviewer-orchestrator.md:49`,
-  `templates/reviewer.md:276`) — predicate filters strictly on
-  `head:${BRANCH_PREFIX}/`; body-tag fallback (`DEV_AGENT_PR_BODY_TAG`)
-  is missing. Filed as GH#133.
+- **G2** (`templates/reviewer.md:37` sanity check,
+  `templates/reviewer.md:305` hard rule) — predicate filters strictly
+  on `head:${BRANCH_PREFIX}/`; body-tag fallback (`DEV_AGENT_PR_BODY_TAG`)
+  was missing. **Resolved by GH#133**: the OR fallback was dropped from
+  both prompt sites in `templates/reviewer.md`, so prompt and predicate
+  now agree on `head:${BRANCH_PREFIX}/` only. (Orchestrator template
+  refs from the original filing — `templates/reviewer-orchestrator.md:49`,
+  `templates/reviewer.md:276` — were also updated; the orchestrator
+  template itself was removed in GH#117.)
 - **G3** (`templates/developer.md:429-461`) — Mode 2's 3-cycle give-up
   had no predicate-level guard, and unlike Mode 3's give-up paths it
   did not draft the PR. **Resolved by GH#134**: F2 give-up now runs
