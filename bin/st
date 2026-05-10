@@ -5,9 +5,12 @@
 # code lives here in $LOOP_HOME and is shared across every repo you onboard.
 #
 # Invoke from anywhere inside a repo that has .loop/loop.config:
-#   st dev                        # scan issues, claim one, drive a PR
-#   st dev follow-up <PR>         # address reviewer-agent feedback
-#   st dev resolve <PR>           # auto-resolve merge conflicts (triage-gated)
+#   st dev                                # scan issues, claim one, drive a PR
+#   st dev --interactive <issue#>         # human-driven Mode 1 on a specific issue
+#   st dev follow-up <PR>                 # address reviewer-agent feedback
+#   st dev follow-up <PR> --interactive   # human-driven Mode 2
+#   st dev resolve <PR>                   # auto-resolve merge conflicts (triage-gated)
+#   st dev resolve <PR> --interactive     # human-driven Mode 3 (skips triage)
 #   st review <PR>                # review a specific open dev-agent PR
 #   st issue [message]            # interactive issue author
 #   st loop [start|stop|...]      # tmux multi-pane orchestrator
