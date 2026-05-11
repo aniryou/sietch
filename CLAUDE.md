@@ -60,9 +60,17 @@ _Add your build and test commands here_
 # npm test
 ```
 
-## Architecture Overview
+## What is loop?
 
-_Add a brief overview of your project architecture_
+This repo **is** loop — a multi-agent dev-loop framework. The agents that drive this repo's PRs (dev, reviewer, conflict-triage, issue-author) are the same code you're editing. Changes here change tomorrow's agent behavior; treat the framework as live.
+
+Key entry points:
+- `bin/st` — global CLI dispatched from every consumer repo's `.loop/loop.config`. Run `st help` to list subcommands.
+- `runners/run-developer.sh`, `run-reviewer.sh`, `run-conflict-triage.sh`, `run-issue-author.sh`, `run-loop.sh` — the wrappers each `st` subcommand invokes.
+- `templates/developer.md`, `reviewer.md`, `issue-author.md` — agent prompt templates.
+- `.loop/loop.config` — this repo's own loop config (loop dogfoods itself).
+
+For onboarding a new consumer repo, see `README.md` and `st onboard` / `st init`.
 
 ## Conventions & Patterns
 

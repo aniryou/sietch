@@ -2,6 +2,12 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
+## What is loop?
+
+This repo is the loop framework itself — a multi-agent dev-loop where dev / reviewer / conflict-triage / issue-author agents drive PRs in consumer repos. When you edit `runners/`, `templates/`, or `bin/st` here, you are changing the behavior of every consumer repo's next agent run. Loop also dogfoods itself via `.loop/loop.config`.
+
+CLI entry point: `bin/st` — run `st help` for the current subcommand list (`st dev`, `st review`, `st triage`, `st issue`, `st loop`, `st onboard`, `st init`, `st version`). Don't enumerate subcommands in docs; `st help` is the source of truth.
+
 ## Quick Reference
 
 ```bash
