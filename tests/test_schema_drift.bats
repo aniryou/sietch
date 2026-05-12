@@ -31,8 +31,35 @@ BASE_FIELDS="ts session repo role event schema_version"
 # Emit one line per event_emit call as "<event>|<space-separated field names>".
 # Skips comment lines and the helper definition (`event_emit() { ... }` in
 # event_log.sh). Trailing quotes/backslashes are stripped from the event name.
+#
+# Two notes on the tokenizer:
+#   1. Backslash-continued lines are joined first (via awk getline) so multi-
+#      line event_emit calls — e.g. the four `triage_result` emits in
+#      run-developer.sh that split duration_s / conflict_files / conflict_lines
+#      / triage_files_count onto continuation lines — are tokenized as one
+#      logical call. Without this, continuation-line fields slip past the
+#      drift guard.
+#   2. The input file list is discovered dynamically via `grep -rl` so a new
+#      runner that starts emitting (e.g. run-conflict-triage.sh or a future
+#      runner) is picked up automatically.
 _collect_event_emits() {
+  # Use a while-read loop instead of `mapfile` for bash 3.2 (macOS)
+  # compatibility — mirrors the pattern called out in run-conflict-triage.sh.
+  local files=() f
+  while IFS= read -r f; do
+    [ -n "$f" ] && files+=("$f")
+  done < <(grep -rl 'event_emit ' "$LOOP_ROOT"/runners/ 2>/dev/null | sort)
+  [ "${#files[@]}" -gt 0 ] || return 0
   awk '
+    {
+      # Join backslash-continued lines before pattern matching, so a multi-
+      # line event_emit reaches the tokenizer as a single record.
+      while ($0 ~ /\\$/) {
+        sub(/\\$/, "")
+        if ((getline cont) <= 0) break
+        $0 = $0 cont
+      }
+    }
     /event_emit / && !/^[[:space:]]*#/ {
       idx = index($0, "event_emit ")
       if (idx == 0) next
@@ -54,9 +81,7 @@ _collect_event_emits() {
       }
       print event "|" keys
     }
-  ' "$LOOP_ROOT"/runners/run-loop.sh \
-    "$LOOP_ROOT"/runners/run-developer.sh \
-    "$LOOP_ROOT"/runners/run-reviewer.sh
+  ' "${files[@]}"
 }
 
 # True iff `word` is in the space-separated `list`.
