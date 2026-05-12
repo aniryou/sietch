@@ -23,7 +23,57 @@
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
-LOOP_EVENT_SCHEMA_VERSION=1
+# v2 (GH#170): `llm_exited` events now also carry `total_cost_usd`,
+# `input_tokens`, `output_tokens`, `num_turns` extracted from the agent's
+# stream-json result frame. A required-field set change, so the version
+# bumps per the contract in docs/event-schema.md.
+LOOP_EVENT_SCHEMA_VERSION=2
+
+# event_cost_fields_from_raw <stream-json-file>
+#
+# Parse the last `type:"result"` line out of the given stream-json file and
+# print four `k=v` lines (one per field) suitable for splicing into an
+# `event_emit ... llm_exited ...` arg list:
+#
+#   total_cost_usd=<float>
+#   input_tokens=<int>
+#   output_tokens=<int>
+#   num_turns=<int>
+#
+# Each field defaults to `0` when the result frame is missing (claude crash
+# before completion, mid-stream truncation) so consumers can rely on the
+# fields existing on every llm_exited event. Tolerant of a partial last line
+# via `fromjson?` — a truncated tail does not error.
+event_cost_fields_from_raw() {
+  local raw_file="${1:-}"
+  local jq_out=""
+  if [ -n "$raw_file" ] && [ -f "$raw_file" ] && [ -s "$raw_file" ]; then
+    # shellcheck disable=SC2016 # $vars here are jq bindings, not shell expansions
+    jq_out=$(
+      jq -Rrs '
+        [ split("\n")[] | select(length > 0) | (fromjson? // empty)
+          | select(.type == "result") ] | last
+        | if . == null then
+            {total_cost_usd: 0, input_tokens: 0, output_tokens: 0, num_turns: 0}
+          else
+            { total_cost_usd: (.total_cost_usd // 0),
+              input_tokens:   (.usage.input_tokens  // 0),
+              output_tokens:  (.usage.output_tokens // 0),
+              num_turns:      (.num_turns // 0) }
+          end
+        | "total_cost_usd=\(.total_cost_usd)",
+          "input_tokens=\(.input_tokens)",
+          "output_tokens=\(.output_tokens)",
+          "num_turns=\(.num_turns)"
+      ' "$raw_file" 2>/dev/null
+    ) || jq_out=""
+  fi
+  if [ -n "$jq_out" ]; then
+    printf '%s\n' "$jq_out"
+  else
+    printf 'total_cost_usd=0\ninput_tokens=0\noutput_tokens=0\nnum_turns=0\n'
+  fi
+}
 
 event_emit() {
   if [ "$#" -lt 2 ]; then return 0; fi

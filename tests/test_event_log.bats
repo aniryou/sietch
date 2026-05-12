@@ -216,3 +216,105 @@ _emit() {
   grep -qE '\bdispatch_fired\b' "$doc"
   grep -qE '\bhard_failure\b' "$doc"
 }
+
+# ---------------------------------------------------------------------------
+# GH#170 — token-cost extraction helper + schema bump.
+# ---------------------------------------------------------------------------
+
+# Source event_log.sh in a clean subshell and invoke the new helper. Caller
+# asserts on the four `k=v` lines printed to stdout.
+_cost_fields() {
+  bash -c '
+    . "'"$LOOP_ROOT"'/runners/lib/event_log.sh"
+    event_cost_fields_from_raw "$1"
+  ' _ "$1"
+}
+
+@test "LOOP_EVENT_SCHEMA_VERSION is currently 2 (required-field set changed in GH#170)" {
+  bash -c '
+    . "'"$LOOP_ROOT"'/runners/lib/event_log.sh"
+    [ "$LOOP_EVENT_SCHEMA_VERSION" = "2" ]
+  '
+}
+
+@test "event_cost_fields_from_raw extracts numeric fields from a result frame" {
+  local raw="$BATS_TEST_TMPDIR/raw.jsonl"
+  cat > "$raw" <<'EOF'
+{"type":"system","subtype":"init","model":"claude-opus","tools":[],"cwd":"/x"}
+{"type":"assistant","message":{"content":[]}}
+{"type":"result","subtype":"success","duration_ms":1234,"num_turns":3,"total_cost_usd":0.0125,"usage":{"input_tokens":12345,"output_tokens":678}}
+EOF
+  local out
+  out=$(_cost_fields "$raw")
+  grep -Fxq "total_cost_usd=0.0125" <<<"$out"
+  grep -Fxq "input_tokens=12345"    <<<"$out"
+  grep -Fxq "output_tokens=678"     <<<"$out"
+  grep -Fxq "num_turns=3"           <<<"$out"
+}
+
+@test "event_cost_fields_from_raw returns zeros when no result frame is present" {
+  local raw="$BATS_TEST_TMPDIR/raw.jsonl"
+  cat > "$raw" <<'EOF'
+{"type":"system","subtype":"init","model":"claude-opus","tools":[],"cwd":"/x"}
+{"type":"assistant","message":{"content":[]}}
+EOF
+  local out
+  out=$(_cost_fields "$raw")
+  grep -Fxq "total_cost_usd=0" <<<"$out"
+  grep -Fxq "input_tokens=0"   <<<"$out"
+  grep -Fxq "output_tokens=0"  <<<"$out"
+  grep -Fxq "num_turns=0"      <<<"$out"
+}
+
+@test "event_cost_fields_from_raw returns zeros when raw file does not exist" {
+  local out
+  out=$(_cost_fields "/nonexistent/file.jsonl")
+  grep -Fxq "total_cost_usd=0" <<<"$out"
+  grep -Fxq "input_tokens=0"   <<<"$out"
+  grep -Fxq "output_tokens=0"  <<<"$out"
+  grep -Fxq "num_turns=0"      <<<"$out"
+}
+
+@test "event_cost_fields_from_raw is tolerant of mid-stream truncation (partial last line)" {
+  # A claude process killed mid-write can leave the last line as a truncated
+  # JSON object. The helper must not error out; it should fall back to zeros.
+  local raw="$BATS_TEST_TMPDIR/raw.jsonl"
+  printf '%s\n%s' \
+    '{"type":"assistant","message":{"content":[]}}' \
+    '{"type":"result","subtype":"succe' \
+    > "$raw"
+  local out
+  out=$(_cost_fields "$raw")
+  grep -Fxq "total_cost_usd=0" <<<"$out"
+  grep -Fxq "num_turns=0"      <<<"$out"
+}
+
+@test "event_emit llm_exited carries all four cost/token fields as JSON numbers" {
+  # End-to-end: pipe the helper output into the existing event_emit and
+  # confirm each field lands as a number on the emitted line.
+  local file="$BATS_TEST_TMPDIR/events.jsonl"
+  local raw="$BATS_TEST_TMPDIR/raw.jsonl"
+  cat > "$raw" <<'EOF'
+{"type":"result","subtype":"success","duration_ms":1234,"num_turns":3,"total_cost_usd":0.0125,"usage":{"input_tokens":12345,"output_tokens":678}}
+EOF
+  LOOP_EVENT_LOG="$file" SESSION=t REPO_SLUG=a/b bash -c '
+    . "'"$LOOP_ROOT"'/runners/lib/event_log.sh"
+    kv=()
+    while IFS= read -r line; do kv+=("$line"); done < <(event_cost_fields_from_raw "$1")
+    event_emit dev llm_exited mode=default exit_code=0 duration_s=12 "${kv[@]}"
+  ' _ "$raw"
+
+  local line
+  line=$(cat "$file")
+  jq -e . <<<"$line" >/dev/null
+  jq -e '.total_cost_usd | type == "number"' <<<"$line" >/dev/null
+  jq -e '.input_tokens   | type == "number"' <<<"$line" >/dev/null
+  jq -e '.output_tokens  | type == "number"' <<<"$line" >/dev/null
+  jq -e '.num_turns      | type == "number"' <<<"$line" >/dev/null
+  [ "$(jq -r .total_cost_usd <<<"$line")" = "0.0125" ]
+  [ "$(jq -r .input_tokens   <<<"$line")" = "12345" ]
+  [ "$(jq -r .output_tokens  <<<"$line")" = "678" ]
+  [ "$(jq -r .num_turns      <<<"$line")" = "3" ]
+  # Schema version must be the bumped value.
+  [ "$(jq -r .schema_version <<<"$line")" = "2" ]
+}

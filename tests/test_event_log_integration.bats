@@ -21,6 +21,9 @@ _setup_env() {
   local high="${1:-$LOOP_ROOT/tests/fixtures/gh/issues-high.json}"
   local med="${2:-$LOOP_ROOT/tests/fixtures/gh/issues-medium.json}"
   local claude_exit="${3:-0}"
+  # GH#170: optional stdout the claude stub will emit before exiting, so a
+  # caller can simulate a stream-json result frame landing in $RAW.
+  local claude_stdout="${4:-}"
   local root="$BATS_TEST_TMPDIR"
   local repo="$root/repo"
   local bin="$root/bin"
@@ -58,6 +61,7 @@ STUB
 
   cat > "$bin/claude" <<STUB
 #!/usr/bin/env bash
+printf '%s\n' '${claude_stdout}'
 exit $claude_exit
 STUB
   chmod +x "$bin/claude"
@@ -142,10 +146,41 @@ _events() {
   jq -e 'select(.event == "llm_started")' "$f" >/dev/null
   jq -e 'select(.event == "llm_exited" and .exit_code == 0)' "$f" >/dev/null
 
+  # GH#170: llm_exited always carries cost/token fields, defaulted to 0 when
+  # the claude stub produces no stream-json result frame.
+  jq -e 'select(.event == "llm_exited" and .total_cost_usd == 0 and .input_tokens == 0 and .output_tokens == 0 and .num_turns == 0)' "$f" >/dev/null
+  # Field types must be number (consumers do arithmetic on them).
+  jq -e 'select(.event == "llm_exited") | .total_cost_usd | type == "number"' "$f" >/dev/null
+  jq -e 'select(.event == "llm_exited") | .input_tokens   | type == "number"' "$f" >/dev/null
+  jq -e 'select(.event == "llm_exited") | .output_tokens  | type == "number"' "$f" >/dev/null
+  jq -e 'select(.event == "llm_exited") | .num_turns      | type == "number"' "$f" >/dev/null
+
   # Order: eligibility before lock_acquired before llm_started before llm_exited.
   local order
   order=$(jq -r '.event' "$f" | grep -E 'eligibility|lock_acquired|llm_started|llm_exited' | tr '\n' ',')
   [[ "$order" == "eligibility,lock_acquired,llm_started,llm_exited,"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Mode 1 — claude stub emits a result frame, wrapper plumbs the numbers
+# through to llm_exited. Pinned shape: GH#170.
+# ---------------------------------------------------------------------------
+
+@test "wrapper: claude emits result frame → llm_exited carries non-zero cost/token fields" {
+  local empty="$BATS_TEST_TMPDIR/empty.json"
+  echo '[]' > "$empty"
+  local high="$BATS_TEST_TMPDIR/single.json"
+  echo '[{"number":101,"assignees":[]}]' > "$high"
+  local frame='{"type":"result","subtype":"success","duration_ms":1234,"num_turns":3,"total_cost_usd":0.0125,"usage":{"input_tokens":12345,"output_tokens":678}}'
+  local root
+  root=$(_setup_env "$high" "$empty" 0 "$frame")
+
+  local rc=0
+  _run_wrapper "$root" || rc=$?
+  [ "$rc" -eq 0 ]
+
+  local f="$root/state/events.jsonl"
+  jq -e 'select(.event == "llm_exited" and .total_cost_usd == 0.0125 and .input_tokens == 12345 and .output_tokens == 678 and .num_turns == 3)' "$f" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
