@@ -75,6 +75,12 @@ _dispatch_kv=()
 # been drafted, or CI may have restarted — re-check before spawning the LLM.
 # On miss, exit 2 so dispatcher backoff treats it as "no work" rather than
 # failure (mirrors the run-developer.sh contract).
+# GH#174: eligibility-stage wall-clock — the gh-pr-view round-trip plus the
+# subsequent jq classification together form the reviewer's eligibility
+# predicate. Stamped once before gh runs, sampled into duration_s on each
+# emit path below so an `llm_exited duration_s=…` cycle has an attributable
+# pre-LLM slice for slow-API forensics.
+_elig_start_s=$(date +%s)
 PR_DATA=$(
   PAGER=cat GIT_PAGER=cat gh pr view "$TARGET_PR" \
     --repo "$REPO_SLUG" \
@@ -85,9 +91,10 @@ if [ -z "$PR_DATA" ]; then
   # are skip+backoff, not "proceed to be safe". The wording mirrors
   # run-developer.sh's rc=2 path so operators tailing the tmux pane see the
   # same shape across wrappers.
+  _elig_duration_s=$(($(date +%s) - _elig_start_s))
   echo "[wrapper] eligibility: predicate failed (gh-pr-view rc=non-zero or empty); skipping LLM invocation and backing off" >&2
   echo "[wrapper] result=no-work reason=predicate-failed"
-  event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+  event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR" duration_s="$_elig_duration_s" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
   exit 2
 fi
 
@@ -110,26 +117,28 @@ ELIG_DECISION=$(
     end
   ' 2>/dev/null
 ) || ELIG_DECISION=""
+_elig_duration_s=$(($(date +%s) - _elig_start_s))
 case "$ELIG_DECISION" in
   proceed)
     echo "[wrapper] eligibility: PR #${TARGET_PR} ready for review; proceeding"
-    event_emit reviewer eligibility result=proceeding pr="$TARGET_PR" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+    event_emit reviewer eligibility result=proceeding pr="$TARGET_PR" duration_s="$_elig_duration_s" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
     ;;
   skip:*)
     REASON="${ELIG_DECISION#skip:}"
     echo "[wrapper] eligibility: PR #${TARGET_PR} not eligible (${REASON}); no PRs need review here, skipping LLM invocation"
     echo "[wrapper] result=no-work reason=${REASON}"
-    event_emit reviewer eligibility result=no-work pr="$TARGET_PR" reason="$REASON" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+    event_emit reviewer eligibility result=no-work pr="$TARGET_PR" reason="$REASON" duration_s="$_elig_duration_s" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
     exit 2
     ;;
   *)
     # jq itself failed (malformed JSON, jq missing) — treat as predicate failed.
     echo "[wrapper] eligibility: predicate failed (jq classification error); skipping LLM invocation and backing off" >&2
     echo "[wrapper] result=no-work reason=predicate-failed"
-    event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+    event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR" duration_s="$_elig_duration_s" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
     exit 2
     ;;
 esac
+unset _elig_start_s _elig_duration_s
 
 # Caller-overridable root for wrapper LOG/RAW paths (GH#126). Production
 # default `/tmp` keeps existing log-mining tooling and operator muscle memory
