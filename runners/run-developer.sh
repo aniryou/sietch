@@ -158,6 +158,19 @@ _run_ts=$(date +%s%N 2>/dev/null || date +%s)
 export DEV_AGENT_RUN_ID="$$-$_run_ts"
 unset _run_ts
 
+# GH#172: per-invocation dispatch correlation field. The dispatcher
+# (run-loop.sh: loop_dispatcher_*) generates a dispatch_id at each fire site
+# and exports LOOP_DISPATCH_ID into the wrapper's env so structured-event
+# consumers can join `dispatch_fired` to this wrapper's `llm_started` /
+# `llm_exited` / `hard_failure` chain. Stored as a single string (not an
+# array) so we can expand it UNQUOTED at each event_emit call site —
+# bash 3.2 (macOS default) errors on `"${empty_array[@]}"` under `set -u`,
+# but an unquoted empty string just disappears. dispatch_id values are
+# `${PID}-<ns_timestamp>` and never contain spaces, so unquoted expansion
+# is safe.
+_dispatch_kv=""
+[ -n "${LOOP_DISPATCH_ID:-}" ] && _dispatch_kv="dispatch_id=${LOOP_DISPATCH_ID}"
+
 # LOG / RAW / KICKOFF must be set before `cleanup` is registered — the trap
 # references $LOG / $RAW under `set -u`, so an INT/TERM arriving before the
 # preflight finished would otherwise hit an unbound-variable error in cleanup.
@@ -303,7 +316,7 @@ elif [ "$MODE" = "default" ]; then
       # this fired from the now-deleted dev-count preflight block.
       _proceeding_count=$(printf '%s\n' "$CANDIDATES" | grep -c .)
       echo "[wrapper] eligibility: $_proceeding_count candidate issue(s); proceeding"
-      event_emit dev eligibility result=proceeding count="$_proceeding_count" mode="$MODE"
+      event_emit dev eligibility result=proceeding count="$_proceeding_count" mode="$MODE" $_dispatch_kv
       unset _proceeding_count
       # Iterate candidates in id-ascending order (per dev-candidates contract,
       # GH#113). The first mkdir that succeeds is our lock; mkdir is the
@@ -334,7 +347,7 @@ elif [ "$MODE" = "default" ]; then
         # the listing and our mkdir attempts. Skip the LLM — no work left.
         echo "[wrapper] eligibility: every candidate already locked by sibling runs; skipping LLM"
         echo "[wrapper] result=lock-race-loss-pre-LLM mode=$MODE"
-        event_emit dev lock_race_lost run_id="$DEV_AGENT_RUN_ID"
+        event_emit dev lock_race_lost run_id="$DEV_AGENT_RUN_ID" $_dispatch_kv
         exit 2
       fi
       export DEV_AGENT_TARGET_ISSUE
@@ -346,12 +359,12 @@ elif [ "$MODE" = "default" ]; then
       # from the PR body, so they set $WORKTREE themselves in F3/R1.
       export WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"
       echo "[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding"
-      event_emit dev lock_acquired issue="$DEV_AGENT_TARGET_ISSUE" run_id="$DEV_AGENT_RUN_ID"
+      event_emit dev lock_acquired issue="$DEV_AGENT_TARGET_ISSUE" run_id="$DEV_AGENT_RUN_ID" $_dispatch_kv
       ;;
     1)
       echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
       echo "[wrapper] result=no-work mode=$MODE"
-      event_emit dev eligibility result=no-work mode="$MODE"
+      event_emit dev eligibility result=no-work mode="$MODE" $_dispatch_kv
       exit 2
       ;;
     *)
@@ -360,7 +373,7 @@ elif [ "$MODE" = "default" ]; then
       # rediscover and re-race anyway. Treat as no-work.
       echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM" >&2
       echo "[wrapper] result=predicate-failed mode=$MODE"
-      event_emit dev eligibility result=predicate-failed mode="$MODE" rc="$EL_RC"
+      event_emit dev eligibility result=predicate-failed mode="$MODE" rc="$EL_RC" $_dispatch_kv
       exit 2
       ;;
   esac
@@ -398,11 +411,11 @@ elif [ "$MODE" = "resolve-conflicts" ]; then
       if grep -q 'reason=no-conflict' <<<"$TRIAGE_OUTPUT"; then
         echo "[wrapper] triage reports no conflict — skipping LLM (PR already mergeable)."
         echo "[wrapper] result=triage-no-conflict pr=#${TARGET_PR}"
-        event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=no-conflict
+        event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=no-conflict $_dispatch_kv
         exit 0
       fi
       echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
-      event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=mechanical-conflict
+      event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=mechanical-conflict $_dispatch_kv
       ;;
     1)
       echo "$TRIAGE_OUTPUT" >&2
@@ -415,7 +428,7 @@ elif [ "$MODE" = "resolve-conflicts" ]; then
         | loop_marker_last 'reason=[^ ]+' \
         | cut -d= -f2-)
       echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
-      event_emit dev triage_result pr="$TARGET_PR" result=untractable reason="$REASON"
+      event_emit dev triage_result pr="$TARGET_PR" result=untractable reason="$REASON" $_dispatch_kv
       PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
         cat <<EOF
 🤖 Conflict triage — auto-resolution declined.
@@ -439,7 +452,7 @@ EOF
       echo "$TRIAGE_OUTPUT" >&2
       echo "[wrapper] triage failed (rc=$TRIAGE_RC); transient setup error, skipping LLM and not drafting. Will retry next dispatcher cycle." >&2
       echo "[wrapper] result=triage-failed pr=#${TARGET_PR} rc=${TRIAGE_RC}"
-      event_emit dev triage_result pr="$TARGET_PR" result=failed rc="$TRIAGE_RC"
+      event_emit dev triage_result pr="$TARGET_PR" result=failed rc="$TRIAGE_RC" $_dispatch_kv
       exit 2
       ;;
   esac
@@ -496,7 +509,7 @@ if [ "$INTERACTIVE" = 1 ]; then
     --permission-mode bypassPermissions
 fi
 
-event_emit dev llm_started mode="$MODE" run_id="$DEV_AGENT_RUN_ID" "${_llm_target_kv[@]}"
+event_emit dev llm_started mode="$MODE" run_id="$DEV_AGENT_RUN_ID" "${_llm_target_kv[@]}" $_dispatch_kv
 _llm_start_s=$(date +%s)
 set -m
 (
@@ -526,7 +539,7 @@ _llm_cost_kv=()
 while IFS= read -r _kv; do
   [ -n "$_kv" ] && _llm_cost_kv+=("$_kv")
 done < <(event_cost_fields_from_raw "$RAW")
-event_emit dev llm_exited mode="$MODE" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_target_kv[@]}" "${_llm_cost_kv[@]}"
+event_emit dev llm_exited mode="$MODE" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_target_kv[@]}" $_dispatch_kv "${_llm_cost_kv[@]}"
 unset _llm_cost_kv _kv
 
 # GH#56 — Mode 1 hard-failure retry counter (wrapper-side).
@@ -590,7 +603,7 @@ if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
     # helper inspects the raw stream-json tail and stderr first, then falls
     # back to exit-code heuristics — see runners/lib/hard_failure.sh.
     _hf_reason=$(classify_llm_failure_reason "$LLM_EXIT" "$RAW" "$RAW.stderr")
-    event_emit dev hard_failure mode="$MODE" issue="$DEV_AGENT_TARGET_ISSUE" exit_code="$LLM_EXIT" retry_count="$_retry_next" reason="$_hf_reason"
+    event_emit dev hard_failure mode="$MODE" issue="$DEV_AGENT_TARGET_ISSUE" exit_code="$LLM_EXIT" retry_count="$_retry_next" reason="$_hf_reason" $_dispatch_kv
     unset _hf_reason
     unset _retry_labels_json _retry_current _retry_next
   else
@@ -727,7 +740,7 @@ EOF
   # GH#171: `mode3-give-up` tags Mode 3 wrapper-side aborts — distinct from
   # the LLM's graceful aborts (ambiguous-intent / post-resolution test
   # failure / post-force-push CI failure), which never reach this branch.
-  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT" reason=mode3-give-up
+  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT" reason=mode3-give-up $_dispatch_kv
   unset HARD_FAIL_BODY ESCALATION_BODY
 fi
 
@@ -777,7 +790,7 @@ if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
   # graceful Mode 2 paths (complete / gave-up / no-action) post their own
   # `🤖 Developer agent — follow-up …` comments and exit 0, so they don't
   # reach this branch.
-  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT" reason=mode2-give-up
+  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT" reason=mode2-give-up $_dispatch_kv
   unset STUB_BODY ESCALATION_BODY
 fi
 

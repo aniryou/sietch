@@ -273,11 +273,15 @@ loop_dispatcher_review() {
         break
       fi
 
+      # GH#172: one dispatch_id per PR-attempt — exported into the wrapper
+      # below and stamped on both the fire and skip emits so consumers can
+      # trace `dispatch_fired → llm_started → llm_exited` end-to-end.
+      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:review] dispatching review for PR #${pr}"
-        event_emit "dispatch:review" dispatch_fired kind=review pr="$pr"
-        ("$LOOP_HOME/runners/run-reviewer.sh" "$pr" >/dev/null 2>&1) &
+        event_emit "dispatch:review" dispatch_fired kind=review pr="$pr" dispatch_id="$dispatch_id"
+        (LOOP_DISPATCH_ID="$dispatch_id" "$LOOP_HOME/runners/run-reviewer.sh" "$pr" >/dev/null 2>&1) &
         local child=$!
         echo "$child" >"$lock/pid"
         dispatched=$((dispatched + 1))
@@ -287,7 +291,7 @@ loop_dispatcher_review() {
         # it loud so a future failure mode isn't another silent fall-through
         # (mirrors the followup/conflicts dispatchers post-GH#86).
         echo "[$(ts)] [dispatch:review] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
-        event_emit "dispatch:review" dispatch_skip kind=review pr="$pr" reason=mkdir-failed
+        event_emit "dispatch:review" dispatch_skip kind=review pr="$pr" reason=mkdir-failed dispatch_id="$dispatch_id"
       fi
     done < <(
       bash "$LOOP_HOME/runners/lib/eligibility.sh" review-list 2>/dev/null
@@ -342,6 +346,11 @@ loop_dispatcher_followup() {
         break
       fi
 
+      # GH#172: one dispatch_id per PR-attempt — stamped on every skip /
+      # fire emit for this PR and exported into the wrapper so consumers
+      # can join the dispatcher decision to the wrapper's event chain.
+      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+
       # Verdict-aware gate (GH#24): skip clean/nits unconditionally, and
       # changes/comment/blocked once the dev-agent has already responded.
       # The predicate prints the verdict (or "none" / "?") to stdout for
@@ -351,15 +360,15 @@ loop_dispatcher_followup() {
       verdict=$(eligibility_followup_pr "$pr") || ec=$?
       if [ "$ec" -ne 0 ]; then
         echo "[$(ts)] [dispatch:followup] skip PR #${pr} (verdict=${verdict})"
-        event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" verdict="$verdict"
+        event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" verdict="$verdict" dispatch_id="$dispatch_id"
         continue
       fi
 
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:followup] dispatching follow-up for PR #${pr} (verdict=${verdict})"
-        event_emit "dispatch:followup" dispatch_fired kind=followup pr="$pr" verdict="$verdict"
-        ("$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
+        event_emit "dispatch:followup" dispatch_fired kind=followup pr="$pr" verdict="$verdict" dispatch_id="$dispatch_id"
+        (LOOP_DISPATCH_ID="$dispatch_id" "$LOOP_HOME/runners/run-developer.sh" follow-up "$pr" >/dev/null 2>&1) &
         local child=$!
         echo "$child" >"$lock/pid"
         dispatched=$((dispatched + 1))
@@ -369,7 +378,7 @@ loop_dispatcher_followup() {
         # etc.). Make it loud so the next failure mode after GH#86 is not
         # another silent fall-through.
         echo "[$(ts)] [dispatch:followup] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
-        event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" reason=mkdir-failed
+        event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" reason=mkdir-failed dispatch_id="$dispatch_id"
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -415,6 +424,13 @@ loop_dispatcher_merge() {
     while IFS= read -r pr; do
       [ -z "$pr" ] && continue
 
+      # GH#172: one dispatch_id per PR-attempt, stamped on the verdict-skip /
+      # fire / gh-merge-failed paths so consumers can correlate a single
+      # merge decision end-to-end. The merger never backgrounds a wrapper
+      # (it calls `gh pr merge` directly), so there is no LOOP_DISPATCH_ID
+      # to export — the id only lives on this dispatcher's events.
+      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+
       # Verdict + staleness + human-veto + CI gate. The predicate prints the
       # verdict on stdout for the log line; exit 0 = merge, 1 = skip, 2 =
       # gh/jq failure (treat as skip — next cycle re-checks).
@@ -422,7 +438,7 @@ loop_dispatcher_merge() {
       verdict=$(eligibility_merge_pr "$pr") || ec=$?
       if [ "$ec" -ne 0 ]; then
         echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict}"
-        event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict"
+        event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict" dispatch_id="$dispatch_id"
         continue
       fi
 
@@ -433,14 +449,14 @@ loop_dispatcher_merge() {
       [ "$MERGER_DELETE_BRANCH" = "1" ] && merge_args+=(--delete-branch)
       if PAGER=cat GIT_PAGER=cat gh pr merge "$pr" --repo "$REPO_SLUG" "${merge_args[@]}" >/dev/null 2>&1; then
         echo "[$(ts)] [merger] merged pr=#${pr} verdict=${verdict}"
-        event_emit merger dispatch_fired kind=merge pr="$pr" verdict="$verdict"
+        event_emit merger dispatch_fired kind=merge pr="$pr" verdict="$verdict" dispatch_id="$dispatch_id"
         dispatched=$((dispatched + 1))
       else
         # gh failure here is rare (network, permissions, race with a human
         # merging concurrently). Log and move on; the candidate scan will
         # re-test next cycle.
         echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict} reason=gh-merge-failed"
-        event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict" reason=gh-merge-failed
+        event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict" reason=gh-merge-failed dispatch_id="$dispatch_id"
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
@@ -498,11 +514,16 @@ loop_dispatcher_conflicts() {
         break
       fi
 
+      # GH#172: one dispatch_id per PR-attempt, stamped on the fire / skip
+      # emits and exported into the wrapper subshell so the Mode 3 chain
+      # (eligibility, triage_result, llm_started, llm_exited, hard_failure)
+      # joins to the dispatcher decision that spawned it.
+      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:conflicts] dispatching resolve-conflicts for PR #${pr}"
-        event_emit "dispatch:conflicts" dispatch_fired kind=conflicts pr="$pr"
-        ("$LOOP_HOME/runners/run-developer.sh" resolve-conflicts "$pr" >/dev/null 2>&1) &
+        event_emit "dispatch:conflicts" dispatch_fired kind=conflicts pr="$pr" dispatch_id="$dispatch_id"
+        (LOOP_DISPATCH_ID="$dispatch_id" "$LOOP_HOME/runners/run-developer.sh" resolve-conflicts "$pr" >/dev/null 2>&1) &
         local child=$!
         echo "$child" >"$lock/pid"
         dispatched=$((dispatched + 1))
@@ -512,7 +533,7 @@ loop_dispatcher_conflicts() {
         # etc.). Make it loud so the next failure mode after GH#86 is not
         # another silent fall-through.
         echo "[$(ts)] [dispatch:conflicts] WARN: mkdir failed for PR #${pr} lock at ${lock} (parent dir or permissions?)"
-        event_emit "dispatch:conflicts" dispatch_skip kind=conflicts pr="$pr" reason=mkdir-failed
+        event_emit "dispatch:conflicts" dispatch_skip kind=conflicts pr="$pr" reason=mkdir-failed dispatch_id="$dispatch_id"
       fi
     done < <(
       # GH#111: `labels` is added to the field set so the conflicts predicate

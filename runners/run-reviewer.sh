@@ -58,6 +58,17 @@ REPO="$REPO_ROOT"
 : "${REVIEWER_SUB_AGENT_FAILURE_CAP:=3}"
 : "${REVIEWER_ESCALATION_LABEL:=reviewer:needs-human}"
 
+# GH#172: per-invocation dispatch correlation field. The dispatcher
+# (run-loop.sh: loop_dispatcher_review) generates a dispatch_id at each fire
+# site and exports LOOP_DISPATCH_ID into the wrapper's env so structured-event
+# consumers can join `dispatch_fired` to this wrapper's `llm_started` /
+# `llm_exited` / `hard_failure` chain. Stored as a single string and
+# expanded UNQUOTED at each call site — bash 3.2 (macOS default) errors
+# on `"${empty_array[@]}"` under `set -u`. dispatch_id values are
+# `${PID}-<ns_timestamp>` and never contain spaces.
+_dispatch_kv=""
+[ -n "${LOOP_DISPATCH_ID:-}" ] && _dispatch_kv="dispatch_id=${LOOP_DISPATCH_ID}"
+
 # Defense-in-depth single-PR check (GH#117): the dispatcher already filtered
 # this PR via eligibility_review_pending_list, but the time between scan and
 # wrapper start is non-zero. A fresh review may have landed, the PR may have
@@ -76,7 +87,7 @@ if [ -z "$PR_DATA" ]; then
   # same shape across wrappers.
   echo "[wrapper] eligibility: predicate failed (gh-pr-view rc=non-zero or empty); skipping LLM invocation and backing off" >&2
   echo "[wrapper] result=no-work reason=predicate-failed"
-  event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR"
+  event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR" $_dispatch_kv
   exit 2
 fi
 
@@ -102,20 +113,20 @@ ELIG_DECISION=$(
 case "$ELIG_DECISION" in
   proceed)
     echo "[wrapper] eligibility: PR #${TARGET_PR} ready for review; proceeding"
-    event_emit reviewer eligibility result=proceeding pr="$TARGET_PR"
+    event_emit reviewer eligibility result=proceeding pr="$TARGET_PR" $_dispatch_kv
     ;;
   skip:*)
     REASON="${ELIG_DECISION#skip:}"
     echo "[wrapper] eligibility: PR #${TARGET_PR} not eligible (${REASON}); no PRs need review here, skipping LLM invocation"
     echo "[wrapper] result=no-work reason=${REASON}"
-    event_emit reviewer eligibility result=no-work pr="$TARGET_PR" reason="$REASON"
+    event_emit reviewer eligibility result=no-work pr="$TARGET_PR" reason="$REASON" $_dispatch_kv
     exit 2
     ;;
   *)
     # jq itself failed (malformed JSON, jq missing) — treat as predicate failed.
     echo "[wrapper] eligibility: predicate failed (jq classification error); skipping LLM invocation and backing off" >&2
     echo "[wrapper] result=no-work reason=predicate-failed"
-    event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR"
+    event_emit reviewer eligibility result=predicate-failed pr="$TARGET_PR" $_dispatch_kv
     exit 2
     ;;
 esac
@@ -174,7 +185,7 @@ echo
 # Background the pipeline in a subshell with `set -m` so `wait` (below) is
 # signal-interruptible and the pipeline lives in its own process group. See
 # runners/lib/pipeline_signal.sh for the rationale.
-event_emit reviewer llm_started mode=default pr="$TARGET_PR"
+event_emit reviewer llm_started mode=default pr="$TARGET_PR" $_dispatch_kv
 _llm_start_s=$(date +%s)
 set -m
 (
@@ -211,7 +222,7 @@ _llm_cost_kv=()
 while IFS= read -r _kv; do
   [ -n "$_kv" ] && _llm_cost_kv+=("$_kv")
 done < <(event_cost_fields_from_raw "$RAW")
-event_emit reviewer llm_exited mode=default pr="$TARGET_PR" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_cost_kv[@]}"
+event_emit reviewer llm_exited mode=default pr="$TARGET_PR" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" $_dispatch_kv "${_llm_cost_kv[@]}"
 unset _llm_cost_kv _kv
 
 # GH#127: count Bash tool_use events from the raw stream-json and emit a
@@ -229,7 +240,7 @@ if [ -f "$RAW" ]; then
   BASH_CALL_COUNT="${BASH_CALL_COUNT:-0}"
   if [ "$BASH_CALL_COUNT" -gt "$REVIEWER_BASH_CALL_GUIDANCE" ]; then
     echo "[wrapper] reviewer used $BASH_CALL_COUNT Bash calls (guidance ~$REVIEWER_BASH_CALL_GUIDANCE)" >&2
-    event_emit reviewer bash_overshoot count="$BASH_CALL_COUNT" guidance="$REVIEWER_BASH_CALL_GUIDANCE" pr="$TARGET_PR"
+    event_emit reviewer bash_overshoot count="$BASH_CALL_COUNT" guidance="$REVIEWER_BASH_CALL_GUIDANCE" pr="$TARGET_PR" $_dispatch_kv
   fi
   unset BASH_CALL_COUNT
 fi
@@ -280,7 +291,7 @@ if [ "$LLM_EXIT" -eq 0 ]; then
     # stub (below cap), escalate to a human (cap hit), or idempotent-skip
     # (label already present). All three paths represent the same underlying
     # event from a control-tower perspective.
-    event_emit reviewer hard_failure mode=default pr="$FAILED_PR" reason=no-result-line
+    event_emit reviewer hard_failure mode=default pr="$FAILED_PR" reason=no-result-line $_dispatch_kv
 
     # The substring is the unambiguous marker for "wrapper-posted stub" vs
     # "LLM-authored real [reviewer-agent: blocked] verdict" — the LLM's
@@ -364,7 +375,7 @@ if [ "$LLM_EXIT" -eq 0 ]; then
 
       if [ "$DRIFT_VERDICT" = "drift" ]; then
         echo "[wrapper] verdict-drift detected on PR #${TARGET_PR}: latest reviewer-agent review body does not match REVIEWER_AGENT_VERDICT_REGEX (canonical token set: clean|nits|comment|changes|blocked)" >&2
-        event_emit reviewer verdict_drift pr="$TARGET_PR"
+        event_emit reviewer verdict_drift pr="$TARGET_PR" $_dispatch_kv
         VERDICT_DRIFT_DETECTED=1
       fi
     fi
