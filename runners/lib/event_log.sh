@@ -80,6 +80,19 @@ event_emit() {
   if [ "$#" -lt 2 ]; then return 0; fi
   local role="$1" event="$2"
   shift 2
+  # GH#175: defense-in-depth refuse to emit any event carrying the `pr=?`
+  # sentinel that eligibility helpers echo on gh-failure. The upstream fix
+  # in loop_dispatcher_review (run-loop.sh) drops "?" before it reaches
+  # event_emit, but pinning the rejection here too prevents any future
+  # caller from accidentally serialising a schema-violating event. Log to
+  # stderr and return 0 — instrumentation must never break the loop.
+  local _kv
+  for _kv in "$@"; do
+    if [ "$_kv" = "pr=?" ]; then
+      printf 'event_emit: refusing %s event with pr=? sentinel (role=%s)\n' "$event" "$role" >&2
+      return 0
+    fi
+  done
   local file="${LOOP_EVENT_LOG:-/tmp/loop-events-${SESSION:-default}.jsonl}"
   local ts
   ts=$(date -Iseconds 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z")

@@ -149,11 +149,24 @@ require a version bump.
 | event              | role(s)                                                  | extra fields                                | when |
 |--------------------|----------------------------------------------------------|---------------------------------------------|------|
 | `dispatch_fired`   | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`, `merger` | `pr`, `kind`, `verdict` (when present)      | when the dispatcher actually fires the underlying action (background dev-agent run for follow-up/conflicts, background reviewer run for review, server-side merge for merger) |
-| `dispatch_skip`    | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`, `merger` | `pr`, `kind`, `reason` or `verdict`         | when an eligible PR is skipped (already-locked, gh-merge-failed, predicate skip) |
+| `dispatch_skip`    | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`, `merger` | `pr` (when known), `kind`, `reason` or `verdict` | when an eligible PR is skipped (already-locked, gh-merge-failed, predicate skip, missing-pr) |
 | `dispatch_at_cap`  | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`           | `kind`, `active`, `cap`                     | when the concurrency cap is reached and remaining eligible PRs are deferred to the next cycle. `dispatch:review` uses an independent `REVIEWER_DISPATCH_MAX_CONCURRENT` cap (GH#117); the other two share `DISPATCH_MAX_CONCURRENT` |
 
 `kind` is `review` / `followup` / `conflicts` / `merge` and disambiguates
 events when they all share a role-style name.
+
+`reason` on `dispatch_skip` is one of:
+
+| value            | meaning                                                                                                                                          | emitted by                                                       |
+|------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
+| `mkdir-failed`   | Per-PR lock `mkdir` failed for a non-EEXIST reason (parent missing, permissions) — the legitimate already-locked EEXIST skip stays silent (GH#86) | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`      |
+| `gh-merge-failed`| `gh pr merge` returned non-zero (network, permissions, race with a concurrent human merge) — candidate is re-tested next cycle                  | `merger`                                                          |
+| `missing-pr`     | The eligibility predicate returned its `?` sentinel (gh/jq transient failure) so no PR number is available — emitted without a `pr` field (GH#175) | `dispatch:review`                                                 |
+
+A `verdict` value appears instead of `reason` when the skip is driven by a
+verdict-aware predicate (`eligibility_followup_pr`, `eligibility_merge_pr`)
+— e.g. `verdict=clean` / `nits` / `none` / `?`. The two fields are
+mutually exclusive on a single `dispatch_skip` event.
 
 ## Versioning
 
