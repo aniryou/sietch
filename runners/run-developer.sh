@@ -585,7 +585,13 @@ if [ "$MODE" = "default" ] && [ -n "${DEV_AGENT_TARGET_ISSUE:-}" ]; then
         "$_retry_blocked_label" "$_retry_body"
       unset _retry_body
     fi
-    event_emit dev hard_failure mode="$MODE" issue="$DEV_AGENT_TARGET_ISSUE" exit_code="$LLM_EXIT" retry_count="$_retry_next"
+    # GH#171: classify so dashboards can group transient (max-turns / api-error)
+    # vs deterministic (pipeline-crash / unknown) failures separately. The
+    # helper inspects the raw stream-json tail and stderr first, then falls
+    # back to exit-code heuristics — see runners/lib/hard_failure.sh.
+    _hf_reason=$(classify_llm_failure_reason "$LLM_EXIT" "$RAW" "$RAW.stderr")
+    event_emit dev hard_failure mode="$MODE" issue="$DEV_AGENT_TARGET_ISSUE" exit_code="$LLM_EXIT" retry_count="$_retry_next" reason="$_hf_reason"
+    unset _hf_reason
     unset _retry_labels_json _retry_current _retry_next
   else
     # Success path — clear any dev-failed:N labels so a transient failure
@@ -718,7 +724,10 @@ EOF
   # the next cycle's `isDraft == false` filter. Routed through gh_best_effort
   # (GH#99) so a transient gh failure leaves a stderr breadcrumb.
   gh_best_effort gh pr ready --undo "$TARGET_PR" --repo "$REPO_SLUG"
-  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
+  # GH#171: `mode3-give-up` tags Mode 3 wrapper-side aborts — distinct from
+  # the LLM's graceful aborts (ambiguous-intent / post-resolution test
+  # failure / post-force-push CI failure), which never reach this branch.
+  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT" reason=mode3-give-up
   unset HARD_FAIL_BODY ESCALATION_BODY
 fi
 
@@ -764,7 +773,11 @@ if [ "$MODE" = "follow-up" ] && [ "$LLM_EXIT" -ne 0 ]; then
     "$DEV_FOLLOWUP_FAILURE_RETRY_LIMIT" \
     "$STUB_BODY" \
     "$ESCALATION_BODY"
-  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT"
+  # GH#171: `mode2-give-up` tags the wrapper-side follow-up stub. The LLM's
+  # graceful Mode 2 paths (complete / gave-up / no-action) post their own
+  # `🤖 Developer agent — follow-up …` comments and exit 0, so they don't
+  # reach this branch.
+  event_emit dev hard_failure mode="$MODE" pr="$TARGET_PR" exit_code="$LLM_EXIT" reason=mode2-give-up
   unset STUB_BODY ESCALATION_BODY
 fi
 

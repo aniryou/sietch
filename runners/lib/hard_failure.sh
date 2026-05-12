@@ -88,3 +88,59 @@ hard_failure_idempotent_escalate() {
 
   return 0
 }
+
+# GH#171 — classify a non-zero LLM exit into a documented `hard_failure.reason`
+# value. The reason field powers cross-failure grouping in the event log
+# (Grafana / control-tower dashboards) so transient blips (api-error, max-turns)
+# don't get aggregated with deterministic failures (pipeline-crash, unknown).
+#
+# Returns one of the closed-set values:
+#   max-turns | api-error | pipeline-crash | unknown
+#
+# (`mode2-give-up`, `mode3-give-up`, and `no-result-line` are emitted by their
+# call sites directly — they're mode-tagged, not exit-code-classified, so they
+# don't flow through this helper.)
+#
+# Args:
+#   $1 = LLM exit code (e.g. $LLM_EXIT)
+#   $2 = path to raw stream-json file (optional; "" or missing → skip inspect)
+#   $3 = path to stderr file           (optional; "" or missing → skip inspect)
+#
+# Heuristic order (first match wins):
+#   1. Raw stream-json tail mentions max_turns_exceeded / error_max_turns →
+#      `max-turns`. Claude's CLI prints a final stream-json `result` event with
+#      subtype=error_max_turns when --max-turns trips, and the marker is robust
+#      across exit codes (claude has used 0, 1, and 124 across versions).
+#   2. Stderr tail matches "max[ _-]turns" or "turn limit" → `max-turns`.
+#   3. Exit 124 (GNU `timeout`'s SIGTERM signal) → `max-turns`. Mirrors the
+#      mock used by test_dev_failure_retry.bats and test_dev_followup_failure.bats.
+#   4. Exit 137 (SIGKILL, typically OOM) or 143 (SIGTERM) → `pipeline-crash`.
+#   5. Exit 1 or 2 (claude's most common generic error codes — surface
+#      includes API/network errors, parse failures, auth issues) → `api-error`.
+#   6. Everything else → `unknown`.
+classify_llm_failure_reason() {
+  local exit_code="${1:-}"
+  local raw_path="${2:-}"
+  local stderr_path="${3:-}"
+
+  if [ -n "$raw_path" ] && [ -f "$raw_path" ]; then
+    if tail -c 8192 "$raw_path" 2>/dev/null \
+      | grep -qE 'error_max_turns|max_turns_exceeded|"subtype":"error_max_turns"'; then
+      printf '%s\n' "max-turns"
+      return 0
+    fi
+  fi
+  if [ -n "$stderr_path" ] && [ -f "$stderr_path" ]; then
+    if tail -c 4096 "$stderr_path" 2>/dev/null \
+      | grep -qiE 'max(imum)?[ _-]?turns?|turn limit'; then
+      printf '%s\n' "max-turns"
+      return 0
+    fi
+  fi
+  case "$exit_code" in
+    124) printf '%s\n' "max-turns" ;;
+    137 | 143) printf '%s\n' "pipeline-crash" ;;
+    1 | 2) printf '%s\n' "api-error" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}

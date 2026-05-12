@@ -23,10 +23,11 @@
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
-# v2 (GH#170): `llm_exited` events now also carry `total_cost_usd`,
+# v2 (GH#170, GH#171): `llm_exited` events now also carry `total_cost_usd`,
 # `input_tokens`, `output_tokens`, `num_turns` extracted from the agent's
-# stream-json result frame. A required-field set change, so the version
-# bumps per the contract in docs/event-schema.md.
+# stream-json result frame (GH#170); and `hard_failure` events now carry a
+# `reason` from a closed enum (GH#171). Both are required-field set
+# changes, so the version bumps per the contract in docs/event-schema.md.
 LOOP_EVENT_SCHEMA_VERSION=2
 
 # event_cost_fields_from_raw <stream-json-file>

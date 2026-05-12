@@ -95,9 +95,27 @@ completion). Schema v2 — consumers can rely on the fields existing on every
 
 ### Hard failures (post-LLM fallback paths)
 
-| event          | role               | extra fields                                                 | when |
-|----------------|--------------------|--------------------------------------------------------------|------|
-| `hard_failure` | `dev`, `reviewer`  | `mode`, `pr` or `issue`, `exit_code`, `retry_count` (Mode 1) | when a wrapper-level fallback fires after a non-zero LLM exit (Mode 1 retry counter, Mode 2 stub follow-up comment, Mode 3 hard-fail draft, reviewer sub-agent stub review) |
+| event          | role               | extra fields                                                                       | when |
+|----------------|--------------------|------------------------------------------------------------------------------------|------|
+| `hard_failure` | `dev`, `reviewer`  | `mode`, `pr` or `issue`, `exit_code`, `retry_count` (Mode 1), `reason` (required)  | when a wrapper-level fallback fires after a non-zero LLM exit (Mode 1 retry counter, Mode 2 stub follow-up comment, Mode 3 hard-fail draft, reviewer sub-agent stub review) |
+
+`reason` is a closed enum that groups failures so transient blips can be
+trended separately from deterministic ones. Allowed values:
+
+| value            | meaning                                                                                                          | emitted by                                                                              |
+|------------------|------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `max-turns`      | LLM hit `--max-turns` (stream-json marker `error_max_turns` / `max_turns_exceeded`, stderr "max turns", exit 124) | `dev` (Mode 1)                                                                          |
+| `api-error`      | LLM exited 1 or 2 — claude's most common generic non-zero (API/network/auth/parse)                                | `dev` (Mode 1)                                                                          |
+| `pipeline-crash` | Wrapper-pipeline crash inferred from exit 137 (SIGKILL/OOM) or 143 (SIGTERM)                                      | `dev` (Mode 1)                                                                          |
+| `mode2-give-up`  | Wrapper-side Mode 2 (follow-up) stub fired after the LLM exited non-zero before posting a graceful comment        | `dev` (Mode 2)                                                                          |
+| `mode3-give-up`  | Wrapper-side Mode 3 (conflict resolution) stub fired after the LLM exited non-zero before a graceful abort        | `dev` (Mode 3)                                                                          |
+| `no-result-line` | Reviewer LLM exited 0 but never printed its `[reviewer-agent] result=…` summary line                              | `reviewer`                                                                              |
+| `unknown`        | Classification fell through every heuristic — unrecognized exit code, no stream-json/stderr signal                | `dev` (Mode 1)                                                                          |
+
+Adding a new value: prefer extending this table over reusing `unknown`.
+Bump `schema_version` only when the change is breaking (rename, removal,
+new required field); adding an enum value is non-breaking and does not
+require a version bump.
 
 ### Dispatcher lifecycle (emitted by `run-loop.sh`)
 
@@ -119,6 +137,10 @@ change bumps the version. Consumers should refuse events with a
 
 History:
 
-- `2` (GH#170): `llm_exited` gained four required cost / token fields
-  (`total_cost_usd`, `input_tokens`, `output_tokens`, `num_turns`).
+- `2` (GH#170, GH#171): `llm_exited` gained four required cost / token
+  fields (`total_cost_usd`, `input_tokens`, `output_tokens`, `num_turns`)
+  per GH#170; `hard_failure` gained a required `reason` field (closed
+  enum) per GH#171. Pre-`2` consumers parsing the legacy `hard_failure`
+  row will still find `mode` / `pr` or `issue` / `exit_code` /
+  `retry_count` unchanged.
 - `1`: initial.
