@@ -395,8 +395,37 @@ if [ "$MODE" = "resolve-conflicts" ] && [ "$INTERACTIVE" = 1 ]; then
   echo "[wrapper] interactive: Mode 3 on PR #${TARGET_PR} (triage skipped)"
 elif [ "$MODE" = "resolve-conflicts" ]; then
   echo "[wrapper] running triage for PR #$TARGET_PR..."
+  # GH#173: wall-clock timing + structured conflict counts on triage_result.
+  # Capture wall-clock around the triage call (mirror the _llm_start_s
+  # pattern at the LLM site below) so every triage_result emit carries
+  # duration_s. Parse the LAST `[triage] result=` line out of TRIAGE_OUTPUT
+  # for conflict_files / conflict_lines / triage_files_count — triage's
+  # emit() prints them as key=value tokens on that one line.
+  _triage_start_s=$(date +%s)
   TRIAGE_OUTPUT=$("$LOOP_HOME/runners/run-conflict-triage.sh" "$TARGET_PR" 2>&1)
   TRIAGE_RC=$?
+  _triage_dur_s=$(($(date +%s) - _triage_start_s))
+  # Defaults cover the rc=2 path (transient gh/git outage): emit() never
+  # ran, so no `[triage] result=` line exists — the count fields stay
+  # 0/empty per the GH#173 acceptance criteria.
+  _triage_files=""
+  _triage_lines=0
+  _triage_files_count=0
+  _triage_line=$(printf '%s\n' "$TRIAGE_OUTPUT" | loop_marker_last '^\[triage\] result=')
+  if [ -n "$_triage_line" ]; then
+    # Greedy capture for the CSV — the field can contain commas; everything
+    # between `conflict_files=` and ` conflict_lines=` is the value.
+    _triage_files=$(printf '%s\n' "$_triage_line" \
+      | sed -nE 's/.* conflict_files=(.*) conflict_lines=.*/\1/p')
+    _triage_lines=$(printf '%s\n' "$_triage_line" \
+      | sed -nE 's/.* conflict_lines=([0-9]+).*/\1/p')
+    _triage_files_count=$(printf '%s\n' "$_triage_line" \
+      | sed -nE 's/.* triage_files_count=([0-9]+).*/\1/p')
+    # Default any field that the regex missed (older triage output without
+    # the new field, or a future format change) to a benign zero/empty.
+    : "${_triage_lines:=0}"
+    : "${_triage_files_count:=0}"
+  fi
   case "$TRIAGE_RC" in
     0)
       echo "$TRIAGE_OUTPUT"
@@ -410,11 +439,21 @@ elif [ "$MODE" = "resolve-conflicts" ]; then
       if grep -q 'reason=no-conflict' <<<"$TRIAGE_OUTPUT"; then
         echo "[wrapper] triage reports no conflict — skipping LLM (PR already mergeable)."
         echo "[wrapper] result=triage-no-conflict pr=#${TARGET_PR}"
-        event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=no-conflict "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+        event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=no-conflict \
+          duration_s="$_triage_dur_s" \
+          conflict_files="$_triage_files" \
+          conflict_lines="$_triage_lines" \
+          triage_files_count="$_triage_files_count" \
+          "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
         exit 0
       fi
       echo "[wrapper] triage tractable — invoking dev-agent Mode 3."
-      event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=mechanical-conflict "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev triage_result pr="$TARGET_PR" result=tractable reason=mechanical-conflict \
+        duration_s="$_triage_dur_s" \
+        conflict_files="$_triage_files" \
+        conflict_lines="$_triage_lines" \
+        triage_files_count="$_triage_files_count" \
+        "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
       ;;
     1)
       echo "$TRIAGE_OUTPUT" >&2
@@ -427,7 +466,12 @@ elif [ "$MODE" = "resolve-conflicts" ]; then
         | loop_marker_last 'reason=[^ ]+' \
         | cut -d= -f2-)
       echo "[wrapper] triage says untractable (reason=${REASON}); escalating without invoking LLM." >&2
-      event_emit dev triage_result pr="$TARGET_PR" result=untractable reason="$REASON" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev triage_result pr="$TARGET_PR" result=untractable reason="$REASON" \
+        duration_s="$_triage_dur_s" \
+        conflict_files="$_triage_files" \
+        conflict_lines="$_triage_lines" \
+        triage_files_count="$_triage_files_count" \
+        "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
       PAGER=cat GIT_PAGER=cat gh pr comment "$TARGET_PR" --repo "$REPO_SLUG" --body "$(
         cat <<EOF
 🤖 Conflict triage — auto-resolution declined.
@@ -451,10 +495,17 @@ EOF
       echo "$TRIAGE_OUTPUT" >&2
       echo "[wrapper] triage failed (rc=$TRIAGE_RC); transient setup error, skipping LLM and not drafting. Will retry next dispatcher cycle." >&2
       echo "[wrapper] result=triage-failed pr=#${TARGET_PR} rc=${TRIAGE_RC}"
-      event_emit dev triage_result pr="$TARGET_PR" result=failed rc="$TRIAGE_RC" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev triage_result pr="$TARGET_PR" result=failed rc="$TRIAGE_RC" \
+        duration_s="$_triage_dur_s" \
+        conflict_files="$_triage_files" \
+        conflict_lines="$_triage_lines" \
+        triage_files_count="$_triage_files_count" \
+        "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
       exit 2
       ;;
   esac
+  unset _triage_start_s _triage_dur_s _triage_line \
+    _triage_files _triage_lines _triage_files_count
 fi
 
 # jq filter: turn each stream-json event into one human-readable line.

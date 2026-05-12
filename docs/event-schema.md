@@ -78,9 +78,30 @@ so tower consumers can assume the file grows on every cycle of every pane.
 
 ### Mode 3 conflict triage (`run-developer.sh`)
 
-| event           | role  | extra fields              | when |
-|-----------------|-------|---------------------------|------|
-| `triage_result` | `dev` | `pr`, `result`, `reason`  | after `runners/run-conflict-triage.sh` returns; `result` is `tractable` / `untractable` / `failed` |
+| event           | role  | extra fields                                                                                              | when |
+|-----------------|-------|-----------------------------------------------------------------------------------------------------------|------|
+| `triage_result` | `dev` | `pr`, `result`, `reason`, `duration_s`, `conflict_files`, `conflict_lines`, `triage_files_count`          | after `runners/run-conflict-triage.sh` returns; `result` is `tractable` / `untractable` / `failed` |
+
+`duration_s` is wall-clock seconds spent inside the triage call (integer,
+`>= 0`). Always present, even on the rc=2 transient-failure path.
+
+`conflict_files` is a CSV string of the conflicting file paths the triage
+script identified (the same value `runners/run-conflict-triage.sh` prints
+on its `[triage] result=…` summary line). Empty string for
+`reason=no-conflict` and for `result=failed` (when triage exited before
+computing the list).
+
+`conflict_lines` is the integer total of conflict lines across all files
+(counts both `ours` and `theirs` sides; the `=======` separator is not
+counted — see Rule 4 in `run-conflict-triage.sh`). Zero for
+`reason=no-conflict`, for `result=failed`, and for untractable cases that
+fired Rules 1–3 (test-file / CI-secrets / core-file) before the line
+counter ran.
+
+`triage_files_count` is the integer file count (`0` when
+`conflict_files` is empty, otherwise the number of comma-separated
+entries). Cardinality-bounded — safe to group by in dashboards, unlike
+`conflict_files`.
 
 ### LLM invocation (emitted by both wrappers)
 

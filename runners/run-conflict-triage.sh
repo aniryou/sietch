@@ -62,7 +62,15 @@ emit() {
   shift
   local reason="$1"
   shift
-  echo "[triage] result=${result} reason=${reason} issue=#${ISSUE_NUM:-unknown} conflict_files=${CONFLICT_FILES_CSV:-} conflict_lines=${CONFLICT_LINES:-0}"
+  # GH#173 — `triage_files_count` is a small int (cardinality-bounded;
+  # safe to group by in dashboards) derived from CONFLICT_FILES_CSV.
+  # CONFLICT_FILES_CSV being empty means zero files; anything else has at
+  # least one. Computed here so the wrapper doesn't have to re-derive it.
+  local files_count=0
+  if [ -n "${CONFLICT_FILES_CSV:-}" ]; then
+    files_count=$(awk -F, '{print NF}' <<<"${CONFLICT_FILES_CSV}")
+  fi
+  echo "[triage] result=${result} reason=${reason} issue=#${ISSUE_NUM:-unknown} conflict_files=${CONFLICT_FILES_CSV:-} conflict_lines=${CONFLICT_LINES:-0} triage_files_count=${files_count}"
 }
 
 # Step 1: read PR metadata
