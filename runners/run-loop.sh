@@ -276,7 +276,8 @@ loop_dispatcher_review() {
       # GH#172: one dispatch_id per PR-attempt — exported into the wrapper
       # below and stamped on both the fire and skip emits so consumers can
       # trace `dispatch_fired → llm_started → llm_exited` end-to-end.
-      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+      local dispatch_id
+      dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:review] dispatching review for PR #${pr}"
@@ -349,7 +350,8 @@ loop_dispatcher_followup() {
       # GH#172: one dispatch_id per PR-attempt — stamped on every skip /
       # fire emit for this PR and exported into the wrapper so consumers
       # can join the dispatcher decision to the wrapper's event chain.
-      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+      local dispatch_id
+      dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
 
       # Verdict-aware gate (GH#24): skip clean/nits unconditionally, and
       # changes/comment/blocked once the dev-agent has already responded.
@@ -429,7 +431,8 @@ loop_dispatcher_merge() {
       # merge decision end-to-end. The merger never backgrounds a wrapper
       # (it calls `gh pr merge` directly), so there is no LOOP_DISPATCH_ID
       # to export — the id only lives on this dispatcher's events.
-      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+      local dispatch_id
+      dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
 
       # Verdict + staleness + human-veto + CI gate. The predicate prints the
       # verdict on stdout for the log line; exit 0 = merge, 1 = skip, 2 =
@@ -518,7 +521,8 @@ loop_dispatcher_conflicts() {
       # emits and exported into the wrapper subshell so the Mode 3 chain
       # (eligibility, triage_result, llm_started, llm_exited, hard_failure)
       # joins to the dispatcher decision that spawned it.
-      local dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+      local dispatch_id
+      dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
       if mkdir "$lock" 2>/dev/null; then
         echo "$$" >"$lock/pid"
         echo "[$(ts)] [dispatch:conflicts] dispatching resolve-conflicts for PR #${pr}"
