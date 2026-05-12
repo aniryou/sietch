@@ -59,9 +59,9 @@ so tower consumers can assume the file grows on every cycle of every pane.
 
 ### Wrapper eligibility (emitted by `run-developer.sh` and `run-reviewer.sh`)
 
-| event         | role(s)             | extra fields                                                | when |
-|---------------|---------------------|-------------------------------------------------------------|------|
-| `eligibility` | `dev`, `reviewer`   | `result`, `count` (when `proceeding`), `duration_s`         | after the eligibility predicate runs |
+| event         | role(s)             | extra fields                                                                                                                                       | when |
+|---------------|---------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|------|
+| `eligibility` | `dev`, `reviewer`   | `result`, `count` (proceeding, dev), `duration_s`, `mode` (dev), `pr` (reviewer), `reason` (no-work, reviewer), `rc` (predicate-failed, dev)       | after the eligibility predicate runs |
 
 `result` is one of:
 
@@ -74,6 +74,19 @@ predicate — for `dev` that's the `runners/lib/eligibility.sh dev-candidates`
 subprocess, for `reviewer` the `gh pr view` round-trip plus the in-wrapper
 `jq` classification. Lets the tower attribute a slow run's pre-LLM slice
 without dropping back to the human log file. Always present, integer ≥ 0.
+
+Wrapper-specific fields:
+
+- `mode` (dev only) — mirrors the LLM-invocation `mode` (`default` /
+  `follow-up` / `resolve-conflicts`). Present on every dev `eligibility`
+  emit.
+- `rc` (dev `predicate-failed` only) — the eligibility script's non-zero
+  exit code (`runners/lib/eligibility.sh`). Lets the tower distinguish
+  transient `gh` outages from other predicate failures.
+- `pr` (reviewer only) — the target PR number passed to `st review`.
+- `reason` (reviewer `no-work` only) — closed-enum skip reason, one of
+  `not-open`, `draft`, `escalated`, `ci-running`, `reviewed`. Lets the
+  tower trend skip causes separately.
 
 ### Lock acquisition (Mode 1, `run-developer.sh`)
 
@@ -91,12 +104,17 @@ expensive that contention was. Always present, both integer ≥ 0
 
 ### Mode 3 conflict triage (`run-developer.sh`)
 
-| event           | role  | extra fields                                                                                              | when |
-|-----------------|-------|-----------------------------------------------------------------------------------------------------------|------|
-| `triage_result` | `dev` | `pr`, `result`, `reason`, `duration_s`, `conflict_files`, `conflict_lines`, `triage_files_count`          | after `runners/run-conflict-triage.sh` returns; `result` is `tractable` / `untractable` / `failed` |
+| event           | role  | extra fields                                                                                                    | when |
+|-----------------|-------|-----------------------------------------------------------------------------------------------------------------|------|
+| `triage_result` | `dev` | `pr`, `result`, `reason`, `duration_s`, `conflict_files`, `conflict_lines`, `triage_files_count`, `rc` (failed) | after `runners/run-conflict-triage.sh` returns; `result` is `tractable` / `untractable` / `failed` |
 
 `duration_s` is wall-clock seconds spent inside the triage call (integer,
 `>= 0`). Always present, even on the rc=2 transient-failure path.
+
+`rc` is the triage script's non-zero exit code, present only on
+`result=failed`. Lets the tower distinguish setup failures (rc=2: `gh`
+outage, `git fetch` failure) from other classification errors without
+parsing the human-readable wrapper log.
 
 `conflict_files` is a CSV string of the conflicting file paths the triage
 script identified (the same value `runners/run-conflict-triage.sh` prints
@@ -156,6 +174,20 @@ Adding a new value: prefer extending this table over reusing `unknown`.
 Bump `schema_version` only when the change is breaking (rename, removal,
 new required field); adding an enum value is non-breaking and does not
 require a version bump.
+
+### Reviewer signals (emitted by `run-reviewer.sh`)
+
+Soft, post-LLM signals the reviewer wrapper computes for the tower; neither
+event represents a wrapper-level hard failure (those use `hard_failure`).
+
+| event            | role       | extra fields                  | when |
+|------------------|------------|-------------------------------|------|
+| `bash_overshoot` | `reviewer` | `count`, `guidance`, `pr`     | after the reviewer LLM exits 0 and the count of `Bash` `tool_use` events in the raw stream-json exceeds `REVIEWER_BASH_CALL_GUIDANCE`. Soft signal — the wrapper does not interrupt the run, change the exit code, or post a stub. Exists so the prompt or threshold can be tuned over time without breaking flowing reviews |
+| `verdict_drift`  | `reviewer` | `pr`                          | after the reviewer LLM exits 0 with a result line AND the most recent reviewer-agent review body posted on the PR (at the current head SHA) does not match `REVIEWER_AGENT_VERDICT_REGEX` (e.g. an off-spec `[reviewer-agent: commented]` instead of canonical `comment`). The wrapper then exits 1 so dispatcher backoff / the per-PR stub-failure cap (GH#94) can take over |
+
+`count` is the integer `Bash` `tool_use` call count and `guidance` is the
+configured threshold (`REVIEWER_BASH_CALL_GUIDANCE`); the tower can plot
+the ratio over time to decide when to retune the prompt.
 
 ### Dispatcher lifecycle (emitted by `run-loop.sh`)
 
