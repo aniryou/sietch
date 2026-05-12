@@ -262,6 +262,22 @@ loop_dispatcher_review() {
 
     while IFS= read -r pr; do
       [ -z "$pr" ] && continue
+      # GH#175: eligibility_review_pending_list echoes a literal "?" as its
+      # gh-failure sentinel (see runners/lib/eligibility.sh) so the predicate
+      # still produces a log line. Without this guard "?" was consumed as a
+      # PR number — the dispatcher acquired a `pr-?-review.lock`, emitted
+      # `dispatch_fired pr=?` (schema violation; pr is required-numeric), and
+      # fanned out a reviewer for the non-existent PR #?. Drop non-numeric
+      # values up front; emit `dispatch_skip reason=missing-pr` for visibility.
+      # No `pr` field on the skip event — the value is by definition unknown
+      # here, and the per-PR dispatch_id can't bind us to a real PR either.
+      if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+        local skip_dispatch_id
+        skip_dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
+        echo "[$(ts)] [dispatch:review] WARN: dropping non-numeric pr=${pr} from review-list (eligibility sentinel?)"
+        event_emit "dispatch:review" dispatch_skip kind=review reason=missing-pr dispatch_id="$skip_dispatch_id"
+        continue
+      fi
       local lock="${DISPATCH_LOCK_DIR}/${LOCK_NAME_PREFIX}pr-${pr}-review.lock"
       [ -d "$lock" ] && continue
 
