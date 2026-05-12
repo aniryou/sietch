@@ -59,9 +59,9 @@ so tower consumers can assume the file grows on every cycle of every pane.
 
 ### Wrapper eligibility (emitted by `run-developer.sh` and `run-reviewer.sh`)
 
-| event         | role(s)             | extra fields                                | when |
-|---------------|---------------------|---------------------------------------------|------|
-| `eligibility` | `dev`, `reviewer`   | `result`, `count` (when `proceeding`)       | after the eligibility predicate runs |
+| event         | role(s)             | extra fields                                                | when |
+|---------------|---------------------|-------------------------------------------------------------|------|
+| `eligibility` | `dev`, `reviewer`   | `result`, `count` (when `proceeding`), `duration_s`         | after the eligibility predicate runs |
 
 `result` is one of:
 
@@ -69,12 +69,25 @@ so tower consumers can assume the file grows on every cycle of every pane.
 - `no-work` — the predicate found no eligible work this cycle.
 - `predicate-failed` — `gh` / `jq` failed transiently; the wrapper backs off.
 
+`duration_s` is wrapper wall-clock seconds (GH#174) spent inside the
+predicate — for `dev` that's the `runners/lib/eligibility.sh dev-candidates`
+subprocess, for `reviewer` the `gh pr view` round-trip plus the in-wrapper
+`jq` classification. Lets the tower attribute a slow run's pre-LLM slice
+without dropping back to the human log file. Always present, integer ≥ 0.
+
 ### Lock acquisition (Mode 1, `run-developer.sh`)
 
-| event             | role  | extra fields           | when |
-|-------------------|-------|------------------------|------|
-| `lock_acquired`   | `dev` | `issue`, `run_id`      | after the wrapper wins the per-issue mkdir lock |
-| `lock_race_lost`  | `dev` | `run_id`               | after every candidate was already locked by a sibling wrapper |
+| event             | role  | extra fields                              | when |
+|-------------------|-------|-------------------------------------------|------|
+| `lock_acquired`   | `dev` | `issue`, `run_id`, `wait_s`, `attempts`   | after the wrapper wins the per-issue mkdir lock |
+| `lock_race_lost`  | `dev` | `run_id`, `wait_s`, `attempts`            | after every candidate was already locked by a sibling wrapper |
+
+`wait_s` is wrapper wall-clock seconds (GH#174) spent in the mkdir-lock
+loop, `attempts` is how many candidates the loop tried before exit. On a
+first-try win both `lock_acquired.attempts == 1` and `wait_s` is small;
+under TOCTOU contention `attempts` climbs and `wait_s` measures how
+expensive that contention was. Always present, both integer ≥ 0
+(`attempts` ≥ 1 on `lock_acquired`).
 
 ### Mode 3 conflict triage (`run-developer.sh`)
 

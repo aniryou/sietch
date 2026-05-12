@@ -305,8 +305,14 @@ if [ "$MODE" = "default" ] && [ "$INTERACTIVE" = 1 ]; then
   export WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"
   echo "[wrapper] interactive: Mode 1 on issue #${DEV_AGENT_TARGET_ISSUE} (lock skipped)"
 elif [ "$MODE" = "default" ]; then
+  # GH#174: stamp the eligibility-stage wall-clock so each eligibility emit
+  # carries duration_s. Pairs with the lock-loop timer below — together they
+  # let an operator decode why an `llm_exited duration_s=7741` cycle was slow
+  # without dropping back to the human log file.
+  _elig_start_s=$(date +%s)
   CANDIDATES=$("$LOOP_HOME/runners/lib/eligibility.sh" dev-candidates)
   EL_RC=$?
+  _elig_duration_s=$(($(date +%s) - _elig_start_s))
   case "$EL_RC" in
     0)
       # GH#129: emit the eligibility/proceeding event before the lock loop
@@ -315,14 +321,21 @@ elif [ "$MODE" = "default" ]; then
       # this fired from the now-deleted dev-count preflight block.
       _proceeding_count=$(printf '%s\n' "$CANDIDATES" | grep -c .)
       echo "[wrapper] eligibility: $_proceeding_count candidate issue(s); proceeding"
-      event_emit dev eligibility result=proceeding count="$_proceeding_count" mode="$MODE" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev eligibility result=proceeding count="$_proceeding_count" duration_s="$_elig_duration_s" mode="$MODE" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
       unset _proceeding_count
       # Iterate candidates in id-ascending order (per dev-candidates contract,
       # GH#113). The first mkdir that succeeds is our lock; mkdir is the
       # atomic primitive — exactly one caller wins under contention.
       mkdir -p "$LOCK_DIR"
       DEV_AGENT_TARGET_ISSUE=""
+      # GH#174: lock-loop timing — `wait_s` is total wall-clock spent looping;
+      # `attempts` is candidate count tried (1 on first-try win, ≥2 when a
+      # sibling wrapper claimed the head-of-list candidate in the TOCTOU
+      # window between dev-candidates and mkdir).
+      _lock_start_s=$(date +%s)
+      _lock_attempts=0
       for _cand in $CANDIDATES; do
+        _lock_attempts=$((_lock_attempts + 1))
         # Lock filename carries LOCK_NAME_PREFIX (GH#74) so two repos
         # pointed at a shared LOCK_DIR don't false-positive on the same
         # issue number. Default behaviour with per-repo WORKTREE_BASE is
@@ -340,13 +353,14 @@ elif [ "$MODE" = "default" ]; then
           break
         fi
       done
+      _lock_wait_s=$(($(date +%s) - _lock_start_s))
       unset _cand
       if [ -z "$DEV_AGENT_TARGET_ISSUE" ]; then
         # The predicate found candidates but every one was claimed between
         # the listing and our mkdir attempts. Skip the LLM — no work left.
         echo "[wrapper] eligibility: every candidate already locked by sibling runs; skipping LLM"
         echo "[wrapper] result=lock-race-loss-pre-LLM mode=$MODE"
-        event_emit dev lock_race_lost run_id="$DEV_AGENT_RUN_ID" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+        event_emit dev lock_race_lost run_id="$DEV_AGENT_RUN_ID" wait_s="$_lock_wait_s" attempts="$_lock_attempts" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
         exit 2
       fi
       export DEV_AGENT_TARGET_ISSUE
@@ -358,12 +372,13 @@ elif [ "$MODE" = "default" ]; then
       # from the PR body, so they set $WORKTREE themselves in F3/R1.
       export WORKTREE="${WORKTREE_BASE}/gh-${DEV_AGENT_TARGET_ISSUE}"
       echo "[wrapper] eligibility: locked GH#${DEV_AGENT_TARGET_ISSUE} (run=$DEV_AGENT_RUN_ID); proceeding"
-      event_emit dev lock_acquired issue="$DEV_AGENT_TARGET_ISSUE" run_id="$DEV_AGENT_RUN_ID" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev lock_acquired issue="$DEV_AGENT_TARGET_ISSUE" run_id="$DEV_AGENT_RUN_ID" wait_s="$_lock_wait_s" attempts="$_lock_attempts" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      unset _lock_start_s _lock_wait_s _lock_attempts
       ;;
     1)
       echo "[wrapper] eligibility: no eligible issues; skipping LLM invocation"
       echo "[wrapper] result=no-work mode=$MODE"
-      event_emit dev eligibility result=no-work mode="$MODE" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev eligibility result=no-work duration_s="$_elig_duration_s" mode="$MODE" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
       exit 2
       ;;
     *)
@@ -372,11 +387,11 @@ elif [ "$MODE" = "default" ]; then
       # rediscover and re-race anyway. Treat as no-work.
       echo "[wrapper] eligibility: predicate failed (rc=$EL_RC); skipping LLM" >&2
       echo "[wrapper] result=predicate-failed mode=$MODE"
-      event_emit dev eligibility result=predicate-failed mode="$MODE" rc="$EL_RC" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
+      event_emit dev eligibility result=predicate-failed duration_s="$_elig_duration_s" mode="$MODE" rc="$EL_RC" "${_dispatch_kv[@]:+"${_dispatch_kv[@]}"}"
       exit 2
       ;;
   esac
-  unset CANDIDATES EL_RC
+  unset CANDIDATES EL_RC _elig_start_s _elig_duration_s
 fi
 
 # Mode 3 only: run the triage gate BEFORE invoking the LLM. The triage script's
