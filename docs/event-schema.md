@@ -30,7 +30,7 @@ size cap lives in the loop — that's the tower's responsibility.
 | `repo`           | string | `${REPO_OWNER}/${REPO_NAME}` from `.loop/loop.config`.         |
 | `role`           | string | Pane / wrapper identity (`dev-1`, `reviewer`, `dispatch:review`, `dispatch:followup`, …). The `dispatch:review` pane uses the `reviewer` role on its wrapper invocations and `dispatch:review` on dispatcher-shell events. |
 | `event`          | string | One of the names listed below.                                 |
-| `schema_version` | number | Currently `1`. Bump only when an event's required fields change. |
+| `schema_version` | number | Currently `2`. Bump only when an event's required fields change. |
 
 Extra fields are documented per-event below. Numeric-looking values become
 JSON numbers; everything else is a JSON string. Field names are
@@ -81,11 +81,17 @@ so tower consumers can assume the file grows on every cycle of every pane.
 | event         | role(s)            | extra fields                                                    | when |
 |---------------|--------------------|-----------------------------------------------------------------|------|
 | `llm_started` | `dev`, `reviewer`  | `mode`, `pr` or `issue`, `run_id`                               | just before the `claude` pipeline starts |
-| `llm_exited`  | `dev`, `reviewer`  | `mode`, `pr` or `issue`, `exit_code`, `duration_s`              | after `wait $PIPELINE_PID` returns |
+| `llm_exited`  | `dev`, `reviewer`  | `mode`, `pr` or `issue`, `exit_code`, `duration_s`, `total_cost_usd`, `input_tokens`, `output_tokens`, `num_turns` | after `wait $PIPELINE_PID` returns |
 
 `mode` is `default` / `follow-up` / `resolve-conflicts` for the dev wrapper
 and `default` for the reviewer wrapper. Either `pr` (Mode 2/3 / reviewer) or
 `issue` (Mode 1) is set per role.
+
+The four cost / token fields (`total_cost_usd`, `input_tokens`, `output_tokens`,
+`num_turns`) are extracted from the agent's final `type:"result"` stream-json
+line and default to `0` when the result frame is missing (claude crash before
+completion). Schema v2 — consumers can rely on the fields existing on every
+`llm_exited` event, never null, always numeric.
 
 ### Hard failures (post-LLM fallback paths)
 
@@ -106,7 +112,13 @@ events when they all share a role-style name.
 
 ## Versioning
 
-`schema_version` is currently `1`. The contract: any change that adds an
+`schema_version` is currently `2`. The contract: any change that adds an
 optional field is non-breaking; any rename, removal, or required-field
 change bumps the version. Consumers should refuse events with a
 `schema_version` they don't understand and surface the mismatch.
+
+History:
+
+- `2` (GH#170): `llm_exited` gained four required cost / token fields
+  (`total_cost_usd`, `input_tokens`, `output_tokens`, `num_turns`).
+- `1`: initial.

@@ -203,7 +203,16 @@ set +m
 
 wait "$PIPELINE_PID"
 LLM_EXIT=$?
-event_emit reviewer llm_exited mode=default pr="$TARGET_PR" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))"
+# GH#170: extract total_cost_usd / input_tokens / output_tokens / num_turns
+# from the final `type:"result"` line in $RAW so the llm_exited event carries
+# per-run cost. Each field defaults to 0 when the result frame is missing
+# (e.g. claude crash before completion); see event_cost_fields_from_raw.
+_llm_cost_kv=()
+while IFS= read -r _kv; do
+  [ -n "$_kv" ] && _llm_cost_kv+=("$_kv")
+done < <(event_cost_fields_from_raw "$RAW")
+event_emit reviewer llm_exited mode=default pr="$TARGET_PR" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_cost_kv[@]}"
+unset _llm_cost_kv _kv
 
 # GH#127: count Bash tool_use events from the raw stream-json and emit a
 # `bash_overshoot` event when the count exceeds REVIEWER_BASH_CALL_GUIDANCE.

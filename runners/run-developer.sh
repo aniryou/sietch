@@ -518,7 +518,16 @@ set +m
 
 wait "$PIPELINE_PID"
 LLM_EXIT=$?
-event_emit dev llm_exited mode="$MODE" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_target_kv[@]}"
+# GH#170: extract total_cost_usd / input_tokens / output_tokens / num_turns
+# from the final `type:"result"` line in $RAW so the llm_exited event carries
+# per-run cost. Each field defaults to 0 when the result frame is missing
+# (e.g. claude crash before completion); see event_cost_fields_from_raw.
+_llm_cost_kv=()
+while IFS= read -r _kv; do
+  [ -n "$_kv" ] && _llm_cost_kv+=("$_kv")
+done < <(event_cost_fields_from_raw "$RAW")
+event_emit dev llm_exited mode="$MODE" exit_code="$LLM_EXIT" duration_s="$(($(date +%s) - _llm_start_s))" "${_llm_target_kv[@]}" "${_llm_cost_kv[@]}"
+unset _llm_cost_kv _kv
 
 # GH#56 — Mode 1 hard-failure retry counter (wrapper-side).
 #
