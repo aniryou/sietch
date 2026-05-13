@@ -206,14 +206,26 @@ TEST_CMD="pytest -q"
 # Conventions:
 #   LOOP_FF_<NAME>=1                  — boolean on (anything else is off).
 #   LOOP_FF_<NAME>=<value>            — tunable knob read via ff_value.
-#   LOOP_FF_<NAME>_VARIANTS=<list>    — A/B variant list (deterministic
-#                                       assignment lands in a later child;
-#                                       today ff_variant always returns
-#                                       "control").
+#   LOOP_FF_<NAME>_VARIANTS=<list>    — A/B variant list, comma-separated
+#                                       (e.g. "control,treatment"). Assignment
+#                                       is deterministic per (flag, id) via
+#                                       SHA-256(id || flag) mod N, so retries,
+#                                       follow-up cycles, and conflict-triage
+#                                       reruns land in the same arm.
+#                                       ff_variant emits a `flag_read` event
+#                                       on every assignment (variant +
+#                                       assignment_source=hash|force).
+#   LOOP_FF_<NAME>_FORCE=<arm>        — operator override that pins ff_variant
+#                                       to the named arm regardless of the
+#                                       hash, for debugging. Unset when not
+#                                       in use; forced rows are tagged
+#                                       assignment_source=force in events.
 #
 # No flags are shipped enabled by default. Add lines below as runner code
 # starts gating on them. Example:
 #   # LOOP_FF_EXPERIMENTAL_DISPATCHER=1
+#   # LOOP_FF_EXPERIMENTAL_DISPATCHER_VARIANTS="control,treatment"
+#   # LOOP_FF_EXPERIMENTAL_DISPATCHER_FORCE=treatment   # debug pin
 
 # ---------------------------------------------------------------------------
 # Agent markers — change with care; downstream parsers match these literally

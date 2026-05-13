@@ -17,22 +17,31 @@
 #                                   between callers that might disagree on
 #                                   what counts as truthy.
 #   ff_variant <name> <issue_id>  — print the assigned variant from
-#                                   LOOP_FF_<NAME>_VARIANTS. Hash-based
-#                                   assignment lands in a later child issue;
-#                                   today this is always `control`. The
-#                                   <issue_id> arg is reserved for that
-#                                   future deterministic assignment so
-#                                   callers can wire it in now without a
-#                                   signature change.
+#                                   LOOP_FF_<NAME>_VARIANTS (CSV). When no
+#                                   variants are configured the helper is a
+#                                   no-op returning `control`. Otherwise the
+#                                   arm is picked by
+#                                   `variants[ hash(issue_id||name) mod N ]`
+#                                   so the same (flag, id) lands in the same
+#                                   arm across every retry, follow-up cycle,
+#                                   and conflict-triage rerun (GH#189). An
+#                                   operator override
+#                                   `LOOP_FF_<NAME>_FORCE=<arm>` pins the
+#                                   result for debugging, bypassing the hash.
 #   ff_value <name> <default>     — print LOOP_FF_<NAME> if set and non-empty;
 #                                   else print <default> (default-of-default
 #                                   is empty string).
 #
-# Telemetry on flag reads is intentionally deferred to a later child issue —
-# this module is the bare convention.
+# Telemetry: `ff_variant` emits one `flag_read` NDJSON event per call that
+# actually makes a variant assignment (i.e. VARIANTS is configured). The
+# event carries `flag`, `variant`, `assignment_source` (hash|force) and
+# `issue_id`. The other helpers (`ff_enabled`, `ff_value`) remain silent
+# pending GH#187's broader telemetry pass.
 
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/event_log.sh"
 
 # _ff_upper <s> — print <s> with [a-z] mapped to [A-Z]. POSIX-portable; avoids
 # bash 4+ `${var^^}` so this works on macOS's stock bash 3.2.
@@ -61,23 +70,93 @@ ff_enabled() {
   [ "$val" = "1" ]
 }
 
+# _ff_hash_index <flag> <issue_id> <n> — print the index in [0, n) for
+# `(issue_id || flag)` under SHA-256, taking the first 8 hex chars (32 bits)
+# and reducing mod n. POSIX-portable: shasum -a 256 is in perl-base on every
+# Linux distro and stock on macOS; `head -c 8` works on both BSD and GNU; the
+# `0x<hex>` literal is honoured by bash arithmetic on 3.2+.
+_ff_hash_index() {
+  local flag="$1" issue_id="$2" n="$3"
+  local hex
+  hex=$(printf '%s' "${issue_id}${flag}" | shasum -a 256 | head -c 8)
+  printf '%d\n' $(( 0x${hex} % n ))
+}
+
+# _ff_emit_flag_read <flag-upper> <variant> <source> <issue_id> — best-effort
+# `flag_read` NDJSON line through event_log.sh. The role is read from
+# LOOP_EVENT_ROLE so the calling runner (`dev` / `reviewer` / etc.) can stamp
+# itself; default is the literal "flags" since this is a library helper.
+_ff_emit_flag_read() {
+  local flag="$1" variant="$2" source="$3" issue_id="$4"
+  local role="${LOOP_EVENT_ROLE:-flags}"
+  # event_emit is itself best-effort (always returns 0); guard the call too
+  # so a missing function (event_log.sh failed to source for some reason)
+  # never breaks the caller's variant lookup.
+  if command -v event_emit >/dev/null 2>&1; then
+    event_emit "$role" flag_read flag="$flag" variant="$variant" \
+      assignment_source="$source" issue_id="$issue_id"
+  fi
+}
+
 ff_variant() {
   local flag="${1:-}"
-  # issue_id is read for future hash-based assignment (see header). Today the
-  # value is ignored; we still require the slot so the signature is stable.
-  local _issue_id="${2:-}"
+  local issue_id="${2:-}"
   [ -n "$flag" ] || return 2
-  local upper var variants
+
+  local upper var_variants var_force variants force_arm
   upper=$(_ff_upper "$flag")
-  var="LOOP_FF_${upper}_VARIANTS"
-  variants=$(_ff_lookup "$var")
+  var_variants="LOOP_FF_${upper}_VARIANTS"
+  var_force="LOOP_FF_${upper}_FORCE"
+  variants=$(_ff_lookup "$var_variants")
+  force_arm=$(_ff_lookup "$var_force")
+
+  # No variants configured → degenerate "off" path. No event: gating on
+  # an unconfigured flag is a caller bug, not a rollout signal worth
+  # logging.
   if [ -z "$variants" ]; then
     printf '%s\n' "control"
     return 0
   fi
-  # Variants configured but no assignment policy yet (lands in a later
-  # child); return control so callers behave like the flag is off.
-  printf '%s\n' "control"
+
+  # Operator FORCE override beats the hash. Emit `force` so per-arm
+  # outcome counts can isolate forced rows (they're debug noise vs. the
+  # natural hash split).
+  if [ -n "$force_arm" ]; then
+    _ff_emit_flag_read "$upper" "$force_arm" force "$issue_id"
+    printf '%s\n' "$force_arm"
+    return 0
+  fi
+
+  # Parse the CSV. Strip per-arm whitespace and drop empties so a
+  # copy-pasted "a, b ,c" or stray double-comma does not surface as a
+  # literal arm name.
+  local -a arms=()
+  local raw item trimmed
+  local IFS_save="$IFS"
+  IFS=','
+  # shellcheck disable=SC2206 # intentional word-splitting on ','
+  local parts=( $variants )
+  IFS="$IFS_save"
+  for raw in "${parts[@]+"${parts[@]}"}"; do
+    # Trim leading + trailing ASCII whitespace.
+    item="${raw#"${raw%%[![:space:]]*}"}"
+    trimmed="${item%"${item##*[![:space:]]}"}"
+    [ -n "$trimmed" ] && arms+=( "$trimmed" )
+  done
+
+  local n="${#arms[@]}"
+  if [ "$n" -eq 0 ]; then
+    # VARIANTS was non-empty but parsed to zero arms (e.g. ",,,"). Treat
+    # like the unset path — control, no event.
+    printf '%s\n' "control"
+    return 0
+  fi
+
+  local idx arm
+  idx=$(_ff_hash_index "$upper" "$issue_id" "$n")
+  arm="${arms[$idx]}"
+  _ff_emit_flag_read "$upper" "$arm" hash "$issue_id"
+  printf '%s\n' "$arm"
 }
 
 ff_value() {
