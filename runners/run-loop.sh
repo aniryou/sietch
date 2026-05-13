@@ -332,6 +332,16 @@ loop_dispatcher_review() {
 
 loop_dispatcher_followup() {
   local cycle_counter=0 cycle_id cycle_start_s cycle_dur dispatched
+  # GH#181: per-PR verdict-skip cache, keyed on `<pr>` with value
+  # `<updatedAt>|<last_skip_verdict>`. Survives across cycles within the same
+  # dispatcher process — bash 3.2 has no associative arrays, so we use two
+  # parallel arrays with linear lookup (open-PR count is typically < 30,
+  # O(n) is fine). Each cycle rebuilds the cache from `seen_*` so closed PRs
+  # are auto-pruned after one full cycle. Only skip outcomes are cached;
+  # firing always re-runs eligibility next cycle because the wrapper's work
+  # will bump updatedAt (new commit / comment), invalidating any stale entry.
+  local fl_cache_prs=()
+  local fl_cache_meta=()
   while true; do
     cycle_counter=$((cycle_counter + 1))
     cycle_id="$$-${cycle_counter}"
@@ -349,7 +359,10 @@ loop_dispatcher_followup() {
     cleanup_stale_dispatch_locks
     echo "[$(ts)] [dispatch:followup] scanning open dev-agent PRs..."
 
-    while IFS= read -r pr; do
+    local fl_seen_prs=()
+    local fl_seen_meta=()
+
+    while IFS=$'\t' read -r pr pr_updated; do
       [ -z "$pr" ] && continue
       local lock="${DISPATCH_LOCK_DIR}/${LOCK_NAME_PREFIX}pr-${pr}-followup.lock"
       [ -d "$lock" ] && continue
@@ -369,6 +382,29 @@ loop_dispatcher_followup() {
       local dispatch_id
       dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
 
+      # GH#181: linear-scan the verdict-skip cache. On a hit (same PR,
+      # same updatedAt), short-circuit without the per-PR `gh pr view`
+      # round-trip in eligibility_followup_pr.
+      local cache_idx=-1 _i
+      for _i in "${!fl_cache_prs[@]}"; do
+        if [ "${fl_cache_prs[$_i]}" = "$pr" ]; then
+          cache_idx=$_i
+          break
+        fi
+      done
+      if [ "$cache_idx" -ge 0 ]; then
+        local cached_meta="${fl_cache_meta[$cache_idx]}"
+        local cached_updated="${cached_meta%%|*}"
+        local cached_verdict="${cached_meta##*|}"
+        if [ "$cached_updated" = "$pr_updated" ]; then
+          echo "[$(ts)] [dispatch:followup] skip PR #${pr} (verdict=${cached_verdict}) reason=cached-skip"
+          event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" verdict="$cached_verdict" reason=cached-skip dispatch_id="$dispatch_id"
+          fl_seen_prs+=("$pr")
+          fl_seen_meta+=("${pr_updated}|${cached_verdict}")
+          continue
+        fi
+      fi
+
       # Verdict-aware gate (GH#24): skip clean/nits unconditionally, and
       # changes/comment/blocked once the dev-agent has already responded.
       # The predicate prints the verdict (or "none" / "?") to stdout for
@@ -379,6 +415,13 @@ loop_dispatcher_followup() {
       if [ "$ec" -ne 0 ]; then
         echo "[$(ts)] [dispatch:followup] skip PR #${pr} (verdict=${verdict})"
         event_emit "dispatch:followup" dispatch_skip kind=followup pr="$pr" verdict="$verdict" dispatch_id="$dispatch_id"
+        # GH#181: cache this skip so the next cycle short-circuits if
+        # updatedAt hasn't moved. ec=2 (predicate transient failure with
+        # "?" verdict) is also cached — the failure will recur next cycle
+        # too unless something on the PR changes, and re-running gh on a
+        # known-bad endpoint is the wasted work the cache aims to avoid.
+        fl_seen_prs+=("$pr")
+        fl_seen_meta+=("${pr_updated}|${verdict}")
         continue
       fi
 
@@ -400,10 +443,19 @@ loop_dispatcher_followup() {
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
-        --json number,headRefName,isDraft \
-        --jq "$(_dispatch_followup_jq "$BRANCH_PREFIX")" \
+        --json number,headRefName,isDraft,updatedAt \
+        --jq "$(_dispatch_followup_with_updated_jq "$BRANCH_PREFIX")" \
         2>/dev/null
     )
+
+    # GH#181: swap cache <- seen. Closed PRs (present in cache, absent
+    # this cycle) are dropped; fired PRs (acted on, no skip entry written)
+    # are dropped too so the next cycle re-evaluates them fresh. The
+    # `${arr[@]+"${arr[@]}"}` form is the bash 3.2 + `set -u` idiom for
+    # "expand to nothing when empty" — a bare `"${fl_seen_prs[@]}"` on an
+    # empty array trips nounset.
+    fl_cache_prs=(${fl_seen_prs[@]+"${fl_seen_prs[@]}"})
+    fl_cache_meta=(${fl_seen_meta[@]+"${fl_seen_meta[@]}"})
 
     cycle_dur=$(($(date +%s) - cycle_start_s))
     if [ "$dispatched" -eq 0 ]; then
@@ -423,6 +475,10 @@ loop_dispatcher_merge() {
   # dispatcher's shape — pure shell, no LLM.
   local empty_streak=0 dispatched sleep_for
   local cycle_counter=0 cycle_id cycle_start_s cycle_dur
+  # GH#181: per-PR verdict-skip cache, identical shape to the follow-up
+  # dispatcher's cache (parallel arrays, value=`<updatedAt>|<verdict>`).
+  local mg_cache_prs=()
+  local mg_cache_meta=()
   while true; do
     cycle_counter=$((cycle_counter + 1))
     cycle_id="$$-${cycle_counter}"
@@ -439,7 +495,10 @@ loop_dispatcher_merge() {
     echo "[$(ts)] [merger] scanning open dev-agent PRs..."
     dispatched=0
 
-    while IFS= read -r pr; do
+    local mg_seen_prs=()
+    local mg_seen_meta=()
+
+    while IFS=$'\t' read -r pr pr_updated; do
       [ -z "$pr" ] && continue
 
       # GH#172: one dispatch_id per PR-attempt, stamped on the verdict-skip /
@@ -450,6 +509,29 @@ loop_dispatcher_merge() {
       local dispatch_id
       dispatch_id="$$-$(date +%s%N 2>/dev/null || date +%s)"
 
+      # GH#181: cache lookup. Short-circuit the per-PR `gh pr view` round-trip
+      # in eligibility_merge_pr when updatedAt hasn't moved since the last
+      # skip.
+      local cache_idx=-1 _i
+      for _i in "${!mg_cache_prs[@]}"; do
+        if [ "${mg_cache_prs[$_i]}" = "$pr" ]; then
+          cache_idx=$_i
+          break
+        fi
+      done
+      if [ "$cache_idx" -ge 0 ]; then
+        local cached_meta="${mg_cache_meta[$cache_idx]}"
+        local cached_updated="${cached_meta%%|*}"
+        local cached_verdict="${cached_meta##*|}"
+        if [ "$cached_updated" = "$pr_updated" ]; then
+          echo "[$(ts)] [merger] skip pr=#${pr} verdict=${cached_verdict} reason=cached-skip"
+          event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$cached_verdict" reason=cached-skip dispatch_id="$dispatch_id"
+          mg_seen_prs+=("$pr")
+          mg_seen_meta+=("${pr_updated}|${cached_verdict}")
+          continue
+        fi
+      fi
+
       # Verdict + staleness + human-veto + CI gate. The predicate prints the
       # verdict on stdout for the log line; exit 0 = merge, 1 = skip, 2 =
       # gh/jq failure (treat as skip — next cycle re-checks).
@@ -458,6 +540,9 @@ loop_dispatcher_merge() {
       if [ "$ec" -ne 0 ]; then
         echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict}"
         event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict" dispatch_id="$dispatch_id"
+        # GH#181: cache this skip outcome.
+        mg_seen_prs+=("$pr")
+        mg_seen_meta+=("${pr_updated}|${verdict}")
         continue
       fi
 
@@ -476,13 +561,22 @@ loop_dispatcher_merge() {
         # re-test next cycle.
         echo "[$(ts)] [merger] skip pr=#${pr} verdict=${verdict} reason=gh-merge-failed"
         event_emit merger dispatch_skip kind=merge pr="$pr" verdict="$verdict" reason=gh-merge-failed dispatch_id="$dispatch_id"
+        # GH#181: cache the gh-merge-failed skip too — same updatedAt next
+        # cycle means the same network/perm issue will reproduce; skip the
+        # `gh pr view` call until something on the PR moves.
+        mg_seen_prs+=("$pr")
+        mg_seen_meta+=("${pr_updated}|${verdict}")
       fi
     done < <(
       gh pr list --repo "$REPO_SLUG" --state open \
-        --json number,headRefName,isDraft \
-        --jq "$(_dispatch_merge_jq "$BRANCH_PREFIX")" \
+        --json number,headRefName,isDraft,updatedAt \
+        --jq "$(_dispatch_merge_with_updated_jq "$BRANCH_PREFIX")" \
         2>/dev/null
     )
+
+    # GH#181: swap cache <- seen. Same idiom as the follow-up dispatcher.
+    mg_cache_prs=(${mg_seen_prs[@]+"${mg_seen_prs[@]}"})
+    mg_cache_meta=(${mg_seen_meta[@]+"${mg_seen_meta[@]}"})
 
     cycle_dur=$(($(date +%s) - cycle_start_s))
     # Backoff on cycles where nothing was merged. Mirrors the conflict
