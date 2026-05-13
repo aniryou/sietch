@@ -189,6 +189,38 @@ event represents a wrapper-level hard failure (those use `hard_failure`).
 configured threshold (`REVIEWER_BASH_CALL_GUIDANCE`); the tower can plot
 the ratio over time to decide when to retune the prompt.
 
+### Feature flags (emitted by `runners/lib/flags.sh`)
+
+| event       | role(s)                              | extra fields                                        | when |
+|-------------|--------------------------------------|-----------------------------------------------------|------|
+| `flag_read` | `${LOOP_EVENT_ROLE:-flags}` (caller-stamped) | `flag`, `variant`, `assignment_source`, `issue_id`  | every time `ff_variant <name> <issue_id>` assigns a variant to a resource (configured `LOOP_FF_<NAME>_VARIANTS`). The no-VARIANTS path returns `control` and stays silent — emitting `flag_read` for an unconfigured flag would pollute the log with reads no one is gating on. |
+
+`flag` is the upper-snake flag name (`ff_variant my_flag` resolves to
+`MY_FLAG` here) so dashboards can group across case variations at the call
+site. The `LOOP_FF_` prefix is dropped — only the bare name appears.
+
+`variant` is the assigned arm (one of the entries from
+`LOOP_FF_<NAME>_VARIANTS`, or whatever the `LOOP_FF_<NAME>_FORCE`
+override pinned it to). Cardinality is bounded by the configured CSV;
+safe to group by.
+
+`assignment_source` is a closed enum recording how the arm was chosen:
+
+| value   | meaning                                                                                                                                            |
+|---------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `hash`  | The natural deterministic assignment, `variants[ SHA-256(issue_id || flag) mod N ]`. Stable across retries, follow-up cycles, and conflict-triage reruns. |
+| `force` | The operator override `LOOP_FF_<NAME>_FORCE=<arm>` pinned the result, bypassing the hash. Lets the tower isolate debug-pinned rows from the natural split. |
+
+`issue_id` is the caller-supplied resource identifier (GitHub issue or PR
+number, beads ID, etc.) — the same value passed as `ff_variant`'s second
+argument. Empty string is legal (the hash of `(empty || flag)` is
+well-defined) but unusual in practice; the tower should treat an empty
+`issue_id` as "no resource scoping" rather than missing data.
+
+The caller stamps the `role` via `LOOP_EVENT_ROLE` (e.g. `dev` /
+`reviewer`); the helper falls back to a literal `flags` role when the
+env var is unset so events never lack a role.
+
 ### Dispatcher lifecycle (emitted by `run-loop.sh`)
 
 | event              | role(s)                                                  | extra fields                                | when |
