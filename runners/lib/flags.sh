@@ -28,17 +28,32 @@
 #                                   else print <default> (default-of-default
 #                                   is empty string).
 #
-# Telemetry on flag reads is intentionally deferred to a later child issue —
-# this module is the bare convention.
+# GH#187: every ff_* call records (lowercased name, resolved value) in the
+# process-local `_LOOP_FF_ACTIVE` cache and best-effort emits a `flag_read`
+# event via event_emit. Subsequent event_emit calls serialize the cache as
+# a `flags_active` JSON object, so cohort membership joins to outcomes
+# without re-instrumenting every caller. Best-effort means a write failure
+# (unwritable `LOOP_EVENT_LOG`, jq missing) MUST NOT change a ff_* helper's
+# exit code or stdout — the contract callers rely on.
 
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/event_log.sh"
 
-# _ff_upper <s> — print <s> with [a-z] mapped to [A-Z]. POSIX-portable; avoids
-# bash 4+ `${var^^}` so this works on macOS's stock bash 3.2.
-_ff_upper() {
-  printf '%s' "$1" | tr '[:lower:]' '[:upper:]'
-}
+# Process-local cache of flag reads since this shell started. Exported so
+# backgrounded child shells (dispatched wrappers, etc.) inherit cohort
+# membership the parent has already established. Newline-separated
+# `name=value` entries; names are lowercased to align with the JSON
+# `flags_active` field event_emit produces. Newline-delimited (not assoc
+# array) so this lib remains portable to macOS's stock bash 3.2.
+_LOOP_FF_ACTIVE="${_LOOP_FF_ACTIVE:-}"
+export _LOOP_FF_ACTIVE
+
+# _ff_upper / _ff_lower — POSIX-portable case mapping. Avoids bash 4+
+# `${var^^}` / `${var,,}` so this works on macOS's stock bash 3.2.
+_ff_upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+_ff_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # _ff_lookup <var-name> — print the value of the named variable, or empty
 # string if unset. Wraps the indirect expansion so the rest of the file
@@ -51,14 +66,55 @@ _ff_lookup() {
   printf '%s' "${!name-}"
 }
 
+# _ff_cache_set <lower-name> <value> — record name=value in _LOOP_FF_ACTIVE,
+# replacing any prior entry for the same name. O(N) over current cohort
+# size, which is bounded by the number of distinct flags read in this
+# process — small enough that the linear scan is fine and avoids the
+# bash-4 associative-array dependency.
+_ff_cache_set() {
+  local name="$1" value="$2"
+  local out="" line
+  if [ -n "${_LOOP_FF_ACTIVE:-}" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      [ "${line%%=*}" = "$name" ] && continue
+      out+="${line}"$'\n'
+    done <<< "$_LOOP_FF_ACTIVE"
+  fi
+  out+="${name}=${value}"
+  _LOOP_FF_ACTIVE="$out"
+  export _LOOP_FF_ACTIVE
+}
+
+# _ff_emit_read <lower-name> <value> — best-effort flag_read emit. The
+# role falls back to `flags` when the wrapper hasn't set `LOOP_ROLE`, so
+# direct library tests still produce a well-formed event. event_emit is
+# already best-effort per its header contract; the `|| true` here is
+# defense-in-depth in case a future change tightens that.
+_ff_emit_read() {
+  local name="$1" value="$2"
+  event_emit "${LOOP_ROLE:-flags}" flag_read name="$name" value="$value" \
+    >/dev/null 2>&1 || true
+}
+
 ff_enabled() {
   local flag="${1:-}"
   [ -n "$flag" ] || return 2
-  local upper var val
+  local upper lower var val state rc
   upper=$(_ff_upper "$flag")
+  lower=$(_ff_lower "$flag")
   var="LOOP_FF_${upper}"
   val=$(_ff_lookup "$var")
-  [ "$val" = "1" ]
+  # `state` is the wire value (0/1) recorded in flags_active and the
+  # flag_read event; `rc` is the bash exit code (0=enabled, 1=disabled).
+  # Inverted between the two so analysts see the flag's *state* in the
+  # log while callers can still `if ff_enabled FOO; then ...`.
+  if [ "$val" = "1" ]; then state=1; rc=0; else state=0; rc=1; fi
+  # Update cache BEFORE emit so the flag_read line itself carries the
+  # flag in `flags_active` — gives consumers a self-consistent view.
+  _ff_cache_set "$lower" "$state"
+  _ff_emit_read "$lower" "$state"
+  return $rc
 }
 
 ff_variant() {
@@ -67,30 +123,36 @@ ff_variant() {
   # value is ignored; we still require the slot so the signature is stable.
   local _issue_id="${2:-}"
   [ -n "$flag" ] || return 2
-  local upper var variants
+  local upper lower variant
   upper=$(_ff_upper "$flag")
-  var="LOOP_FF_${upper}_VARIANTS"
-  variants=$(_ff_lookup "$var")
-  if [ -z "$variants" ]; then
-    printf '%s\n' "control"
-    return 0
-  fi
-  # Variants configured but no assignment policy yet (lands in a later
-  # child); return control so callers behave like the flag is off.
-  printf '%s\n' "control"
+  lower=$(_ff_lower "$flag")
+  # LOOP_FF_<NAME>_VARIANTS is read here so a future child issue can
+  # branch on the configured set; today's policy is unconditional
+  # "control" (the placeholder until deterministic assignment lands).
+  # We still resolve the var so a configured-but-unused value doesn't
+  # silently rot.
+  _ff_lookup "LOOP_FF_${upper}_VARIANTS" >/dev/null
+  variant="control"
+  _ff_cache_set "$lower" "$variant"
+  _ff_emit_read "$lower" "$variant"
+  printf '%s\n' "$variant"
 }
 
 ff_value() {
   local flag="${1:-}"
   local default="${2-}"
   [ -n "$flag" ] || return 2
-  local upper var val
+  local upper lower var val out
   upper=$(_ff_upper "$flag")
+  lower=$(_ff_lower "$flag")
   var="LOOP_FF_${upper}"
   val=$(_ff_lookup "$var")
   if [ -n "$val" ]; then
-    printf '%s\n' "$val"
+    out="$val"
   else
-    printf '%s\n' "$default"
+    out="$default"
   fi
+  _ff_cache_set "$lower" "$out"
+  _ff_emit_read "$lower" "$out"
+  printf '%s\n' "$out"
 }

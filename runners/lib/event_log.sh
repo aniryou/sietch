@@ -23,12 +23,19 @@
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/_preamble.sh"
 
+# v3 (GH#187): every event may carry a `flags_active` JSON object built
+# from the process-local feature-flag cache (`_LOOP_FF_ACTIVE`) maintained
+# by runners/lib/flags.sh, and a new `flag_read` event is emitted on each
+# ff_* call. The optional `flags_active` field is a required-field-set
+# change per docs/event-schema.md and bumps the version. See the v2 entry
+# below for prior history.
+#
 # v2 (GH#170, GH#171): `llm_exited` events now also carry `total_cost_usd`,
 # `input_tokens`, `output_tokens`, `num_turns` extracted from the agent's
 # stream-json result frame (GH#170); and `hard_failure` events now carry a
 # `reason` from a closed enum (GH#171). Both are required-field set
 # changes, so the version bumps per the contract in docs/event-schema.md.
-LOOP_EVENT_SCHEMA_VERSION=2
+LOOP_EVENT_SCHEMA_VERSION=3
 
 # event_cost_fields_from_raw <stream-json-file>
 #
@@ -107,6 +114,28 @@ event_emit() {
   )
   # shellcheck disable=SC2016 # $vars here are jq bindings, not shell expansions
   local filter='{ts:$ts, session:$session, repo:$repo, role:$role, event:$event, schema_version:$schema_version}'
+
+  # GH#187: serialize the feature-flag cache as `flags_active` when any
+  # ff_* helper has populated `_LOOP_FF_ACTIVE` in this process. The cache
+  # is a newline-separated `name=value` list; jq turns it into a JSON
+  # object with string values. Empty cache → field omitted (keeps lines
+  # small until a flag is actually read).
+  if [ -n "${_LOOP_FF_ACTIVE:-}" ]; then
+    local _flags_json=""
+    _flags_json=$(printf '%s\n' "$_LOOP_FF_ACTIVE" | jq -Rcs '
+      [ split("\n")[]
+        | select(length > 0)
+        | (index("=") // -1) as $i
+        | select($i >= 0)
+        | { (.[0:$i]): .[$i+1:] }
+      ] | add // {}
+    ' 2>/dev/null) || _flags_json=""
+    if [ -n "$_flags_json" ] && [ "$_flags_json" != "{}" ]; then
+      jq_args+=(--argjson flags_active "$_flags_json")
+      # shellcheck disable=SC2016 # jq binding
+      filter+=' | .flags_active = $flags_active'
+    fi
+  fi
 
   local kv k v
   for kv in "$@"; do

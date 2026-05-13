@@ -230,10 +230,10 @@ _cost_fields() {
   ' _ "$1"
 }
 
-@test "LOOP_EVENT_SCHEMA_VERSION is currently 2 (required-field set changed in GH#170)" {
+@test "LOOP_EVENT_SCHEMA_VERSION is currently 3 (flags_active + flag_read added in GH#187)" {
   bash -c '
     . "'"$LOOP_ROOT"'/runners/lib/event_log.sh"
-    [ "$LOOP_EVENT_SCHEMA_VERSION" = "2" ]
+    [ "$LOOP_EVENT_SCHEMA_VERSION" = "3" ]
   '
 }
 
@@ -316,5 +316,5 @@ EOF
   [ "$(jq -r .output_tokens  <<<"$line")" = "678" ]
   [ "$(jq -r .num_turns      <<<"$line")" = "3" ]
   # Schema version must be the bumped value.
-  [ "$(jq -r .schema_version <<<"$line")" = "2" ]
+  [ "$(jq -r .schema_version <<<"$line")" = "3" ]
 }

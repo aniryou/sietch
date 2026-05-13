@@ -321,12 +321,12 @@ STUB
     | grep -qE '\breason\b'
 }
 
-@test "event_log.sh: LOOP_EVENT_SCHEMA_VERSION bumped to 2" {
-  grep -qE '^LOOP_EVENT_SCHEMA_VERSION=2$' "$LOOP_ROOT/runners/lib/event_log.sh"
+@test "event_log.sh: LOOP_EVENT_SCHEMA_VERSION bumped to 3 (GH#187)" {
+  grep -qE '^LOOP_EVENT_SCHEMA_VERSION=3$' "$LOOP_ROOT/runners/lib/event_log.sh"
 }
 
-@test "event-schema.md: top-of-file Required Fields table reflects schema_version=2" {
-  grep -qE 'Currently `2`' "$LOOP_ROOT/docs/event-schema.md"
+@test "event-schema.md: top-of-file Required Fields table reflects schema_version=3 (GH#187)" {
+  grep -qE 'Currently `3`' "$LOOP_ROOT/docs/event-schema.md"
 }
 
 # ---------------------------------------------------------------------------
