@@ -1,0 +1,9 @@
+{
+  ".": "array",
+  ".[]": "object",
+  ".[].headRefName": "string",
+  ".[].isDraft": "boolean",
+  ".[].mergeable": "string",
+  ".[].number": "number",
+  ".[].updatedAt": "string"
+}

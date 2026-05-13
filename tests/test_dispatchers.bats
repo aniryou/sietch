@@ -174,9 +174,13 @@ setup() {
 }
 
 @test "run-loop.sh: dispatcher gh-pr-list calls invoke the lib helpers" {
-  grep -qF '_dispatch_followup_jq'  "$LOOP_ROOT/runners/run-loop.sh"
-  grep -qF '_dispatch_conflicts_jq' "$LOOP_ROOT/runners/run-loop.sh"
-  grep -qF '_dispatch_merge_jq'     "$LOOP_ROOT/runners/run-loop.sh"
+  # GH#181: followup and merger now use the `_with_updated` variants so the
+  # verdict cache has the `updatedAt` freshness key. The conflicts dispatcher
+  # keeps the original `_dispatch_conflicts_jq` — its decision doesn't depend
+  # on a per-PR `gh pr view`, so it doesn't benefit from the cache.
+  grep -qF '_dispatch_followup_with_updated_jq' "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qF '_dispatch_conflicts_jq'             "$LOOP_ROOT/runners/run-loop.sh"
+  grep -qF '_dispatch_merge_with_updated_jq'    "$LOOP_ROOT/runners/run-loop.sh"
 }
 
 # ---------------------------------------------------------------------------

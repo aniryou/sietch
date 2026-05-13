@@ -23,6 +23,16 @@ _dispatch_followup_jq() {
   printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | .number' "$1"
 }
 
+# GH#181: same candidate set as _dispatch_followup_jq, but emits
+# `<number>\t<updatedAt>` so the dispatcher's verdict cache can decide
+# cache hit / miss without a per-PR `gh pr view` round-trip. A missing
+# updatedAt (defensive — open PRs always carry it) coalesces to "?" so the
+# TSV column is never empty and the bash `IFS=$'\t' read -r pr updated`
+# parse stays unambiguous.
+_dispatch_followup_with_updated_jq() {
+  printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | "\(.number)\t\(.updatedAt // "?")"' "$1"
+}
+
 # jq filter: emit .number for each open, non-draft dev-agent PR whose
 # mergeable state is CONFLICTING.
 # Arguments:
@@ -48,4 +58,11 @@ _dispatch_conflicts_jq() {
 # Argument: branch prefix (without trailing slash).
 _dispatch_merge_jq() {
   printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | .number' "$1"
+}
+
+# GH#181: same candidate set as _dispatch_merge_jq, plus the updatedAt
+# freshness key for the merger's verdict cache. Same TSV shape as the
+# follow-up variant.
+_dispatch_merge_with_updated_jq() {
+  printf '.[] | select(.headRefName | startswith("%s/")) | select(.isDraft == false) | "\(.number)\t\(.updatedAt // "?")"' "$1"
 }

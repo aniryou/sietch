@@ -207,11 +207,16 @@ events when they all share a role-style name.
 | `mkdir-failed`   | Per-PR lock `mkdir` failed for a non-EEXIST reason (parent missing, permissions) — the legitimate already-locked EEXIST skip stays silent (GH#86) | `dispatch:review`, `dispatch:followup`, `dispatch:conflicts`      |
 | `gh-merge-failed`| `gh pr merge` returned non-zero (network, permissions, race with a concurrent human merge) — candidate is re-tested next cycle                  | `merger`                                                          |
 | `missing-pr`     | The eligibility predicate returned its `?` sentinel (gh/jq transient failure) so no PR number is available — emitted without a `pr` field (GH#175) | `dispatch:review`                                                 |
+| `cached-skip`    | Per-PR verdict cache (GH#181) hit — the PR's `updatedAt` is unchanged since the previous cycle's skip, so the dispatcher reused the cached verdict instead of re-running `eligibility_followup_pr` / `eligibility_merge_pr` (which would re-invoke `gh pr view`). `verdict` is also emitted (the cached value) so tower consumers can group cached and live skips by underlying verdict | `dispatch:followup`, `merger`                                     |
 
 A `verdict` value appears instead of `reason` when the skip is driven by a
 verdict-aware predicate (`eligibility_followup_pr`, `eligibility_merge_pr`)
 — e.g. `verdict=clean` / `nits` / `none` / `?`. The two fields are
-mutually exclusive on a single `dispatch_skip` event.
+mutually exclusive on a single `dispatch_skip` event, with the deliberate
+exception of `reason=cached-skip`, which carries `verdict` too (the
+cached value the predicate emitted on a previous cycle) so tower
+consumers can correlate cache hits to their underlying skip reason
+without joining across events.
 
 ## Versioning
 
