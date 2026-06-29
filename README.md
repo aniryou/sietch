@@ -3,7 +3,7 @@
 A multi-agent dev loop for Claude Code, built on top of
 [beads](https://github.com/steveyegge/beads).
 
-![loop](docs/loop.jpeg)
+![loop](docs/loop.png)
 
 ## Why "loop"?
 
